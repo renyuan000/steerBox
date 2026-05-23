@@ -1,6 +1,8 @@
 # steerBox
 
-Practice Harness Engineering by building software development agents and security agents in a safe, steered environment.
+[README.md](./README.md) | [English](./README_EN.md)
+
+在一个安全、可控、可引导的环境中，通过构建软件开发智能体与安全智能体，练习 Harness Engineering。
 
 ## 项目定位
 

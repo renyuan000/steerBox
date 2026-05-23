@@ -1,0 +1,109 @@
+# steerBox
+
+[简体中文](#简体中文) | [English](#english) | [README_CN.md](./README_CN.md) | [README_EN.md](./README_EN.md)
+
+## English
+
+Practice Harness Engineering by building software development agents and security agents in a safe, steered environment.
+
+### Positioning
+
+`steerBox` is currently a `learning-first` Harness Engineering project.
+
+Its core question is not simply whether an agent can do work, but how to combine the following into a durable harness:
+
+- long-running execution
+- constraint control
+- feedback loops
+- human takeover
+- auditable behavior
+- traceable decision and execution flows
+
+### Two Tracks
+
+#### 1. Software Development Agents
+
+- long-running automated software development
+- code management
+- test execution
+- refactoring
+- development workflow control
+- continuous feedback and correction
+
+#### 2. Security Agents
+
+- long-running security operations
+- long-running security log analysis
+- long-running security event detection and incident response
+- automated offensive/defensive analysis and vulnerability research
+- secure development and security review related scenarios
+
+### Core Principles
+
+- `safe`
+- `steered`
+- `auditable`
+- `traceable`
+- `human-in-the-loop`
+- `long-running`
+- `feedback-driven`
+
+### Documents
+
+- [Harness Principles](./docs/HARNESS_PRINCIPLES.md)
+- [Harness Sources](./docs/HARNESS_SOURCES.md)
+- [Architecture Direction](./docs/ARCHITECTURE_DIRECTION.md)
+- [Architecture Questions](./docs/ARCHITECTURE_QUESTIONS.md)
+
+## 简体中文
+
+在一个安全、可控、可引导的环境中，通过构建软件开发智能体与安全智能体，练习 Harness Engineering。
+
+### 项目定位
+
+`steerBox` 当前首先是一个 `learning-first` 的 Harness Engineering 学习项目。
+
+它关注的核心问题不是“让 agent 会不会做事”，而是如何把下面这些能力稳定组合成一个可持续运行的 harness：
+
+- 长时执行
+- 约束控制
+- 反馈闭环
+- 人在环接管
+- 行为可审计
+- 决策与执行流程可追踪
+
+### 两条主线
+
+#### 1. 软件开发智能体
+
+- 长时间自动化开发
+- 代码管理
+- 测试执行
+- 重构
+- 开发工作流控制
+- 持续反馈与持续修正
+
+#### 2. 安全智能体
+
+- 长时间自动化安全运维
+- 长时间自动化安全日志分析
+- 长时间自动化安全事件发现与响应
+- 自动化攻防分析与漏洞发掘分析
+- 安全开发与安全审查相关场景
+
+### 核心原则
+
+- `safe`
+- `steered`
+- `auditable`
+- `traceable`
+- `human-in-the-loop`
+- `long-running`
+- `feedback-driven`
+
+### 文档
+
+- [Harness Principles](./docs/HARNESS_PRINCIPLES.md)
+- [Harness Sources](./docs/HARNESS_SOURCES.md)
+- [Architecture Direction](./docs/ARCHITECTURE_DIRECTION.md)
+- [Architecture Questions](./docs/ARCHITECTURE_QUESTIONS.md)
