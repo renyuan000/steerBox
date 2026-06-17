@@ -13,7 +13,7 @@
 - 长时执行
 - 约束控制
 - 反馈闭环
-- 人在环接管
+- 支持人在环、无人值守、被动观察、主动审批与人工接管
 - 行为可审计
 - 决策与执行流程可追踪
 
@@ -43,7 +43,7 @@
 说明：
 
 - 与高影响安全动作相关的自动化，应默认建立在受控、可审计、可追踪和可介入的前提下
-- 需要主动动作的场景，应优先假设存在审批、约束和人在环要求
+- 需要主动动作的场景，应按风险等级决定无人值守、被动观察、主动审批或人工接管模式
 
 ## 核心原则
 
@@ -51,7 +51,7 @@
 - `steered`
 - `auditable`
 - `traceable`
-- `human-in-the-loop`
+- `human-steerable`
 - `long-running`
 - `feedback-driven`
 
@@ -67,3 +67,18 @@
 - [Harness Sources](./docs/HARNESS_SOURCES.md)
 - [Architecture Direction](./docs/ARCHITECTURE_DIRECTION.md)
 - [Architecture Questions](./docs/ARCHITECTURE_QUESTIONS.md)
+- [Documentation Map](./docs/DOCUMENTATION_MAP.md)
+- [Tracks and Supporting Capabilities](./docs/TRACKS_AND_CAPABILITIES.md)
+- [Goal and Loop Engineering Discussion](./docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md)
+- [Goal Alignment Checkpoints](./docs/GOAL_ALIGNMENT_CHECKS.md)
+- [AI Agent Efficiency Engineering](./docs/AI_AGENT_EFFICIENCY_ENGINEERING.md)
+- [Plugin and Extension Architecture Discussion](./docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md)
+- [Model Prompt and Checkpoint Policy](./docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md)
+- [Prompt, Checkpoint, and DriftGuard Templates](./docs/PROMPT_CHECKPOINT_TEMPLATES.md)
+- [Checkpoint Policy Algorithm](./docs/CHECKPOINT_POLICY_ALGORITHM.md)
+- [Side Effect Ledger Discussion](./docs/SIDE_EFFECT_LEDGER_DISCUSSION.md)
+- [Drift Guard Discussion](./docs/DRIFT_GUARD_DISCUSSION.md)
+- [Reference Frameworks and Observability Notes](./docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md)
+- [Agent Evolution Reading List and Notes](./docs/AGENT_EVOLUTION_READING_LIST.md)
+- [Agent Evolution Innovation Synthesis](./docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md)
+- [Storage and Recovery Discussion](./docs/STORAGE_AND_RECOVERY_DISCUSSION.md)
