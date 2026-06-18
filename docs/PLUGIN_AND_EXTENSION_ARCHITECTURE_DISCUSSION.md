@@ -346,11 +346,13 @@ minimal core + capability registry + policy gate + extension adapters + audit/tr
 
 运行模式应支持：
 
-- unattended
-- passive oversight
-- active approval
-- manual takeover
-- blocked
+- `autonomous_loop`
+- `human_steerable_loop`
+- `human_in_the_loop`
+- `manual_takeover`
+- `blocked`
+
+其中旧描述可映射为：`unattended -> autonomous_loop`，`passive oversight -> human_steerable_loop`，`active approval -> human_in_the_loop`。
 
 设计要求：
 
@@ -400,7 +402,7 @@ minimal core + capability registry + policy gate + extension adapters + audit/tr
 
 - 控制面不应直接绕过 policy
 - 人类操作必须进入 audit log
-- 低风险任务可无人值守，高风险任务可主动审批或人工接管
+- 低风险任务可运行在 `autonomous_loop` 或 `human_steerable_loop`，高风险任务应切换到 `human_in_the_loop` 或 `manual_takeover`
 
 ## 插件注册元数据草案
 

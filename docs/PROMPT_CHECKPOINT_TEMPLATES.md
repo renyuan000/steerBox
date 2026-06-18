@@ -65,9 +65,9 @@ preferred_roles:
 risk_limits:
   max_task_risk: "low | medium | high | critical"
   allowed_autonomy_modes:
-    - "unattended"
-    - "passive_oversight"
-    - "active_approval"
+    - "autonomous_loop"
+    - "human_steerable_loop"
+    - "human_in_the_loop"
     - "manual_takeover"
 
 prompt_binding:

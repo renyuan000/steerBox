@@ -17,18 +17,19 @@
 5. `docs/STORAGE_AND_RECOVERY_DISCUSSION.md`
 6. `docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md`
 7. `docs/GOAL_ALIGNMENT_CHECKS.md`
-8. `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`
-9. `docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md`
-10. `docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`
-11. `docs/PROMPT_CHECKPOINT_TEMPLATES.md`
-12. `docs/CHECKPOINT_POLICY_ALGORITHM.md`
-13. `docs/SIDE_EFFECT_LEDGER_DISCUSSION.md`
-14. `docs/DRIFT_GUARD_DISCUSSION.md`
-15. `docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md`
-16. `docs/AGENT_EVOLUTION_READING_LIST.md`
-17. `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`
-18. `docs/ARCHITECTURE_QUESTIONS.md`
-19. `docs/HARNESS_SOURCES.md`
+8. `docs/HUMAN_STEERING_MODES.md`
+9. `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`
+10. `docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md`
+11. `docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`
+12. `docs/PROMPT_CHECKPOINT_TEMPLATES.md`
+13. `docs/CHECKPOINT_POLICY_ALGORITHM.md`
+14. `docs/SIDE_EFFECT_LEDGER_DISCUSSION.md`
+15. `docs/DRIFT_GUARD_DISCUSSION.md`
+16. `docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md`
+17. `docs/AGENT_EVOLUTION_READING_LIST.md`
+18. `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`
+19. `docs/ARCHITECTURE_QUESTIONS.md`
+20. `docs/HARNESS_SOURCES.md`
 
 ## 文档分层
 
@@ -123,6 +124,19 @@ README 不应该承载完整架构细节。
 - 定义 aligned / weakly_aligned / drifting / off_goal / unclear 等方向判断
 
 该文档负责回答：agent 如何在长程任务中持续确认自己没有偏离最初目标。
+
+### 7.1 人类驾驭与介入模式
+
+- `docs/HUMAN_STEERING_MODES.md`
+
+职责：
+
+- 区分 `autonomous_loop`、`human_steerable_loop`、`human_in_the_loop`、`manual_takeover`
+- 说明 `human-steerable` 与主流 HITL、approval workflow、interrupt/resume、handoff 等术语的关系
+- 定义人类观察、审批、纠偏、暂停、恢复和接管如何进入 `GoalContract`、`LoopController`、trace 与 audit
+- 说明不同风险等级下如何选择和切换人机协作模式
+
+该文档负责回答：agent 自动推进时，人类如何持续掌舵而不是只能事后补救。
 
 ### 8. AI 智能体效率工程
 

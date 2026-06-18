@@ -89,7 +89,7 @@ rollback_or_compensation_plan
 - `model_routing_policy`：模型选择策略
 - `verification_plan`：如何验证完成
 - `stop_conditions`：何时停止、暂停或升级
-- `human_steering_mode`：无人值守、被动观察、主动审批、人工接管
+- `human_steering_mode`：`autonomous_loop`、`human_steerable_loop`、`human_in_the_loop`、`manual_takeover`
 - `human_intervention_points`：哪些节点需要人类介入
 - `checkpoint_policy`：何时创建 soft / hard checkpoint
 - `memory_policy`：哪些信息可以写入记忆
@@ -418,7 +418,7 @@ Goal 和 Loop 应重点控制：
 - 自动化动作审批
 - 证据链完整性
 - side-effect ledger
-- 无人值守、被动观察、主动审批、人工接管模式切换
+- `autonomous_loop`、`human_steerable_loop`、`human_in_the_loop`、`manual_takeover` 模式切换
 
 ## 与效率工程的关系
 
