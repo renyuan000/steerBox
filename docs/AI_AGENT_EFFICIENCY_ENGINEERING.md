@@ -290,6 +290,56 @@ Agent Efficiency = Verified Goal Achievement / Total Cost
 - 保留任务关键事实
 - 管理摘要与原始证据关系
 
+### 3.1 Context Packing Efficiency
+
+关注后端 LLM 实际接收到的上下文是否足够精确，而不是只看总 token 数是否低。
+
+建议指标：
+
+- `context_reuse_rate`
+- `irrelevant_context_ratio`
+- `summary_compression_ratio`
+- `retrieval_precision`
+- `retrieval_recall`
+- `context_budget_utilization`
+- `duplicate_context_ratio`
+- `low_confidence_escalation_rate`
+- `user_confirmation_rate`
+- `cleanup_suggestion_acceptance_rate`
+- `pruned_context_precision`
+- `archive_vs_drop_ratio`
+- `cleanup_candidate_review_latency`
+- `turn_level_restore_success_rate`
+- `restore_to_correct_step_rate`
+
+设计要求：
+
+- 上下文必须先过滤、再压缩、再装箱
+- 不相关内容不应因为“可检索”就直接进入 context
+- 跨会话记忆应按任务意图和预算选择最小必要子集
+- 高风险任务应提高 provenance 和 policy 过滤权重
+- 对低置信度但高价值内容，应允许 user confirmation 而不是盲目写入
+
+
+关注后端 LLM 实际接收到的上下文是否足够精确，而不是只看总 token 数是否低。
+
+建议指标：
+
+- `context_reuse_rate`
+- `irrelevant_context_ratio`
+- `summary_compression_ratio`
+- `retrieval_precision`
+- `retrieval_recall`
+- `context_budget_utilization`
+- `duplicate_context_ratio`
+
+设计要求：
+
+- 上下文必须先过滤、再压缩、再装箱
+- 不相关内容不应因为“可检索”就直接进入 context
+- 跨会话记忆应按任务意图和预算选择最小必要子集
+- 高风险任务应提高 provenance 和 policy 过滤权重
+
 ### 4. ModelBudget
 
 决定当前任务应使用哪个模型、是否需要多模型协作、何时降级或升级模型。

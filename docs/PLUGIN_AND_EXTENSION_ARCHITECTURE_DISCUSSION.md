@@ -404,6 +404,175 @@ minimal core + capability registry + policy gate + extension adapters + audit/tr
 - 人类操作必须进入 audit log
 - 低风险任务可运行在 `autonomous_loop` 或 `human_steerable_loop`，高风险任务应切换到 `human_in_the_loop` 或 `manual_takeover`
 
+## Tool Call, Function Call, and Tool Evolution
+
+### Tool Call 与 Function Call 的关系
+
+`tool call` 是 agent 调用外部能力的总称。
+
+包括：
+
+- shell command
+- file read/write
+- browser
+- MCP tool
+- HTTP API
+- database query
+- code index
+- evaluator
+
+`function call` 通常指模型按结构化 schema 调用一个函数或 API。
+
+可以理解为：
+
+```text
+function call 是 tool call 的一种结构化形式
+```
+
+### ToolProfile
+
+每个工具都应有 profile。
+
+建议字段：
+
+```text
+tool_id
+description
+input_schema
+output_schema
+side_effect_type
+required_permissions
+risk_level
+timeout
+retry_policy
+known_failure_patterns
+examples
+```
+
+### ToolUsePolicy
+
+用于决定某工具何时可调用。
+
+建议字段：
+
+```text
+allowed_contexts
+forbidden_contexts
+approval_required
+dry_run_supported
+read_only_mode
+max_retry_count
+checkpoint_required
+```
+
+### ToolCallRecord
+
+每次工具调用都应记录。
+
+建议字段：
+
+```text
+tool_call_id
+tool_id
+loop_run_id
+step_id
+input_summary
+output_summary
+exit_status
+side_effect_type
+policy_decision
+checkpoint_ref
+source_refs
+```
+
+### Baseline Tool Recipes
+
+基础、稳定、高频、跨项目通用的工具用法，不应等 agent 犯错后再学习。
+
+`steerBox` 应在开发阶段预置 `baseline tool recipes`。
+
+适合预置：
+
+- shell 安全引用
+- shell 特殊字符处理
+- `rg` / `grep` 搜索模式
+- `find` / `fd` 文件查找
+- `git status` / `git diff` / `git add` / `git commit`
+- JSON / YAML / TOML 校验
+- Python / Node / Go / Rust 常见测试命令
+- SQLite 只读查询
+- HTTP 只读请求
+- 文件读写安全规则
+- 临时文件写入和原子替换规则
+- destructive command 防护
+
+推荐目录草案：
+
+```text
+tools/
+  profiles/
+    shell.yaml
+    rg.yaml
+    git.yaml
+    curl.yaml
+    sqlite.yaml
+  recipes/
+    shell_quoting.yaml
+    rg_fixed_string_search.yaml
+    git_safe_commit.yaml
+    json_validation.yaml
+  policies/
+    destructive_commands.yaml
+    file_write_safety.yaml
+```
+
+每条 recipe 建议包含：
+
+```text
+recipe_id
+tool_id
+use_case
+safe_usage
+examples
+known_pitfalls
+preflight_checks
+postflight_checks
+risk_level
+scope
+last_verified_at
+version
+```
+
+设计原则：
+
+- 已知稳定的基础工具知识应预置
+- 项目特有工具知识进入 project recipe
+- 新失败模式进入 ToolRecipeCandidate
+- 高风险规则进入审批流程
+- 工具版本升级后需要重新验证 baseline recipe
+
+### Tool Evolution
+
+工具用错后，不应只修当前轮。
+
+推荐流程：
+
+```text
+tool_call_failed
+  -> classify failure
+  -> create ToolRecipeCandidate
+  -> validate
+  -> accept / reject
+  -> update tool memory or registry
+```
+
+设计规则：
+
+- 高频通用低风险用法可晋升到 global recipe
+- 项目专用用法只能进入 project recipe
+- 高风险工具策略变更必须人工审批
+- MCP tool 不应被视为天然可信
+
 ## 插件注册元数据草案
 
 每个插件至少应声明：

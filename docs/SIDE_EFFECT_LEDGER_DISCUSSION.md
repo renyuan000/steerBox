@@ -30,6 +30,96 @@ agent restore 最大风险之一，不是本地状态恢复失败，而是外部
 - 高风险副作用应绑定 checkpoint 和 approval
 - side-effect ledger 是 audit 和 recovery 的共同基础
 
+## Tool Call Side Effect Classes
+
+工具调用不都需要同样的回滚语义。
+
+建议先按副作用类型分级：
+
+```text
+read_only
+reversible_local_change
+partially_reversible_local_change
+compensatable_external_action
+irreversible_external_action
+human_required_action
+```
+
+### read_only
+
+只读查询。
+
+示例：
+
+- 请求网页
+- 读取文件
+- 查询日志
+- 调 MCP 做只读查询
+- 检索代码索引
+
+通常不需要回滚，但仍应记录 trace。
+
+### reversible_local_change
+
+本地可逆修改。
+
+示例：
+
+- 修改文件且有 diff / checkpoint
+- 生成临时文件
+- 本地事务型数据库写入
+
+应使用 checkpoint、patch journal 或事务回滚。
+
+### partially_reversible_local_change
+
+本地部分可逆修改。
+
+示例：
+
+- shell 脚本批量修改多个文件
+- `sed` / `awk` 替换后又继续执行其他动作
+
+需要更强的 pre-checkpoint 和 postflight diff 审查。
+
+### compensatable_external_action
+
+外部可补偿动作。
+
+示例：
+
+- 创建 issue 后可关闭
+- 创建 PR 后可关闭
+- 发送配置变更请求后可撤销
+
+不能简单 restore，只能执行补偿动作。
+
+### irreversible_external_action
+
+外部不可逆动作。
+
+示例：
+
+- 删除外部数据
+- 发送不可撤销消息
+- 触发生产响应动作
+- 执行不可逆安全处置
+
+必须默认要求审批、ledger、人工可接管。
+
+### human_required_action
+
+自动化不应独立完成的动作。
+
+示例：
+
+- 高风险安全响应
+- 权限提升
+- 修改全局策略
+- 影响第三方系统的动作
+
+应切换到 `human_in_the_loop` 或 `manual_takeover`。
+
 ## SideEffectEvent 字段草案
 
 ```text

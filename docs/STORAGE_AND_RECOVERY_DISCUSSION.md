@@ -159,6 +159,38 @@
 - 便于 grep / tail / 手工排查
 - 避免让高频 trace 污染核心状态库
 
+### 4. 每轮记录与回滚边界
+
+当前更稳的做法不是只记录“消息文本”，而是把每一轮 turn 记录成结构化对象。
+
+建议字段：
+
+```text
+conversation_id
+session_id
+loop_run_id
+step_id
+message_id
+input_summary
+output_summary
+tool_call_refs
+diff_refs
+check_refs
+checkpoint_ref
+side_effect_ref
+confidence
+source_refs
+```
+
+设计要求：
+
+- 每轮必须可单独索引
+- 每轮必须可审计
+- 每轮必须能关联问答、工具调用和执行结果
+- 回滚时必须先定位到该轮对应的 checkpoint 或 state boundary
+- 回滚不是删消息，而是恢复状态并按需要 fork / replay
+- 若有外部副作用，必须结合 side-effect ledger 决定是否可重放
+
 ## 为什么推荐这个结构
 
 ### 1. 比“单一大库”更稳

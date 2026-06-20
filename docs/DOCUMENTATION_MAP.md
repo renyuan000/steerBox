@@ -13,23 +13,30 @@
 1. `README.md`
 2. `docs/ARCHITECTURE_DIRECTION.md`
 3. `docs/TRACKS_AND_CAPABILITIES.md`
-4. `docs/HARNESS_PRINCIPLES.md`
-5. `docs/STORAGE_AND_RECOVERY_DISCUSSION.md`
-6. `docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md`
-7. `docs/GOAL_ALIGNMENT_CHECKS.md`
-8. `docs/HUMAN_STEERING_MODES.md`
-9. `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`
-10. `docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md`
-11. `docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`
-12. `docs/PROMPT_CHECKPOINT_TEMPLATES.md`
-13. `docs/CHECKPOINT_POLICY_ALGORITHM.md`
-14. `docs/SIDE_EFFECT_LEDGER_DISCUSSION.md`
-15. `docs/DRIFT_GUARD_DISCUSSION.md`
-16. `docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md`
-17. `docs/AGENT_EVOLUTION_READING_LIST.md`
-18. `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`
-19. `docs/ARCHITECTURE_QUESTIONS.md`
-20. `docs/HARNESS_SOURCES.md`
+4. `docs/PHASE_1_IMPLEMENTATION_SCOPE.md`
+5. `docs/PHASE_1_DESIGN.md`
+6. `docs/PHASE_1_TODO.md`
+7. `docs/PHASE_1_VALIDATION_PLAN.md`
+8. `docs/HARNESS_PRINCIPLES.md`
+9. `docs/STORAGE_AND_RECOVERY_DISCUSSION.md`
+10. `docs/MEMORY_STORAGE_AND_CONSOLIDATION.md`
+11. `docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md`
+12. `docs/AGENT_ORCHESTRATION_PATTERNS.md`
+13. `docs/GOAL_ALIGNMENT_CHECKS.md`
+14. `docs/LOOP_TRAJECTORY_CHECKS.md`
+15. `docs/HUMAN_STEERING_MODES.md`
+16. `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`
+17. `docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md`
+18. `docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`
+19. `docs/PROMPT_CHECKPOINT_TEMPLATES.md`
+20. `docs/CHECKPOINT_POLICY_ALGORITHM.md`
+21. `docs/SIDE_EFFECT_LEDGER_DISCUSSION.md`
+22. `docs/DRIFT_GUARD_DISCUSSION.md`
+23. `docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md`
+24. `docs/AGENT_EVOLUTION_READING_LIST.md`
+25. `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`
+26. `docs/ARCHITECTURE_QUESTIONS.md`
+27. `docs/HARNESS_SOURCES.md`
 
 ## 文档分层
 
@@ -71,6 +78,34 @@ README 不应该承载完整架构细节。
 - 避免把 goal、loop、memory、efficiency、tool/skill/MCP、auto-evolution 误写成第三条业务主线
 - 给未来目录和模块边界提供依据
 
+### 3.1 第一阶段实现范围
+
+- `docs/PHASE_1_IMPLEMENTATION_SCOPE.md`
+
+职责：
+
+- 把长期讨论稿收敛成第一阶段可执行边界
+- 明确第一阶段必须实现、暂不实现、只做占位的能力
+- 定义第一阶段成功标准
+- 防止开工时被未来能力拖成过度复杂方案
+
+该文档负责回答：现在可以开始实现什么，以及哪些未来设计不能进入第一阶段交付标准。
+
+### 3.2 第一阶段开发执行文档
+
+- `docs/PHASE_1_DESIGN.md`
+- `docs/PHASE_1_TODO.md`
+- `docs/PHASE_1_VALIDATION_PLAN.md`
+
+职责：
+
+- 将第一阶段讨论稿转换成可开发设计
+- 给出模块边界、核心 schema、存储布局、运行流程和非目标
+- 拆分可执行 TODO 与验收条件
+- 定义端到端验证用例和通过标准
+
+该组文档负责回答：具体怎么开始开发、按什么顺序开发、如何证明第一阶段真的可用。
+
 ### 4. 外部参考原则
 
 - `docs/HARNESS_PRINCIPLES.md`
@@ -100,6 +135,19 @@ README 不应该承载完整架构细节。
 
 该文档负责高可靠长期运行底座。
 
+### 5.1 多层记忆、存储与后台整理
+
+- `docs/MEMORY_STORAGE_AND_CONSOLIDATION.md`
+
+职责：
+
+- 定义 event log、current state、checkpoint、working memory、episodic memory、semantic memory、procedural memory、code index、graph index 和 cold archive 的边界
+- 说明同步热路径写入与异步后台 consolidation 的分工
+- 说明向量存储适合语义检索，但不能替代事实源、审计、权限、checkpoint 或确定性关系查询
+- 给出从本地可靠存储到 vector / graph / dream learning / enterprise memory 的递进实现路线
+
+该文档负责回答：agent 如何长期记得准、查得全、越用越稳，同时避免记忆污染和不可审计。
+
 ### 6. Goal 与 Loop Engineering
 
 - `docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md`
@@ -113,6 +161,19 @@ README 不应该承载完整架构细节。
 
 该文档负责回答：agent 如何围绕明确目标高效闭环推进。
 
+### 6.1 Agent 编排模式
+
+- `docs/AGENT_ORCHESTRATION_PATTERNS.md`
+
+职责：
+
+- 整理 single agent、ReAct、plan-execute、reflection、tree/graph of thoughts、router、supervisor、多智能体、事件触发 loop 等主流模式
+- 说明这些模式是 `LoopController` 之上的可插拔策略，不替代 harness core
+- 定义 `LoopPattern`、`OrchestrationPolicy`、`AgentRole`、`HandoffContract` 等抽象
+- 明确第一阶段只实现简单模式，复杂多 agent / supervisor / tree search 先占位
+
+该文档负责回答：未来先进 Agent 编排能力如何进入 steerBox，而不把第一阶段做复杂。
+
 ### 7. 目标对齐检查点
 
 - `docs/GOAL_ALIGNMENT_CHECKS.md`
@@ -125,7 +186,20 @@ README 不应该承载完整架构细节。
 
 该文档负责回答：agent 如何在长程任务中持续确认自己没有偏离最初目标。
 
-### 7.1 人类驾驭与介入模式
+### 7.1 Loop 轨迹审查
+
+- `docs/LOOP_TRAJECTORY_CHECKS.md`
+
+职责：
+
+- 定义 `LoopTrajectoryCheck`，用于审查 step 1 到 step N 的执行路径是否合理
+- 区分 `LoopTrajectoryCheck`、`GoalAlignmentCheckpoint`、`DriftGuard` 和 `RecoveryCheckpoint`
+- 检查累积目标漂移、scope creep、check gaming、错误假设延续、重复失败和副作用链不清
+- 说明 exit condition 通过并不等于执行轨迹合理
+
+该文档负责回答：agent 每一步看似合理时，整体路径是否已经逐渐跑偏。
+
+### 7.2 人类驾驭与介入模式
 
 - `docs/HUMAN_STEERING_MODES.md`
 
