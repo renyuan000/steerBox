@@ -466,13 +466,15 @@ HandoffContract:
 - supervisor-workers
 - hierarchical teams
 - event-triggered long-running loops
-- autonomous routing across many models
+- historical-performance-driven adaptive routing across many models
 
 原因：
 
 - 第一阶段目标是验证 harness core，不是验证所有 agent 编排花样
 - 多 agent 和 tree search 会显著增加 token、状态、trace 和恢复复杂度
 - 没有稳定 event log / checkpoint / policy gate 时，复杂编排会放大风险
+
+多项目、多任务、并行 worker、BoardProjection 和 ControlPlane 的一等对象见 `CONTROL_PLANE_DISCUSSION.md`。本文件只负责编排模式；Scheduler、TaskRun 生命周期、看板投影和控制面命令不在这里重复定义。
 
 ## 对 steerBox 的最终判断
 

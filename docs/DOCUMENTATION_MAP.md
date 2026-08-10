@@ -22,21 +22,22 @@
 10. `docs/MEMORY_STORAGE_AND_CONSOLIDATION.md`
 11. `docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md`
 12. `docs/AGENT_ORCHESTRATION_PATTERNS.md`
-13. `docs/GOAL_ALIGNMENT_CHECKS.md`
-14. `docs/LOOP_TRAJECTORY_CHECKS.md`
-15. `docs/HUMAN_STEERING_MODES.md`
-16. `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`
-17. `docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md`
-18. `docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`
-19. `docs/PROMPT_CHECKPOINT_TEMPLATES.md`
-20. `docs/CHECKPOINT_POLICY_ALGORITHM.md`
-21. `docs/SIDE_EFFECT_LEDGER_DISCUSSION.md`
-22. `docs/DRIFT_GUARD_DISCUSSION.md`
-23. `docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md`
-24. `docs/AGENT_EVOLUTION_READING_LIST.md`
-25. `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`
-26. `docs/ARCHITECTURE_QUESTIONS.md`
-27. `docs/HARNESS_SOURCES.md`
+13. `docs/CONTROL_PLANE_DISCUSSION.md`
+14. `docs/GOAL_ALIGNMENT_CHECKS.md`
+15. `docs/LOOP_TRAJECTORY_CHECKS.md`
+16. `docs/HUMAN_STEERING_MODES.md`
+17. `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`
+18. `docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md`
+19. `docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`
+20. `docs/PROMPT_CHECKPOINT_TEMPLATES.md`
+21. `docs/CHECKPOINT_POLICY_ALGORITHM.md`
+22. `docs/SIDE_EFFECT_LEDGER_DISCUSSION.md`
+23. `docs/DRIFT_GUARD_DISCUSSION.md`
+24. `docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md`
+25. `docs/AGENT_EVOLUTION_READING_LIST.md`
+26. `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`
+27. `docs/ARCHITECTURE_QUESTIONS.md`
+28. `docs/HARNESS_SOURCES.md`
 
 ## 文档分层
 
@@ -174,6 +175,23 @@ README 不应该承载完整架构细节。
 
 该文档负责回答：未来先进 Agent 编排能力如何进入 steerBox，而不把第一阶段做复杂。
 
+### 6.2 Portfolio、任务编排与控制面
+
+- `docs/CONTROL_PLANE_DISCUSSION.md`
+
+职责：
+
+- 定义 Portfolio、Project、Goal、Task、TaskRun / Attempt、TaskDependency、CrossProjectLink、Artifact、Evidence
+- 区分 Supervisor、Scheduler、Orchestrator、Worker 和 Control Plane 的职责
+- 定义 backlog / ready / queued / running / waiting / verifying / succeeded 等领域状态
+- 将领域状态投影为 TODO / DOING / DONE / ATTENTION 看板列
+- 规定并行执行的 workspace lease、ownership、conflict / join、retry、cancel 和 backpressure
+- 规定 CLI / TUI / JSON / Web adapter 共享 BoardProjection，控制面写命令必须审计
+- 规定跨项目进化通过 SystemEvolutionTask、evidence、regression、rollback 和 approval 提升
+- 将 RouteDecision、ResolvedPromptPack、ModelCallRecord 关联到每个 TaskRun
+
+该文档负责回答：命令行 agent 如何组织多个项目、多个任务和并行进度，并让看板、验证、问题和进化状态可审计、可恢复、可协同。
+
 ### 7. 目标对齐检查点
 
 - `docs/GOAL_ALIGNMENT_CHECKS.md`
@@ -244,9 +262,22 @@ README 不应该承载完整架构细节。
 
 - 定义多模型 `ModelProfile`、`PromptProfile`、`TaskPromptPack`
 - 说明系统提示符多态化如何服务不同强弱模型
+- 定义 `ProviderProfile`、`EndpointProfile`、`AgentRolePrompt`、`ResolvedPromptPack`
+- 定义 `RoutePolicy`、`RouteDecision`、`ModelCallRecord`、`ModelEvaluation`
+- 规定成本 / 延迟 / 质量 / 风险 / 隐私约束下的规则式路由
+- 区分模型切换、能力兼容 fallback 和多模型协作
+- 规定 prompt 版本、路由理由、调用结果和验证状态必须进入 trace
+- 规定 `auth_ref` 只能引用外部 secret，secret 不进入 registry、prompt、trace 或 event log
 - 说明固定检查点、事件触发检查点、风险触发检查点和防跑偏机制
 
-该文档负责回答：不同模型如何用不同提示高遵循执行，以及全自主 loop 如何避免跑偏和破坏性改写。
+该文档负责回答：不同模型如何用不同提示高遵循执行，如何按任务与预算选模型，如何协作或安全切换，以及全自主 loop 如何避免跑偏和破坏性改写。
+
+关联文档：
+
+- `docs/AGENT_ORCHESTRATION_PATTERNS.md`：路由、supervisor/orchestrator、handoff 与多 agent 编排模式
+- `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`：ModelBudget、成本 / 延迟 / 质量指标
+- `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`：模型画像、PromptProfile、评估和受治理进化
+- `docs/PHASE_1_IMPLEMENTATION_SCOPE.md`：第一阶段真实最小接入与后续动态能力边界
 
 ### 11. Prompt / Checkpoint / DriftGuard 模板
 
@@ -255,6 +286,7 @@ README 不应该承载完整架构细节。
 职责：
 
 - 提供 `ModelProfile`、`PromptProfile`、`TaskPromptPack`、`CheckpointPolicy`、`DriftGuard` 模板
+- 提供 Provider / Endpoint / AgentRole / ResolvedPrompt / Route / ModelCall 模板
 - 提供固定检查项、事件触发检查项和 prompt 组合记录模板
 - 为第一阶段 schema 和静态 registry 实现提供输入
 
@@ -360,6 +392,5 @@ README 不应该承载完整架构细节。
 - `docs/MEMORY_AND_DREAM_LEARNING_DISCUSSION.md`
 - `docs/CODE_LOGIC_INDEX_DISCUSSION.md`
 - `docs/SECURITY_MODEL_DISCUSSION.md`
-- `docs/CONTROL_PLANE_DISCUSSION.md`
 
 这些缺口不影响当前文档体系成立，但进入实现前需要逐步补齐。
