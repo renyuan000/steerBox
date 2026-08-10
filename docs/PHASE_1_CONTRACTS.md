@@ -115,9 +115,12 @@ goal_created
 portfolio_created
 project_registered
 task_created
+task_dependency_added
+task_state_changed
 task_ready
 task_queued
 task_run_started
+task_run_heartbeat
 attempt_started
 loop_started
 step_started
