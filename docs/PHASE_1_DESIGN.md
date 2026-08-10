@@ -20,7 +20,7 @@ shared harness core + software development agent vertical slice
 - 本地文件修改有 checkpoint / diff boundary
 - 工具调用有 side-effect 分类
 - 高风险动作能升级到人类介入
-- 为安全智能体、多模型、插件、记忆进化保留接口，但不实现完整系统
+- 为安全智能体、插件、记忆进化保留接口；多模型实现静态 registry、规则式路由和一个真实 adapter，不实现完整自适应系统
 
 ## 非目标
 
@@ -35,6 +35,7 @@ shared harness core + software development agent vertical slice
 - 完整 UI control plane
 - 企业级多租户
 - OS 级 sandbox checkpoint
+- 历史表现驱动的自适应多模型路由和无人审批的高风险 fallback
 
 ## 推荐语言边界
 
@@ -171,6 +172,10 @@ goal_created
 loop_started
 step_started
 context_loaded
+model_route_decided
+prompt_pack_resolved
+model_call_started
+model_call_completed
 plan_created
 tool_call_requested
 tool_call_completed
@@ -276,6 +281,24 @@ Trace 不是 source of truth；source of truth 是 event log 和 state store。
 - test command record
 - file write verification
 
+### 14. Model Gateway、Registry 与 Router
+
+职责：
+
+- 以 `ProviderProfile -> EndpointProfile -> ModelProfile` 分层描述模型接入
+- 通过静态 `ModelRegistry` 和 `PromptRegistry` 加载多个模型与提示 profile
+- 按 task type、agent role、能力、风险、成本和延迟约束执行规则式路由
+- 按 provider、model、role、task 解析 `ResolvedPromptPack`
+- 对 fallback 做能力兼容检查，禁止静默切换
+- 记录 `RouteDecision`、`ModelCallRecord` 和 prompt 版本
+
+第一阶段实现边界：
+
+- 至少一个真实 model adapter
+- 允许配置 cheap/fast、strong/slow、specialized、evaluator、local 等 profile；未接 live endpoint 的 profile 使用静态 fixture 验证
+- 不自动学习路由权重，不自动提升 prompt，不执行无人审批的高风险多模型协作
+- registry、prompt、trace、event log 和 checkpoint 只保存 `auth_ref`，不保存 API key 或 token
+
 ## 存储布局
 
 第一阶段推荐运行数据目录：
@@ -292,6 +315,9 @@ Trace 不是 source of truth；source of truth 是 event log 和 state store。
       diff.patch
   recipes/
     baseline-tools.jsonl
+  registries/
+    models.yaml
+    prompts.yaml
   runs/
     <loop_run_id>/
       summary.json
@@ -315,6 +341,9 @@ GoalContract
       -> VerificationResult
       -> TraceRecord
       -> CheckpointRef
+      -> RouteDecision
+        -> ResolvedPromptPack
+        -> ModelCallRecord
 ```
 
 ## 第一阶段端到端流程
@@ -323,6 +352,9 @@ GoalContract
 create goal
   -> start loop run
   -> load context
+  -> select provider / endpoint / model
+  -> resolve model / role / task prompt
+  -> record route decision
   -> plan next step
   -> policy check
   -> run tool or edit file
@@ -351,4 +383,6 @@ create goal
 - 工具受控：每个 tool call 都要有 policy 和 side-effect 语义
 - 恢复有边界：只承诺能恢复明确记录的范围
 - 人类可掌舵：自动执行不是无人负责
+- 模型可替换但不可静默：模型、endpoint、路由理由和 prompt 版本必须进入 trace
+- secret 外置：模型注册表和运行记录只保存 auth_ref，不保存认证明文
 - 复杂能力占位：未来能力留接口，不进入第一阶段交付压力

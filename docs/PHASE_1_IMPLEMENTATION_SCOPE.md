@@ -10,7 +10,7 @@
 
 第一阶段不应该做成只能演示的 demo。
 
-但第一阶段也不应该一次性实现完整的多模型路由、插件市场、向量记忆、图记忆、dream learning、自动进化、完整安全运营和通用 Manus-like agent。
+但第一阶段也不应该一次性实现完整的自适应多模型路由、插件市场、向量记忆、图记忆、dream learning、自动进化、完整安全运营和通用 Manus-like agent。
 
 更合理的目标是：
 
@@ -179,11 +179,23 @@ manual intervention -> manual_takeover
 - 测试命令记录
 - Markdown 链接检查
 
+### 10. 多模型接入最小垂直切片
+
+第一阶段不能把多模型只写成未来愿景，至少要实现可验证的静态接入边界：
+
+- ProviderProfile、EndpointProfile、ModelProfile、PromptProfile、AgentRolePrompt、TaskPromptPack、ResolvedPromptPack schema
+- 静态 ModelRegistry 和 PromptRegistry，允许配置 cheap/fast、strong/slow、specialized、evaluator 或 local profile
+- 至少一个真实 model adapter；其他模型可以是未连接 live endpoint 的可验证 fixture
+- 基于任务类型、能力、风险、成本和延迟约束的规则式 RoutePolicy
+- 每次路由和调用写入 RouteDecision、ModelCallRecord、ResolvedPromptPack 版本和验证状态
+- fallback 必须能力兼容、显式记录并重新验证；高风险写操作不能静默降级
+- registry、prompt、trace、event log 和 checkpoint 只保存 auth_ref，不保存 API key 或 token
+
 ## 第一阶段只做占位
 
 以下能力第一阶段必须在 schema 或接口上留位置，但不要求完整实现：
 
-- 多模型自动路由
+- 历史表现驱动的自适应多模型路由
 - 动态插件安装
 - MCP 自动发现与治理
 - 向量记忆库
@@ -257,7 +269,7 @@ recipes/           -> baseline tool recipes
 8. 能用事件日志复盘一次完整任务
 9. 能说明哪些能力只是占位，哪些已经实现
 
-如果这些成立，即使没有复杂 UI、向量记忆、多模型路由和安全智能体完整闭环，第一阶段也是成功的。
+如果这些成立，即使没有复杂 UI、向量记忆、自适应多模型路由和安全智能体完整闭环，第一阶段也是成功的。
 
 ## 第一阶段建议实现顺序
 

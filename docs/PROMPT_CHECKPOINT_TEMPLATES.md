@@ -12,19 +12,68 @@
 
 核心对象：
 
+- `ProviderProfile`
+- `EndpointProfile`
 - `ModelProfile`
 - `PromptProfile`
+- `AgentRolePrompt`
 - `TaskPromptPack`
+- `ResolvedPromptPack`
+- `RoutePolicy`
+- `RouteDecision`
+- `ModelCallRecord`
+- `ModelEvaluation`
 - `CheckpointPolicy`
 - `DriftGuard`
 
-## 一、ModelProfile 模板
+## 一、Provider、Endpoint 与 Model 模板
+
+### ProviderProfile
+
+~~~yaml
+provider_id: ""
+provider_name: ""
+protocol_type: "openai_compatible | anthropic | local | internal | other"
+region: ""
+privacy_policy: "public | internal | confidential | restricted"
+supported_features:
+  - "streaming"
+  - "tools"
+  - "structured_output"
+rate_limit: null
+availability_policy: ""
+status: "active | degraded | disabled"
+auth_ref: "external-secret-reference-only"
+~~~
+
+auth_ref 只允许保存外部 secret 引用；禁止在本模板、registry、trace、event log 或 checkpoint 中保存 API key、token 或认证响应。
+
+### EndpointProfile
+
+~~~yaml
+endpoint_id: ""
+provider_id: ""
+model_id: ""
+deployment_name: ""
+region: ""
+context_window: 0
+cost_profile: {}
+latency_profile: {}
+availability_policy: ""
+capabilities_override: {}
+privacy_class: "public | internal | confidential | restricted"
+status: "active | degraded | disabled"
+~~~
+
+### ModelProfile
 
 ```yaml
-model_id: "provider/model-name"
-provider: "openai | anthropic | local | internal | other"
+model_id: "model-family/model-name"
 model_family: "coding | reasoning | fast | local | evaluator | security"
 version: ""
+status: "draft | active | deprecated"
+provider_ids: []
+endpoint_ids: []
 
 capabilities:
   context_window: 0
@@ -33,6 +82,10 @@ capabilities:
   supports_streaming: false
   supports_vision: false
   supports_long_context: false
+  supports_reasoning: false
+  supports_background_run: false
+  supports_mcp: false
+  supports_batch: false
 
 cost_profile:
   input_token_cost: null
@@ -55,6 +108,20 @@ quality_profile:
   long_context_reliability: null
   hallucination_risk: null
 
+dynamic_performance:
+  historical_success_rate: null
+  tool_call_success_rate: null
+  verification_pass_rate: null
+  average_latency_ms: null
+  p95_latency_ms: null
+  average_cost: null
+  fallback_success_rate: null
+  sample_count: 0
+  measurement_window: ""
+  source_trace_ids: []
+  confidence: "low | medium | high"
+  last_verified_at: ""
+
 preferred_roles:
   - "planner"
   - "executor"
@@ -72,7 +139,8 @@ risk_limits:
 
 prompt_binding:
   preferred_prompt_profile: ""
-  fallback_prompt_profile: ""
+  compatible_prompt_profiles: []
+  forbidden_prompt_profiles: []
 
 fallback:
   fallback_models:
@@ -98,9 +166,11 @@ verification:
 
 ```yaml
 prompt_profile_id: ""
-model_id: ""
 version: ""
 status: "draft | active | deprecated"
+compatible_provider_types: []
+compatible_model_families: []
+required_capabilities: []
 
 intended_roles:
   - "planner"
@@ -165,13 +235,34 @@ verification:
   last_verified_at: ""
 ```
 
-## 三、TaskPromptPack 模板
+## 三、AgentRolePrompt 模板
+
+~~~yaml
+role_prompt_id: ""
+role: "planner | implementer | reviewer | tester | evaluator | summarizer | researcher | security_analyzer | coordinator | human_interaction"
+version: ""
+status: "draft | active | deprecated"
+system_prompt_fragments:
+  - id: "role_specific_rules"
+    required: true
+tool_policy: {}
+output_contract: {}
+checkpoint_policy: {}
+evaluator_policy: {}
+compatible_model_families: []
+~~~
+
+## 四、TaskPromptPack 模板
 
 ```yaml
 task_prompt_pack_id: ""
 task_type: "software_dev | security_ops | security_review | vuln_research | documentation | refactor | testing"
 version: ""
 status: "draft | active | deprecated"
+
+provider_adapter_prompt: ""
+model_prompt_profile: ""
+role_prompt_id: ""
 
 system_prompt_fragments:
   - id: "base_harness_rules"
@@ -242,7 +333,108 @@ failure_response_template: |
   Lesson candidate: {{ lesson_candidate }}
 ```
 
-## 四、CheckpointPolicy 模板
+## 五、ResolvedPromptPack 模板
+
+~~~yaml
+prompt_pack_id: ""
+base_prompt_version: ""
+provider_prompt_version: ""
+model_prompt_version: ""
+role_prompt_version: ""
+task_prompt_version: ""
+policy_summary_hash: ""
+tool_summary_hash: ""
+context_package_hash: ""
+resolution_reason: ""
+created_at: ""
+~~~
+
+## 六、RoutePolicy、RouteDecision 与 ModelCallRecord 模板
+
+~~~yaml
+route_policy_id: ""
+version: ""
+candidate_constraints: {}
+selection_weights:
+  quality: 0
+  cost: 0
+  latency: 0
+  reliability: 0
+cost_budget: null
+latency_target_ms: null
+quality_requirement: "low | medium | high | critical"
+privacy_requirement: "public | internal | confidential | restricted"
+risk_rules: {}
+fallback_rules: {}
+collaboration_rules: {}
+approval_rules: {}
+status: "draft | active | deprecated"
+~~~
+
+~~~yaml
+route_decision_id: ""
+task_id: ""
+task_type: ""
+agent_role: ""
+candidate_models: []
+selected_provider: ""
+selected_model: ""
+selected_endpoint: ""
+selection_reason: ""
+rejected_candidates: []
+cost_estimate: null
+latency_estimate_ms: null
+quality_requirement: ""
+risk_level: ""
+privacy_requirement: ""
+context_requirement: {}
+tool_requirement: {}
+fallback_chain: []
+approval_required: false
+prompt_profile_id: ""
+prompt_profile_version: ""
+created_at: ""
+~~~
+
+~~~yaml
+model_call_id: ""
+task_run_id: ""
+provider_id: ""
+endpoint_id: ""
+model_id: ""
+route_decision_id: ""
+resolved_prompt_pack_id: ""
+input_context_hash: ""
+output_artifact_ref: ""
+latency_ms: null
+input_tokens: null
+output_tokens: null
+estimated_cost: null
+finish_reason: ""
+tool_call_count: 0
+verification_status: "not_run | passed | failed | blocked"
+error_class: ""
+created_at: ""
+~~~
+
+### ModelEvaluation
+
+~~~yaml
+evaluation_id: ""
+model_id: ""
+prompt_profile_id: ""
+task_type: ""
+sample_count: 0
+measurement_window: ""
+source_trace_ids: []
+metrics: {}
+confidence: "low | medium | high"
+regression_status: "not_run | passed | failed | blocked"
+promotion_status: "not_eligible | proposed | approved | rejected"
+created_at: ""
+~~~
+
+## 七、CheckpointPolicy 模板
 
 ```yaml
 checkpoint_policy_id: ""
@@ -311,7 +503,7 @@ retention_policy:
   compact_old_soft_checkpoints: true
 ```
 
-## 五、DriftGuard 模板
+## 八、DriftGuard 模板
 
 ```yaml
 drift_guard_id: ""
@@ -375,7 +567,7 @@ response_when_triggered:
   block_high_risk_action: true
 ```
 
-## 六、固定检查项清单
+## 九、固定检查项清单
 
 每轮 loop 都应检查：
 
@@ -390,7 +582,7 @@ response_when_triggered:
 - 是否有足够验证证据
 - 是否需要人工介入
 
-## 七、事件触发检查项清单
+## 十、事件触发检查项清单
 
 发生以下事件时触发额外检查：
 
@@ -409,7 +601,7 @@ response_when_triggered:
 - loop 多轮无验证
 - agent 尝试扩大任务目标
 
-## 八、Prompt 组合记录模板
+## 十一、Prompt 组合记录模板
 
 每次执行应记录 prompt 组合：
 
@@ -417,9 +609,14 @@ response_when_triggered:
 prompt_assembly_id: ""
 goal_id: ""
 loop_id: ""
+provider_id: ""
+endpoint_id: ""
 model_id: ""
+agent_role: ""
+route_decision_id: ""
 prompt_profile_id: ""
 task_prompt_pack_id: ""
+resolved_prompt_pack_id: ""
 fragments:
   - id: ""
     version: ""
@@ -439,16 +636,20 @@ effectiveness_metrics:
   scope_violation: null
 ```
 
-## 九、第一阶段建议
+## 十二、第一阶段建议
 
-第一阶段建议先落地为文档和静态 manifest，不急着实现动态 prompt 编译器。
+第一阶段建议先落地 schema、静态 manifest、规则式 prompt resolution / routing 和一个真实 model adapter，不急着实现自适应路由或动态 prompt 进化。
 
 建议最小文件：
 
 ```text
+configs/providers/*.yaml
+configs/endpoints/*.yaml
 configs/models/*.yaml
 configs/prompts/profiles/*.yaml
+configs/prompts/roles/*.yaml
 configs/prompts/task_packs/*.yaml
+configs/routing/*.yaml
 configs/policies/checkpoint/*.yaml
 configs/policies/drift_guard/*.yaml
 ```
@@ -456,6 +657,10 @@ configs/policies/drift_guard/*.yaml
 第一阶段最小验证：
 
 - 能为一个软件开发任务选出 model + prompt profile + task prompt pack
+- 能生成 RouteDecision、ResolvedPromptPack 和 ModelCallRecord
+- 能让低风险只读任务与高风险复杂任务走不同的规则式路由
+- 能在 fallback 时创建新 attempt、重新解析 prompt 并重新验证
+- registry、prompt、trace、event log 和 checkpoint 中只有 auth_ref，没有认证明文
 - 能在写文件前触发 checkpoint decision
 - 能在大 diff 或越 scope 时触发 drift guard
 - 能记录 prompt assembly trace

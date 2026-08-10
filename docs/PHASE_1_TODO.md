@@ -54,6 +54,9 @@
 - [ ] 定义 `CheckpointMetadata`
 - [ ] 定义 `VerificationResult`
 - [ ] 定义 `TraceRecord`
+- [ ] 定义 `ProviderProfile`、`EndpointProfile`、`ModelProfile`
+- [ ] 定义 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`
+- [ ] 定义 `RouteDecision` 和 `ModelCallRecord`
 
 验收：
 
@@ -188,7 +191,27 @@
 - tool call 记录能引用 recipe id
 - 失败工具调用能生成 recipe candidate
 
-### P12. Dev Agent Vertical Slice
+### P12. Model Registry、Prompt Resolution 与规则路由
+
+- [ ] 实现静态 `ModelRegistry` 和 `PromptRegistry`
+- [ ] 接入至少一个真实 model adapter
+- [ ] 配置 cheap/fast、strong/slow、specialized、evaluator 或 local profile fixture
+- [ ] 按 task type、agent role、能力、风险、成本和延迟执行规则式路由
+- [ ] 生成并持久化 `RouteDecision`
+- [ ] 按 provider、model、role、task 解析 `ResolvedPromptPack`
+- [ ] 记录 `ModelCallRecord`、prompt 版本和验证状态
+- [ ] 实现能力兼容、非静默的 fallback 事件
+- [ ] 验证 registry、prompt、trace、event log 和 checkpoint 不保存认证明文
+
+验收：
+
+- 低风险只读任务可路由到 cheap/fast profile
+- 高风险或高质量任务不会只按最低成本选择模型
+- 切换模型会创建新的 attempt / route decision，而不是静默覆盖
+- 每次调用能反查 provider、endpoint、model、prompt 版本、路由理由和验证结果
+- 仅保存 `auth_ref`；测试 fixture 不包含真实 API key 或 token
+
+### P13. Dev Agent Vertical Slice
 
 - [ ] 定义一个小型真实开发任务
 - [ ] 创建 goal
@@ -206,7 +229,7 @@
 - checkpoint metadata 存在
 - 验证结果明确
 
-### P13. Documentation Update
+### P14. Documentation Update
 
 - [ ] 更新 README 或开发说明中的运行命令
 - [ ] 更新第一阶段完成状态
@@ -222,7 +245,7 @@
 
 以下不要在第一阶段拆任务：
 
-- 完整多模型路由
+- 历史表现驱动的自适应多模型路由
 - 多智能体 supervisor-workers
 - 向量记忆检索
 - 图记忆推理
@@ -244,3 +267,4 @@
 - policy decision 可查
 - goal alignment 或 drift guard 至少触发一次有效检查
 - 验证命令有明确结果
+- 至少一次模型路由、prompt 解析和调用记录能通过 event / trace 复盘

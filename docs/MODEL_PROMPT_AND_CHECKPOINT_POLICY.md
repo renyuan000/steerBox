@@ -1,28 +1,124 @@
-# Model Prompt and Checkpoint Policy Discussion Draft
+# Model, Prompt, Routing, and Checkpoint Policy Discussion Draft
 
 ## 文档目的
 
-本文件用于沉淀 `steerBox` 关于多模型提示符多态化、模型专用系统提示、全自主 loop 检查点策略、防跑偏和防破坏性改写的设计方向。
+本文件用于沉淀 `steerBox` 关于多模型接入、模型专用系统提示、模型路由与协作、全自主 loop 检查点策略、防跑偏和防破坏性改写的设计方向。
 
-本文件是讨论稿，不是最终实现规格，也不代表当前仓库已经具备对应能力。
+本文件是讨论稿，不是最终实现规格，也不代表当前仓库已经具备对应能力。文中使用“应支持”“建议”的地方是设计目标；除非第一阶段文档和实际代码、日志、测试另有证据，不得表述为已经实现。
 
 ## 当前判断
 
 `steerBox` 应同时支持：
 
-1. 多模型路由
-2. 模型专用 prompt profile
-3. 任务专用 prompt pack
-4. 固定检查点
-5. 非固定 / 事件触发检查点
-6. 风险触发检查点
-7. operator-marked checkpoint
-8. side-effect ledger
-9. rollback / replay / fork 策略
+1. Provider、Model、Endpoint 分层接入
+2. 多模型路由与成本 / 延迟 / 质量预算
+3. 模型专用 prompt profile 和角色专用系统提示
+4. 任务专用 prompt pack
+5. 模型切换、能力兼容的 fallback 和多模型协作
+6. 固定检查点
+7. 非固定 / 事件触发检查点
+8. 风险触发检查点
+9. operator-marked checkpoint
+10. side-effect ledger
+11. rollback / replay / fork 策略
 
 原因：不同模型的能力、服从度、工具调用稳定性、长上下文可靠性、成本、响应速度和安全边界都不同。如果所有模型共用同一套系统提示和 loop 策略，通常会浪费强模型、压垮弱模型，也更容易跑偏。
 
-## 一、多模型提示符多态化
+## 一、Provider、Model、Endpoint 分层
+
+### 1. 为什么不能只用一个 provider 字段
+
+多模型系统至少要区分三层：
+
+~~~
+ProviderProfile
+  -> EndpointProfile
+      -> ModelProfile
+~~~
+
+同一个模型可能通过官方 API、中转服务、本地部署或不同区域 endpoint 提供。它们的上下文窗口、价格、限流、工具能力、隐私边界和可用性可能不同，因此不能把这些差异压缩到一个 provider 字符串中。
+
+### 2. ProviderProfile
+
+ProviderProfile 描述供应方的协议、合规和可用性边界：
+
+~~~
+provider_id
+provider_name
+protocol_type
+region
+privacy_policy
+supported_features
+rate_limit
+availability_policy
+status
+auth_ref
+~~~
+
+auth_ref 只能引用外部 secret manager、环境注入或操作系统凭据存储中的位置。API key、token、完整 endpoint secret 和认证响应绝不能写入模型注册表、普通配置、trace、event log、checkpoint 或 prompt 文档。
+
+### 3. EndpointProfile
+
+EndpointProfile 描述一次可调度的部署入口：
+
+~~~
+endpoint_id
+provider_id
+model_id
+deployment_name
+region
+context_window
+cost_profile
+latency_profile
+availability_policy
+capabilities_override
+privacy_class
+status
+~~~
+
+Endpoint 的覆盖字段必须进入路由和调用记录；不能假定同一 model_id 的所有 endpoint 行为相同。
+
+### 4. ModelProfile 的两类字段
+
+模型画像要区分不会随单次调用改变的静态能力，与基于真实运行证据统计出的动态表现。
+
+静态能力包括：
+
+~~~
+context_window
+supports_tools
+supports_structured_output
+supports_streaming
+supports_vision
+supports_reasoning
+supports_background_run
+supports_mcp
+supports_batch
+~~~
+
+动态表现包括：
+
+~~~
+historical_success_rate
+tool_call_success_rate
+verification_pass_rate
+coding_quality_score
+review_quality_score
+security_analysis_quality
+average_latency
+p95_latency
+average_cost
+fallback_success_rate
+sample_count
+measurement_window
+source_trace_ids
+confidence
+last_verified_at
+~~~
+
+动态字段必须带样本数、统计窗口、来源 trace、置信度和最后验证时间；一次运行结果只能作为反馈，不能直接升级成永久能力声明。
+
+## 二、多模型提示符多态化
 
 ### 1. 是否应该做
 
@@ -66,8 +162,11 @@ ModelProfile + PromptProfile + TaskPromptPack + PolicyGate + EvaluationFeedback
 
 ```text
 prompt_profile_id
-model_id
-model_family
+version
+status
+compatible_provider_types
+compatible_model_families
+required_capabilities
 intended_roles
 strengths
 weaknesses
@@ -86,6 +185,8 @@ required_preflight_checks
 fallback_model
 last_verified_at
 ```
+
+PromptProfile 与 ModelProfile 是兼容关系而不是永久硬绑定：一个模型可以有规划、实现、审查等多个 profile，一个 profile 也可以适用于同一模型家族。可以维护 preferred_prompt_profile、compatible_prompt_profiles 和 forbidden_prompt_profiles，但最终仍须由解析器结合任务和 provider 能力决定。
 
 ### 4. TaskPromptPack 字段草案
 
@@ -113,7 +214,9 @@ failure_response_template
 
 ```text
 BaseHarnessPrompt
+  + ProviderAdapterPrompt
   + ModelPromptProfile
+  + AgentRolePrompt
   + TaskPromptPack
   + GoalContract
   + PolicySummary
@@ -131,7 +234,61 @@ BaseHarnessPrompt
 - 为什么被选中
 - 本次执行效果如何
 
-### 6. 不同模型的典型分工
+### 6. AgentRolePrompt
+
+“同一模型配一套 system prompt”仍然不够。系统应按执行角色提供独立的角色级提示层：
+
+~~~text
+planner
+implementer
+reviewer
+tester
+evaluator
+summarizer
+researcher
+security_analyzer
+coordinator
+human_interaction
+~~~
+
+强模型也不能因为能力高就跳过角色约束；规划、修改、审查和评估应使用不同的输出契约、工具权限、检查清单和停机条件。
+
+### 7. Prompt Resolution
+
+模型、provider、角色和任务确定后，harness 应按以下顺序解析提示包：
+
+~~~text
+1. Provider compatibility
+2. Model capability
+3. Agent role
+4. Task type
+5. GoalContract
+6. Risk level
+7. Tool policy
+8. Context budget
+9. Human steering mode
+10. PromptProfile version
+~~~
+
+解析结果必须形成不可变的 ResolvedPromptPack，并包含：
+
+~~~text
+prompt_pack_id
+base_prompt_version
+provider_prompt_version
+model_prompt_version
+role_prompt_version
+task_prompt_version
+policy_summary_hash
+tool_summary_hash
+context_package_hash
+resolution_reason
+created_at
+~~~
+
+每次 ModelCall 都要记录 resolved_prompt_pack_id、各提示版本、model_id、provider_id 和 route_decision_id。否则失败后无法区分模型能力、提示不适配、上下文污染、工具选择或 policy 配置问题。
+
+### 8. 不同模型的典型分工
 
 建议模式：
 
@@ -141,7 +298,7 @@ BaseHarnessPrompt
 - 本地模型：隐私敏感数据、离线环境、低成本批处理、初筛
 - evaluator 模型：独立审查、反例寻找、风险判断、完成度判断
 
-### 7. PromptProfile 的进化
+### 9. PromptProfile 的进化
 
 PromptProfile 不应手工固定不变。
 
@@ -165,7 +322,151 @@ PromptProfile 不应手工固定不变。
 - 回滚点
 - 风险审批
 
-## 二、全自主 loop 的检查点策略
+## 三、路由、Fallback 与多模型协作
+
+### 1. RoutePolicy 与 RouteDecision
+
+路由不是简单的“选一个最便宜模型”，而是对任务、风险、预算、隐私和能力约束求解。RoutePolicy 至少应考虑：
+
+~~~text
+task_type
+agent_role
+risk_level
+quality_requirement
+cost_budget
+latency_target
+privacy_requirement
+context_requirement
+tool_requirement
+availability_requirement
+human_steering_mode
+~~~
+
+每次路由必须生成可审计的 RouteDecision：
+
+~~~text
+route_decision_id
+task_id
+task_type
+agent_role
+candidate_models
+selected_provider
+selected_model
+selected_endpoint
+selection_reason
+rejected_candidates
+cost_estimate
+latency_estimate
+quality_requirement
+risk_level
+privacy_requirement
+context_requirement
+tool_requirement
+fallback_chain
+approval_required
+prompt_profile_id
+prompt_profile_version
+created_at
+~~~
+
+selection_reason 必须说明为什么选择当前模型、为什么排除候选模型；路由结果和预算消耗进入 trace。高风险任务不得仅按价格排序，也不得在没有能力兼容性检查时降级。
+
+### 2. Model Switch 与 Fallback
+
+模型切换与 fallback 必须显式产生新的 TaskRun / Attempt，保留原始 GoalContract，重新解析 prompt，并重新执行必要验证：
+
+~~~text
+primary failure
+  -> classify failure
+  -> check capability-compatible fallback
+  -> create new TaskRun / Attempt
+  -> re-resolve PromptProfile
+  -> preserve GoalContract
+  -> record new RouteDecision
+  -> record provider/model change
+  -> run required verification
+~~~
+
+禁止静默切换。fallback 规则按任务类型分别治理：
+
+~~~text
+fallback_for_read_only
+fallback_for_planning
+fallback_for_code_edit
+fallback_for_review
+fallback_for_security_action
+~~~
+
+高风险写操作、权限动作和不可逆外部副作用默认不允许因为超时自动切到弱模型；必要时只能暂停、升级到强模型或请求人工审批。
+
+### 3. Model Collaboration
+
+模型协作不是 fallback 的别名。除了主模型失败后的切换，还要支持角色分工和并行互审：
+
+~~~text
+cheap_fast_model
+  -> 初筛、分类、摘要、简单检索
+
+strong_slow_model
+  -> 复杂规划、关键定位、架构判断
+
+specialized_model
+  -> 代码、数学、安全、长上下文、视觉等专用任务
+
+evaluator_model
+  -> 独立验证、反例寻找、风险审查
+
+local_model
+  -> 隐私敏感、离线、低成本批处理
+~~~
+
+典型编排为：
+
+~~~text
+planner -> implementer -> reviewer -> evaluator
+~~~
+
+或：
+
+~~~text
+primary implementation
+  + independent reviewer
+  + test/evaluator
+  -> fan-in decision
+~~~
+
+每个分支必须拥有独立的 TaskRun、输入/输出摘要、权限、预算、trace 和 join 规则；不得用自由群聊替代有界的 supervisor/orchestrator 编排。
+
+### 4. ModelCallRecord 与评估
+
+每次模型调用至少记录：
+
+~~~text
+model_call_id
+task_run_id
+provider_id
+endpoint_id
+model_id
+route_decision_id
+resolved_prompt_pack_id
+input_context_hash
+output_artifact_ref
+latency_ms
+input_tokens
+output_tokens
+estimated_cost
+finish_reason
+tool_call_count
+verification_status
+error_class
+created_at
+~~~
+
+原始 prompt、模型输出和工具参数应按数据敏感性策略分级存储；审计记录默认保存哈希、摘要和 artifact 引用，不把 secret 或未经授权的敏感正文写进公共 trace。
+
+模型评估至少区分：模型静态能力、单次调用结果、跨样本动态指标和路由策略效果。动态指标必须能回溯到 source_trace_ids，并通过回归门后才允许更新 registry 或 PromptProfile。
+
+## 四、全自主 loop 的检查点策略
 
 ### 1. 是否主流
 
@@ -282,7 +583,7 @@ related_trace_id
 restore_preconditions
 ```
 
-## 三、防跑偏与防破坏性改写
+## 五、防跑偏与防破坏性改写
 
 ### 1. 问题定义
 
@@ -339,7 +640,7 @@ restore_preconditions
 - 工具失败后 agent 试图绕过工具
 - 长时间没有验证还继续修改
 
-## 四、与外部资料的对应
+## 六、与外部资料的对应
 
 ### LangGraph / LangSmith
 
@@ -394,14 +695,51 @@ restore_preconditions
 - side-effect ledger 记录不可逆动作
 - 高风险外部动作恢复后默认不自动重放
 
-## 五、建议新增核心对象
+## 七、建议新增核心对象
 
-### 1. ModelProfile
+### 1. ProviderProfile
+
+~~~text
+provider_id
+provider_name
+protocol_type
+region
+privacy_policy
+supported_features
+rate_limit
+availability_policy
+status
+auth_ref
+~~~
+
+### 2. EndpointProfile
+
+~~~text
+endpoint_id
+provider_id
+model_id
+deployment_name
+region
+context_window
+cost_profile
+latency_profile
+availability_policy
+capabilities_override
+privacy_class
+status
+~~~
+
+### 3. ModelProfile
 
 ```text
 model_id
-provider
+model_family
+version
+status
+provider_ids
+endpoint_ids
 context_window
+capabilities
 cost_profile
 latency_profile
 strengths
@@ -412,38 +750,164 @@ security_analysis_quality
 instruction_following_score
 known_failure_patterns
 preferred_prompt_profile
+compatible_prompt_profiles
+forbidden_prompt_profiles
 fallback_models
+static_capabilities_verified_at
+dynamic_performance
 ```
 
-### 2. PromptProfile
+### 4. PromptProfile
 
 ```text
 prompt_profile_id
-model_id
+version
+status
+compatible_provider_types
+compatible_model_families
+required_capabilities
+intended_roles
 instruction_style
 context_style
 tool_calling_style
 output_contract
+reasoning_budget
+allowed_task_types
+forbidden_task_types
 risk_limit
 required_preflight_checks
 known_failure_patterns
 last_verified_at
 ```
 
-### 3. TaskPromptPack
+### 5. AgentRolePrompt
+
+~~~text
+role_prompt_id
+role
+version
+system_prompt_fragments
+tool_policy
+output_contract
+checkpoint_policy
+evaluator_policy
+compatible_model_families
+status
+~~~
+
+### 6. TaskPromptPack
 
 ```text
+task_prompt_pack_id
 task_type
-system_fragments
-developer_fragments
+version
+system_prompt_fragments
+developer_prompt_fragments
 required_context
+forbidden_context
 preflight_checklist
 execution_checklist
 verification_checklist
 stop_conditions
+handoff_template
+failure_response_template
 ```
 
-### 4. CheckpointPolicy
+### 7. ResolvedPromptPack
+
+~~~text
+prompt_pack_id
+base_prompt_version
+provider_prompt_version
+model_prompt_version
+role_prompt_version
+task_prompt_version
+policy_summary_hash
+tool_summary_hash
+context_package_hash
+resolution_reason
+created_at
+~~~
+
+### 8. RoutePolicy
+
+~~~text
+route_policy_id
+version
+candidate_constraints
+selection_weights
+cost_budget
+latency_target
+quality_requirement
+privacy_requirement
+risk_rules
+fallback_rules
+collaboration_rules
+approval_rules
+status
+~~~
+
+### 9. RouteDecision
+
+~~~text
+route_decision_id
+task_id
+candidate_models
+selected_provider
+selected_model
+selected_endpoint
+selection_reason
+rejected_candidates
+cost_estimate
+latency_estimate
+fallback_chain
+prompt_profile_id
+prompt_profile_version
+approval_required
+created_at
+~~~
+
+### 10. ModelCallRecord
+
+~~~text
+model_call_id
+task_run_id
+provider_id
+endpoint_id
+model_id
+route_decision_id
+resolved_prompt_pack_id
+input_context_hash
+output_artifact_ref
+latency_ms
+input_tokens
+output_tokens
+estimated_cost
+finish_reason
+tool_call_count
+verification_status
+error_class
+created_at
+~~~
+
+### 11. ModelEvaluation
+
+~~~text
+evaluation_id
+model_id
+prompt_profile_id
+task_type
+sample_count
+measurement_window
+source_trace_ids
+metrics
+confidence
+regression_status
+promotion_status
+created_at
+~~~
+
+### 12. CheckpointPolicy
 
 ```text
 policy_id
@@ -459,7 +923,7 @@ retention_policy
 restore_policy
 ```
 
-### 5. DriftGuard
+### 13. DriftGuard
 
 ```text
 guard_id
@@ -472,11 +936,22 @@ security_invariants
 human_approval_conditions
 ```
 
-## 六、第一阶段建议
+## 八、第一阶段与后续阶段边界
 
-第一阶段不需要实现完整 runtime，但设计必须占位。
+第一阶段不需要实现完整动态 runtime，但必须让多模型成为真实可扩展的接口，而不是一句未来愿景。
 
-建议先做：
+第一阶段至少实现或验证：
+
+- 一个真实可调用的 model adapter
+- 可配置多个 ProviderProfile、EndpointProfile 和 ModelProfile
+- 静态 ModelRegistry 与 PromptRegistry
+- AgentRolePrompt、TaskPromptPack、ResolvedPromptPack schema
+- 基于能力、风险、成本和延迟约束的规则式 RoutePolicy
+- RouteDecision、ModelCallRecord 的持久化 trace
+- cheap/fast 只读任务到强模型复杂任务的最小路由 fixture
+- fallback 的 schema、能力兼容检查和非静默事件
+
+同时完成既有 checkpoint / drift 对象和控制门占位：
 
 - `ModelProfile` 文档 schema
 - `PromptProfile` 文档 schema
@@ -486,7 +961,19 @@ human_approval_conditions
 - 在 `LoopController` 中预留 `CheckpointGate` 和 `DriftGuard`
 - 在 `ModelRouter` 中预留 `preferred_prompt_profile`
 
+第一阶段不要求：
+
+- 多 provider 的全部协议差异都已接通
+- 自动学习路由权重
+- 自动生成或自动提升系统提示
+- 无人审批的高风险 fallback 或模型协作
+- 完整的模型市场、在线评测平台或训练流程
+
+Phase 1.5 可加入多 provider live routing、成本 / 延迟预算、能力匹配、fallback chain、并行模型审查和 route evaluation；Phase 2 再加入历史表现驱动的自适应路由、跨项目模型画像和受治理的 prompt/model 自动进化。
+
 ## 当前结论
+
+Provider、Model、Endpoint、Prompt、Route 和 ModelCall 必须分层并进入 trace；模型切换不能静默，模型协作必须有独立运行、预算和 join 规则；secret 只能通过外部引用进入 adapter，不能进入 registry、prompt、trace、event log 或 checkpoint。
 
 多模型系统提示多态化是必要的，而且应做成可追踪、可评估、可进化的 `PromptProfile` / `TaskPromptPack`，而不是手工散落在不同 prompt 文件里。
 

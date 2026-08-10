@@ -14,6 +14,8 @@
 - 所有高风险动作必须有 policy decision
 - checkpoint 只能承诺已记录范围
 - side effect 必须能区分可恢复和不可恢复
+- 模型路由、prompt 解析、fallback 和调用结果必须可追踪
+- registry、prompt、trace、event log 和 checkpoint 不得包含 API key 或 token 明文
 - 占位能力不能被写成已实现能力
 
 ## 验证环境
@@ -226,7 +228,33 @@
 - recipe 生效
 - 失败调用能生成 recipe candidate，但不会直接升级成全局 policy
 
-### V13. End-to-End Run Summary
+### V13. Model Routing、Prompt Resolution 与 Fallback
+
+步骤：
+
+1. 注册一个 cheap/fast profile、一个 strong/slow profile 和一个 evaluator profile fixture
+2. 让低风险只读任务和高风险复杂任务分别经过规则式路由
+3. 为同一模型分别解析 planner、implementer、reviewer prompt
+4. 模拟 primary model 不可用，触发能力兼容的 fallback
+5. 检查 registry、event、trace、checkpoint 和输出 artifact
+
+期望结果：
+
+- 每次选择生成 `RouteDecision`，包含候选、选择、拒绝原因、成本 / 延迟估算和风险约束
+- 高风险任务不会只按最低成本选择模型
+- 每次调用关联 `ResolvedPromptPack`、provider、endpoint、model、角色、prompt 版本和 `ModelCallRecord`
+- fallback 创建新 attempt 和新 route decision，并重新解析 prompt、重新验证
+- 不兼容或高风险降级被阻断或要求 human approval
+- 仅存在 `auth_ref`；验证数据中不存在真实 API key、token 或认证响应
+
+失败条件：
+
+- 模型选择或 fallback 静默发生
+- 同一套 system prompt 无差别用于所有 provider、model、role 和 task
+- 只记录 model name，无法追溯 endpoint、路由理由、prompt 版本或验证状态
+- secret 明文进入 registry、prompt、trace、event log 或 checkpoint
+
+### V14. End-to-End Run Summary
 
 步骤：
 
@@ -254,13 +282,17 @@ inspect state
 inspect trace
 inspect checkpoint metadata
 inspect side-effect ledger
+inspect model registry
+inspect route decisions
+inspect resolved prompt versions
+inspect model call records
 ```
 
 ## 验证通过标准
 
 第一阶段验证通过必须满足：
 
-- V1 到 V13 至少各有一次通过记录
+- V1 到 V14 至少各有一次通过记录
 - 失败用例不能被口头解释为通过
 - event log、state、trace 三者能互相对应
 - checkpoint metadata 与 side-effect ledger 不矛盾
@@ -281,7 +313,7 @@ inspect side-effect ledger
 
 以下不作为第一阶段验收项：
 
-- 多模型自动路由质量
+- 历史表现驱动的自适应多模型路由质量
 - 多智能体协作质量
 - 向量记忆召回率
 - 图记忆推理能力
@@ -290,4 +322,4 @@ inspect side-effect ledger
 - 企业级多租户隔离
 - OS 级 checkpoint / restore
 
-这些能力只检查是否有接口占位或文档边界。
+这些能力只检查是否有接口占位或文档边界；第一阶段的静态 registry、规则式路由、prompt resolution 和调用审计仍属于必验项。
