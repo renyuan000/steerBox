@@ -191,6 +191,18 @@ manual intervention -> manual_takeover
 - fallback 必须能力兼容、显式记录并重新验证；高风险写操作不能静默降级
 - registry、prompt、trace、event log 和 checkpoint 只保存 auth_ref，不保存 API key 或 token
 
+### 11. Portfolio、Task 与 BoardProjection 最小切片
+
+第一阶段只实现单 Portfolio、单 Project、本地顺序执行 fixture，但必须先固定未来可扩展的身份和投影边界：
+
+- 定义 Portfolio、Project、Task、TaskRun、Attempt、TaskDependency schema
+- 定义 Task 领域状态及合法迁移
+- 从 EventLog + StateStore 重建 BoardProjection
+- 提供只读 CLI / JSON board fixture
+- 不实现真实多项目并行调度、worktree lease、分布式 worker 或交互式 TUI/Web
+
+Phase 1 的对象、事件、状态迁移、幂等、版本冲突、投影和敏感数据规则以 PHASE_1_CONTRACTS.md 为准。
+
 ## 第一阶段只做占位
 
 以下能力第一阶段必须在 schema 或接口上留位置，但不要求完整实现：
@@ -204,7 +216,7 @@ manual intervention -> manual_takeover
 - 自动 skill 生成
 - 自动 policy 进化
 - 跨项目全局记忆
-- 完整 UI control plane
+- 完整交互式 TUI/Web control plane
 - 安全智能体完整运营闭环
 - 通用 Manus-like agent
 
@@ -286,6 +298,12 @@ recipes/           -> baseline tool recipes
 9. 实现 baseline tool recipes
 10. 用一个真实开发任务做端到端验证
 
+## 契约优先说明
+
+实现顺序以 PHASE_1_CONTRACTS.md 为第一入口；如果本文件中的长期建议与契约冲突，先修正文档，再开始代码实现。
+
+第一阶段的完成定义还必须包括：Task 状态迁移可验证、BoardProjection 可由 EventLog 重建、重复 mutating command 不重复产生副作用。
+
 ## 与其他文档的关系
 
 - `ARCHITECTURE_DIRECTION.md` 定义项目方向
@@ -303,6 +321,8 @@ recipes/           -> baseline tool recipes
 ## 当前结论
 
 `steerBox` 当前文档已经足够支撑进入第一阶段开发。
+
+该结论以 `PHASE_1_CONTRACTS.md`、Scope、Design、TODO、Validation、Documentation Map 和 Architecture Questions 已完成同步为前提；在本轮同步提交落地前，只能视为待闭合的设计结论。
 
 但开工时必须以本文件为实现边界，不能直接按全部长期讨论稿展开。
 

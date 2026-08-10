@@ -15,29 +15,30 @@
 3. `docs/TRACKS_AND_CAPABILITIES.md`
 4. `docs/PHASE_1_IMPLEMENTATION_SCOPE.md`
 5. `docs/PHASE_1_DESIGN.md`
-6. `docs/PHASE_1_TODO.md`
-7. `docs/PHASE_1_VALIDATION_PLAN.md`
-8. `docs/HARNESS_PRINCIPLES.md`
-9. `docs/STORAGE_AND_RECOVERY_DISCUSSION.md`
-10. `docs/MEMORY_STORAGE_AND_CONSOLIDATION.md`
-11. `docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md`
-12. `docs/AGENT_ORCHESTRATION_PATTERNS.md`
-13. `docs/CONTROL_PLANE_DISCUSSION.md`
-14. `docs/GOAL_ALIGNMENT_CHECKS.md`
-15. `docs/LOOP_TRAJECTORY_CHECKS.md`
-16. `docs/HUMAN_STEERING_MODES.md`
-17. `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`
-18. `docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md`
-19. `docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`
-20. `docs/PROMPT_CHECKPOINT_TEMPLATES.md`
-21. `docs/CHECKPOINT_POLICY_ALGORITHM.md`
-22. `docs/SIDE_EFFECT_LEDGER_DISCUSSION.md`
-23. `docs/DRIFT_GUARD_DISCUSSION.md`
-24. `docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md`
-25. `docs/AGENT_EVOLUTION_READING_LIST.md`
-26. `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`
-27. `docs/ARCHITECTURE_QUESTIONS.md`
-28. `docs/HARNESS_SOURCES.md`
+6. `docs/PHASE_1_CONTRACTS.md`
+7. `docs/PHASE_1_TODO.md`
+8. `docs/PHASE_1_VALIDATION_PLAN.md`
+9. `docs/HARNESS_PRINCIPLES.md`
+10. `docs/STORAGE_AND_RECOVERY_DISCUSSION.md`
+11. `docs/MEMORY_STORAGE_AND_CONSOLIDATION.md`
+12. `docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md`
+13. `docs/AGENT_ORCHESTRATION_PATTERNS.md`
+14. `docs/CONTROL_PLANE_DISCUSSION.md`
+15. `docs/GOAL_ALIGNMENT_CHECKS.md`
+16. `docs/LOOP_TRAJECTORY_CHECKS.md`
+17. `docs/HUMAN_STEERING_MODES.md`
+18. `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`
+19. `docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md`
+20. `docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`
+21. `docs/PROMPT_CHECKPOINT_TEMPLATES.md`
+22. `docs/CHECKPOINT_POLICY_ALGORITHM.md`
+23. `docs/SIDE_EFFECT_LEDGER_DISCUSSION.md`
+24. `docs/DRIFT_GUARD_DISCUSSION.md`
+25. `docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md`
+26. `docs/AGENT_EVOLUTION_READING_LIST.md`
+27. `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`
+28. `docs/ARCHITECTURE_QUESTIONS.md`
+29. `docs/HARNESS_SOURCES.md`
 
 ## 文档分层
 
@@ -106,6 +107,20 @@ README 不应该承载完整架构细节。
 - 定义端到端验证用例和通过标准
 
 该组文档负责回答：具体怎么开始开发、按什么顺序开发、如何证明第一阶段真的可用。
+
+### 3.3 第一阶段实现契约
+
+- `docs/PHASE_1_CONTRACTS.md`
+
+职责：
+
+- 作为 Phase 1 的规范源，固定公共 ID、schema version、object version 和 EventEnvelope
+- 固定 Portfolio、Project、Goal、Task、TaskRun、Attempt、TaskDependency 的关系与最小字段
+- 固定 Task 状态机、Attempt lineage、succeeded 前置条件和幂等 / version conflict 规则
+- 固定 EventLog、StateStore、BoardProjection、Verification、Artifact、Evidence 的事实源与重建边界
+- 固定 failure taxonomy、schema migration、auth_ref 和 secret/redaction 规则
+
+该文档负责回答：实现时哪些字段、事件、状态迁移和投影规则不能靠各模块自行解释。若与长期讨论稿冲突，Phase 1 先以本契约为准，再补同步修订。
 
 ### 4. 外部参考原则
 

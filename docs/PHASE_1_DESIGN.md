@@ -10,6 +10,8 @@
 shared harness core + software development agent vertical slice
 ```
 
+第一阶段实现契约集中在 PHASE_1_CONTRACTS.md。本文件说明模块和数据流；对象字段、事件 envelope、状态迁移、幂等和投影重建规则以契约文档为准。
+
 ## 设计目标
 
 第一阶段必须做到：
@@ -32,7 +34,7 @@ shared harness core + software development agent vertical slice
 - 自动渗透测试执行链
 - 向量数据库和图数据库
 - 插件市场
-- 完整 UI control plane
+- 真实多项目并行调度和交互式 TUI/Web control plane
 - 企业级多租户
 - OS 级 sandbox checkpoint
 - 历史表现驱动的自适应多模型路由和无人审批的高风险 fallback
@@ -160,7 +162,7 @@ block
 
 职责：
 
-- 记录 source of truth 事件
+- 记录执行事实源事件；StateStore 和 BoardProjection 从事件重建
 - 支持审计、恢复、复盘、后续 memory candidate
 
 第一阶段建议使用 `events.sqlite`。
@@ -211,7 +213,7 @@ loop_failed
 
 第一阶段建议使用 `traces/*.jsonl`。
 
-Trace 不是 source of truth；source of truth 是 event log 和 state store。
+Trace、StateStore 和 BoardProjection 都不是独立事实源；EventLog 是执行事实源，StateStore 和 BoardProjection 必须能够从事件重建。
 
 ### 9. RecoveryCheckpoint Manager
 
@@ -298,6 +300,21 @@ Trace 不是 source of truth；source of truth 是 event log 和 state store。
 - 允许配置 cheap/fast、strong/slow、specialized、evaluator、local 等 profile；未接 live endpoint 的 profile 使用静态 fixture 验证
 - 不自动学习路由权重，不自动提升 prompt，不执行无人审批的高风险多模型协作
 - registry、prompt、trace、event log 和 checkpoint 只保存 `auth_ref`，不保存 API key 或 token
+
+### 15. Portfolio、Task 与 BoardProjection
+
+职责：
+
+- 保存单 Portfolio / Project 下可调度 Task 的最小身份
+- 区分 Task、TaskRun 和 Attempt 的生命周期
+- 将 EventLog 和可重建 StateStore 派生为只读 BoardProjection
+- 为未来 Scheduler、worker、TUI 和 Web adapter 保留稳定查询边界
+
+第一阶段边界：
+
+- 只实现单项目、本地顺序 fixture
+- 只提供只读 board / JSON projection
+- 不实现多项目并行 worker、workspace lease、join 或 backpressure runtime
 
 ## 存储布局
 

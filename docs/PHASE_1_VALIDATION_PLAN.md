@@ -47,6 +47,20 @@
 
 ## 验证用例
 
+### V0. Phase 1 Core Contract
+
+步骤：
+
+1. 读取 PHASE_1_CONTRACTS.md
+2. 序列化一个核心对象和一个 EventEnvelope
+3. 反序列化并检查 schema version、ID、关联字段和敏感数据边界
+
+期望结果：
+
+- 核心对象字段与契约一致
+- EventEnvelope 能通过 sequence_no、correlation_id 和 causation_id 关联执行链
+- fixture 不包含 API key、token 或认证响应
+
 ### V1. GoalContract 创建
 
 步骤：
@@ -80,6 +94,27 @@
 - event log 中存在 `loop_started` 和 `step_started`
 - state 中 current step 可查询
 - trace 中能看到 loop_run_id 和 step_id
+
+### V2.1 Task / TaskRun / Attempt 身份
+
+步骤：
+
+1. 为一个 Task 创建 initial TaskRun 和 Attempt
+2. 分别模拟 retry、fallback、resume 和 fork
+3. 检查每次新 Attempt 的 attempt_no、reason、parent_attempt_id 和关联记录
+4. 检查原失败 Attempt 的 verification、artifact 和 evidence 没有被覆盖
+
+期望结果：
+
+- retry、fallback、resume 和 fork 都创建新的 Attempt
+- 每个 Attempt 只结束一次，且结束后不重新变为 running
+- parent_attempt_id 能还原 Attempt lineage，失败证据保持可反查
+
+失败条件：
+
+- 新尝试复用旧 attempt_id
+- fallback 或 resume 静默覆盖原失败记录
+- 没有 reason 或 parent_attempt_id，无法解释尝试关系
 
 ### V3. ToolRegistry 与 PolicyGate
 
@@ -123,7 +158,7 @@
 
 - trace 可人工阅读
 - trace 能定位关键事件
-- trace 不替代 source of truth
+- EventLog 是执行事实源，trace 只作可读诊断和定位，不替代 EventLog
 
 ### V6. 文件修改与 diff boundary
 
@@ -267,6 +302,49 @@
 - summary 包含 goal、steps、tool calls、file changes、verification、checkpoint、side effects、final status
 - 每个关键结论能反查证据
 
+### V15. Task 状态迁移
+
+步骤：
+
+1. 按契约依次执行一条合法 Task 状态迁移路径
+2. 对每个终态和至少一个非法迁移尝试执行 mutating command
+3. 检查 state、EventLog、policy/state decision 和 object_version
+
+期望结果：
+
+- 合法迁移被接受并产生对应事件
+- 非法迁移被拒绝，保留当前 object_version，不产生伪造成功事件
+- `succeeded` 只有在 success criteria、VerificationResult、evidence、PolicyGate 和 Attempt 结束条件全部满足时出现
+- TODO / DOING / DONE 只作为 BoardProjection 显示列，不被当作领域状态
+
+### V16. BoardProjection 重建
+
+步骤：
+
+1. 从一个包含依赖、尝试、验证和失败事件的 EventLog fixture 重建 StateStore 和 BoardProjection
+2. 保存 projection 结果后删除 projection，再次从 EventLog 重建
+3. 比较两次的 task domain state、board column、current attempt、dependency summary、verification status、evidence completeness 和 blocking issues
+
+期望结果：
+
+- 两次重建结果一致
+- BoardProjection 损坏或删除不影响 EventLog
+- 显示列符合契约映射，ATTENTION 能区分 blocked 和 failed
+
+### V17. Mutating Command 幂等与 object_version conflict
+
+步骤：
+
+1. 提交一个带 command_id 的状态变更命令两次
+2. 使用旧 expected_object_version 提交另一个变更命令
+3. 检查命令结果、事件数量、副作用数量和冲突记录
+
+期望结果：
+
+- 相同 command_id 的重试返回第一次结果，不重复执行副作用
+- expected_object_version 不匹配时返回 conflict，不覆盖较新的状态
+- 查询命令不写 EventLog；暂停、恢复、取消、重试、审批和 reprioritize 都留下可审计事件
+
 ## 最小验收命令
 
 具体命令等代码实现后确定。
@@ -286,15 +364,18 @@ inspect model registry
 inspect route decisions
 inspect resolved prompt versions
 inspect model call records
+inspect task state and allowed transition result
+inspect BoardProjection / JSON board fixture
 ```
 
 ## 验证通过标准
 
 第一阶段验证通过必须满足：
 
-- V1 到 V14 至少各有一次通过记录
+- V0 到 V17 至少各有一次通过记录
 - 失败用例不能被口头解释为通过
 - event log、state、trace 三者能互相对应
+- BoardProjection 能从 EventLog 重建且不成为事实源
 - checkpoint metadata 与 side-effect ledger 不矛盾
 - 高风险动作没有绕过 PolicyGate
 - run summary 中的完成结论能追溯到验证命令结果
@@ -321,5 +402,6 @@ inspect model call records
 - 插件市场兼容性
 - 企业级多租户隔离
 - OS 级 checkpoint / restore
+- 交互式 TUI/Web control plane
 
 这些能力只检查是否有接口占位或文档边界；第一阶段的静态 registry、规则式路由、prompt resolution 和调用审计仍属于必验项。

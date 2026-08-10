@@ -11,6 +11,46 @@
 - `ARCHITECTURE_DIRECTION.md` 说明当前已经确认的方向
 - 本文件聚焦后续仍需设计与决策的问题
 
+## 0. 状态语义与当前结论
+
+状态含义：
+
+| 状态 | 含义 |
+|---|---|
+| `open` | 尚未形成足够的设计结论，不能作为实现前提 |
+| `partially_resolved` | 已有边界或 Phase 1 契约，但仍缺少完整 runtime、跨场景或安全决策 |
+| `resolved` | 设计、约束和验证入口已形成稳定结论；不等于代码已实现 |
+| `superseded` | 已被新的设计或契约替代，保留仅用于历史追溯 |
+
+截至本轮文档同步，当前状态如下：
+
+| 主题 | 当前状态 | 依据与边界 |
+|---|---|---|
+| 核心边界 | `partially_resolved` | Phase 1 固定为 shared harness core + software development agent vertical slice；安全智能体仍是后续主线 |
+| 长时运行 | `partially_resolved` | Goal / Loop、EventLog、StateStore、checkpoint 有设计；生产级恢复和调度仍待实现 |
+| Steering / PolicyGate | `partially_resolved` | 有人类模式、策略门和审计边界；完整策略评估与权限模型仍待收敛 |
+| 人在环 | `partially_resolved` | 已定义观察、审批、暂停、恢复和接管模式；控制面交互仍未实现 |
+| 审计 / tracing / 回放 | `partially_resolved` | EventLog 是执行事实源，Trace / StateStore / BoardProjection 可重建；完整回放工具仍待实现 |
+| Portfolio / Board | `partially_resolved` | Phase 1 固定 schema 和只读 projection fixture；真实多项目并行调度不在 Phase 1 |
+| 多模型 | `partially_resolved` | 已有静态 profile、规则路由、prompt pack 和 fallback 契约；adapter 运行时和供应商差异仍待独立收敛 |
+| 自进化 | `partially_resolved` | 已有 SystemEvolutionTask 和 local → project → portfolio → global 晋升边界；验证、审批和回滚 runtime 仍待实现 |
+| 安全模型 | `open` | 需要单独形成 threat model、trust boundary、secret 和高风险动作策略 |
+| 语言和构建 | `open` | 先按模块职责和验证结果选型，当前不把语言选择写死 |
+
+### Phase 1 收敛边界
+
+Phase 1 只验证：
+
+```text
+shared harness core
+  + software development agent vertical slice
+  + one Portfolio / one Project / local sequential fixture
+  + Task / TaskRun / Attempt schema
+  + EventLog -> StateStore -> BoardProjection read-only fixture
+```
+
+Portfolio、Task、Attempt 和 BoardProjection 在 Phase 1 进入 schema、事件和只读 fixture；真实多项目并行调度、workspace/worktree lease、分布式 worker、交互式 TUI/Web control plane 和 self-evolution runtime 不得被写成已实现能力。
+
 ## 1. 核心边界
 
 首先要回答的不是“做多少功能”，而是 `steerBox` 最小要解决什么问题。

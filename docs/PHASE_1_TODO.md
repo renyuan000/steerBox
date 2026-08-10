@@ -19,6 +19,7 @@
 
 ### P0. 开工前整理
 
+- [ ] 阅读并确认 PHASE_1_CONTRACTS.md 是 schema、event、state 和 projection 的 Phase 1 规范源
 - [ ] 确认当前文档变更已提交或明确保留在工作区
 - [ ] 确认第一阶段只按 `PHASE_1_IMPLEMENTATION_SCOPE.md` 和 `PHASE_1_DESIGN.md` 开发
 - [ ] 确认第一阶段不创建安全智能体完整闭环
@@ -45,6 +46,12 @@
 
 ### P2. Core Schema
 
+- [ ] 定义 EventEnvelope、event_id、sequence_no、correlation_id 和 causation_id
+- [ ] 定义 Portfolio、Project、Task、TaskRun、Attempt 和 TaskDependency
+- [ ] 定义 Task 状态及合法迁移表
+- [ ] 定义 BoardProjection / BoardTaskCard
+- [ ] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory
+
 - [ ] 定义 `GoalContract`
 - [ ] 定义 `LoopRun`
 - [ ] 定义 `LoopStep`
@@ -65,6 +72,8 @@
 - schema 有版本字段或预留版本策略
 
 ### P3. Local Storage
+
+- [ ] 实现从 EventLog 重建 current state / BoardProjection 的最小 fixture
 
 - [ ] 初始化 `events.sqlite`
 - [ ] 初始化 `state.sqlite`
@@ -109,6 +118,8 @@
 - policy decision 可在 event log 中复盘
 
 ### P6. LoopController
+
+- [ ] 支持 Task 状态合法迁移和非法迁移拒绝
 
 - [ ] 实现 `single_agent_loop` skeleton
 - [ ] 实现 `react_tool_loop` 的最小 step 流程
@@ -179,6 +190,8 @@
 
 ### P11. Baseline Tool Recipes
 
+- [ ] ToolUseErrorEvent 能关联原始 tool call、failure category 和 LessonCandidate
+
 - [ ] 写入 shell safe quoting recipe
 - [ ] 写入 `rg -F` recipe
 - [ ] 写入 git status / diff read-only recipe
@@ -213,6 +226,8 @@
 
 ### P13. Dev Agent Vertical Slice
 
+- [ ] 输出只读 BoardProjection / JSON board fixture
+
 - [ ] 定义一个小型真实开发任务
 - [ ] 创建 goal
 - [ ] 加载上下文
@@ -230,6 +245,8 @@
 - 验证结果明确
 
 ### P14. Documentation Update
+
+- [ ] 更新 PHASE_1_CONTRACTS.md 的引用和当前实现状态
 
 - [ ] 更新 README 或开发说明中的运行命令
 - [ ] 更新第一阶段完成状态
@@ -252,7 +269,7 @@
 - 自动 skill 生成
 - 安全响应自动处置
 - 插件市场
-- UI control plane
+- 交互式 TUI/Web control plane
 - 分布式 worker
 
 ## 完成定义
@@ -268,3 +285,5 @@
 - goal alignment 或 drift guard 至少触发一次有效检查
 - 验证命令有明确结果
 - 至少一次模型路由、prompt 解析和调用记录能通过 event / trace 复盘
+- Task 状态迁移和 BoardProjection 重建至少各有一次通过记录
+- 失败工具调用至少生成一次可审查 LessonCandidate
