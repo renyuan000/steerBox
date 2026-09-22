@@ -2,7 +2,7 @@
 
 ## 文档目的
 
-本文件用于说明 `steerBox` 文档体系如何拆分、如何阅读、以及哪些文档负责主线、哪些文档负责横向支撑能力。
+本文件用于说明 `steerBox` 文档体系如何拆分、如何阅读、以及哪些文档负责专业方向、哪些文档负责共享 Harness 和横向支撑能力。
 
 本文件不替代任何已有文档，只负责组织关系。
 
@@ -12,33 +12,40 @@
 
 1. `README.md`
 2. `docs/ARCHITECTURE_DIRECTION.md`
-3. `docs/TRACKS_AND_CAPABILITIES.md`
-4. `docs/PHASE_1_IMPLEMENTATION_SCOPE.md`
-5. `docs/PHASE_1_DESIGN.md`
-6. `docs/PHASE_1_CONTRACTS.md`
-7. `docs/PHASE_1_TODO.md`
-8. `docs/PHASE_1_VALIDATION_PLAN.md`
-9. `docs/HARNESS_PRINCIPLES.md`
-10. `docs/STORAGE_AND_RECOVERY_DISCUSSION.md`
-11. `docs/MEMORY_STORAGE_AND_CONSOLIDATION.md`
-12. `docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md`
-13. `docs/AGENT_ORCHESTRATION_PATTERNS.md`
-14. `docs/CONTROL_PLANE_DISCUSSION.md`
-15. `docs/GOAL_ALIGNMENT_CHECKS.md`
-16. `docs/LOOP_TRAJECTORY_CHECKS.md`
-17. `docs/HUMAN_STEERING_MODES.md`
-18. `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`
-19. `docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md`
-20. `docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`
-21. `docs/PROMPT_CHECKPOINT_TEMPLATES.md`
-22. `docs/CHECKPOINT_POLICY_ALGORITHM.md`
-23. `docs/SIDE_EFFECT_LEDGER_DISCUSSION.md`
-24. `docs/DRIFT_GUARD_DISCUSSION.md`
-25. `docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md`
-26. `docs/AGENT_EVOLUTION_READING_LIST.md`
-27. `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`
-28. `docs/ARCHITECTURE_QUESTIONS.md`
-29. `docs/HARNESS_SOURCES.md`
+3. `docs/CUSTOMER_REQUIREMENTS_REFERENCE.md`
+4. `docs/TRACKS_AND_CAPABILITIES.md`
+5. `docs/AGENT_RND_ROADMAP.md`
+6. `docs/PHASE_1_IMPLEMENTATION_SCOPE.md`
+7. `docs/PHASE_1_DESIGN.md`
+8. `docs/PHASE_1_CONTRACTS.md`
+9. `docs/PHASE_1_TODO.md`
+10. `docs/PHASE_1_VALIDATION_PLAN.md`
+11. `docs/HARNESS_PRINCIPLES.md`
+12. `docs/STORAGE_AND_RECOVERY_DISCUSSION.md`
+13. `docs/MEMORY_STORAGE_AND_CONSOLIDATION.md`
+14. `docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md`
+15. `docs/AGENT_ORCHESTRATION_PATTERNS.md`
+16. `docs/CONTROL_PLANE_DISCUSSION.md`
+17. `docs/CONTINUOUS_OPERATIONS_AGENT_DESIGN.md`
+18. `docs/SECURITY_ASSESSMENT_AGENT_DESIGN.md`
+19. `docs/SECURITY_OPERATIONS_AGENT_DESIGN.md`
+20. `docs/SECURITY_MODEL_DISCUSSION.md`
+21. `docs/AGENT_SECURITY_RESEARCH_2024_2026.md`
+22. `docs/GOAL_ALIGNMENT_CHECKS.md`
+23. `docs/LOOP_TRAJECTORY_CHECKS.md`
+24. `docs/HUMAN_STEERING_MODES.md`
+25. `docs/AI_AGENT_EFFICIENCY_ENGINEERING.md`
+26. `docs/PLUGIN_AND_EXTENSION_ARCHITECTURE_DISCUSSION.md`
+27. `docs/MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`
+28. `docs/PROMPT_CHECKPOINT_TEMPLATES.md`
+29. `docs/CHECKPOINT_POLICY_ALGORITHM.md`
+30. `docs/SIDE_EFFECT_LEDGER_DISCUSSION.md`
+31. `docs/DRIFT_GUARD_DISCUSSION.md`
+32. `docs/REFERENCE_FRAMEWORKS_AND_OBSERVABILITY.md`
+33. `docs/AGENT_EVOLUTION_READING_LIST.md`
+34. `docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md`
+35. `docs/ARCHITECTURE_QUESTIONS.md`
+36. `docs/HARNESS_SOURCES.md`
 
 ## 文档分层
 
@@ -51,7 +58,7 @@
 职责：
 
 - 给出项目定位
-- 保留两条主线
+- 保留四个专业研发方向和两个产品族投影
 - 保持简短
 - 链接到更深入的 docs
 
@@ -64,20 +71,32 @@ README 不应该承载完整架构细节。
 职责：
 
 - 说明为什么是一个项目
-- 说明为什么保留软件开发智能体与安全智能体两条主线
+- 说明四个专业研发方向、两个产品族投影和共享 Harness 边界
 - 说明通用 harness 与领域能力的边界
 - 说明当前不做什么
 
 该文档是上位方向，不是最终实现规格。
 
-### 3. 主线与横向能力关系
+### 2.1 客户需求参考
+
+- `docs/CUSTOMER_REQUIREMENTS_REFERENCE.md`
+
+职责：
+
+- 保留客户提供的项目标题、四个子课题、业务痛点、目标能力和预期价值；
+- 明确客户材料主要对应持续运维及相关运维领域应用，不改变软件开发 Phase 1 方向；
+- 区分客户明确需求、整理抽象和待客户确认项；
+- 作为通用 harness 与运维/资源领域 adapter 之间的需求追溯入口；
+- 不把客户目标写成当前已实现能力，不替代正式 PRD、接口协议或安全评审。
+
+### 3. 专业方向与横向能力关系
 
 - `docs/TRACKS_AND_CAPABILITIES.md`
 
 职责：
 
-- 拆分主线场景、通用 harness 核心、横向支撑能力
-- 避免把 goal、loop、memory、efficiency、tool/skill/MCP、auto-evolution 误写成第三条业务主线
+- 拆分四个专业方向、共享 Harness 核心和横向支撑能力
+- 避免把 goal、loop、memory、efficiency、tool/skill/MCP、auto-evolution 误写成第五个业务方向
 - 给未来目录和模块边界提供依据
 
 ### 3.1 第一阶段实现范围
@@ -93,7 +112,33 @@ README 不应该承载完整架构细节。
 
 该文档负责回答：现在可以开始实现什么，以及哪些未来设计不能进入第一阶段交付标准。
 
-### 3.2 第一阶段开发执行文档
+### 3.2 长期研发路线与领域设计
+
+- `docs/AGENT_RND_ROADMAP.md`
+- `docs/CONTINUOUS_OPERATIONS_AGENT_DESIGN.md`
+- `docs/SECURITY_ASSESSMENT_AGENT_DESIGN.md`
+- `docs/SECURITY_OPERATIONS_AGENT_DESIGN.md`
+
+职责：
+
+- 固定四个方向的阶段顺序、依赖和验收标准；
+- 分别定义持续运维、安全评估与漏洞研究、安全运营的领域对象和运行闭环；
+- 明确长期常驻与 Phase 1 单机顺序实现之间的边界；
+- 规定领域智能体必须复用共享任务、证据、授权、审批和恢复契约。
+
+### 3.3 Agent 安全研究与共享安全模型
+
+- `docs/AGENT_SECURITY_RESEARCH_2024_2026.md`
+- `docs/SECURITY_MODEL_DISCUSSION.md`
+
+职责：
+
+- 区分官方资料、研究复现、媒体/社区报道、推断和待复核事实；
+- 提炼 Provider 出口、Prompt Injection、记忆投毒、工具供应链和长期运行安全机制；
+- 定义共享 Harness 的信任边界、数据分级、最小权限、审计、恢复和高风险动作门禁；
+- 不把供应商政策或新闻报道写成 Agent 单侧已经解决的事实。
+
+### 3.4 第一阶段开发执行文档
 
 - `docs/PHASE_1_DESIGN.md`
 - `docs/PHASE_1_TODO.md`
@@ -108,7 +153,7 @@ README 不应该承载完整架构细节。
 
 该组文档负责回答：具体怎么开始开发、按什么顺序开发、如何证明第一阶段真的可用。
 
-### 3.3 第一阶段实现契约
+### 3.5 第一阶段实现契约
 
 - `docs/PHASE_1_CONTRACTS.md`
 
@@ -327,7 +372,7 @@ README 不应该承载完整架构细节。
 
 - 定义外部副作用记录、重放、补偿和恢复协调
 - 防止 restore 后重复执行不可逆动作
-- 服务安全智能体、运维智能体和开发智能体的高风险动作审计
+- 服务软件开发、持续运维、安全评估与漏洞研究、安全运营四个方向的高风险动作审计
 
 该文档负责回答：外部动作发生后，checkpoint/restore 如何保持安全。
 

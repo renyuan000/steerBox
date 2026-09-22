@@ -22,7 +22,7 @@ shared harness core + software development agent vertical slice
 - 本地文件修改有 checkpoint / diff boundary
 - 工具调用有 side-effect 分类
 - 高风险动作能升级到人类介入
-- 为安全智能体、插件、记忆进化保留接口；多模型实现静态 registry、规则式路由和一个真实 adapter，不实现完整自适应系统
+- 为持续运维、安全评估与漏洞研究、安全运营、插件和记忆进化保留接口；多模型实现静态 registry、规则式路由和一个真实 adapter，不实现完整自适应系统
 
 ## 非目标
 
@@ -30,7 +30,7 @@ shared harness core + software development agent vertical slice
 
 - 完整多智能体系统
 - 完整 supervisor-workers 架构
-- 完整安全运维闭环
+- 持续运维、安全评估与漏洞研究、安全运营的完整闭环
 - 自动渗透测试执行链
 - 向量数据库和图数据库
 - 插件市场

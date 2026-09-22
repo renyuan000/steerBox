@@ -2,7 +2,7 @@
 
 [README.md](./README.md) | [English](./README_EN.md)
 
-在一个安全、可控、可引导的环境中，通过构建软件开发智能体与安全智能体，练习 Harness Engineering。
+在一个安全、可控、可引导的环境中，通过软件开发、持续运维、安全评估与漏洞研究、安全运营四个专业方向，练习 Harness Engineering。
 
 ## 项目定位
 
@@ -17,7 +17,7 @@
 - 行为可审计
 - 决策与执行流程可追踪
 
-## 两条主线
+## 四个专业方向
 
 ### 1. 软件开发智能体
 
@@ -30,15 +30,32 @@
 - 开发工作流控制
 - 持续反馈与持续修正
 
-### 2. 安全智能体
+### 2. 持续运维智能体
 
 当前关注：
 
-- 长时间自动化安全运维
-- 长时间自动化安全日志分析
-- 长时间自动化安全事件发现与响应
-- 自动化攻防分析与漏洞发掘分析
-- 安全开发与安全审查相关场景
+- 服务健康、可用性、性能、容量和成本治理
+- 部署和变更观察
+- 故障定位、恢复编排和恢复后验证
+- 混合云资源治理
+
+### 3. 安全评估与漏洞研究智能体
+
+当前关注：
+
+- 授权安全审查与攻击面分析
+- 漏洞研究与受控 PoC 模拟验证
+- 授权渗透测试与攻击路径验证
+- 有证据的修复复测
+
+### 4. 安全运营智能体
+
+当前关注：
+
+- 持续接入并关联日志、告警、资产和威胁情报
+- 调查漏洞、后门、病毒和 APT 相关线索
+- 编排受控验证和分级处置
+- 允许用户随时查询、审批、暂停、恢复或接管长期调查
 
 说明：
 
@@ -68,6 +85,11 @@
 - [Architecture Direction](./docs/ARCHITECTURE_DIRECTION.md)
 - [Architecture Questions](./docs/ARCHITECTURE_QUESTIONS.md)
 - [Documentation Map](./docs/DOCUMENTATION_MAP.md)
+- [Agent R&D Roadmap](./docs/AGENT_RND_ROADMAP.md)
+- [Continuous Operations Agent Design](./docs/CONTINUOUS_OPERATIONS_AGENT_DESIGN.md)
+- [Security Assessment Agent Design](./docs/SECURITY_ASSESSMENT_AGENT_DESIGN.md)
+- [Security Operations Agent Design](./docs/SECURITY_OPERATIONS_AGENT_DESIGN.md)
+- [Shared Harness Security Model](./docs/SECURITY_MODEL_DISCUSSION.md)
 - [Tracks and Supporting Capabilities](./docs/TRACKS_AND_CAPABILITIES.md)
 - [Goal and Loop Engineering Discussion](./docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md)
 - [Goal Alignment Checkpoints](./docs/GOAL_ALIGNMENT_CHECKS.md)

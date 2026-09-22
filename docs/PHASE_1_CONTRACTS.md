@@ -48,7 +48,7 @@ one Portfolio
 - worktree lease 的并行写入协调
 - 多模型 planner/implementer/reviewer 协作 runtime
 - 自动 prompt、skill、policy 或模型路由 promotion
-- 完整安全智能体处置闭环
+- 持续运维、安全评估与漏洞研究、安全运营的完整闭环
 
 ## 二、公共标识与版本
 

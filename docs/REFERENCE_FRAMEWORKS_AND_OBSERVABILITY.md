@@ -301,7 +301,7 @@ LLM-as-judge 有价值，但高可靠系统还需要：
 
 ### 已覆盖
 
-- `ARCHITECTURE_DIRECTION.md`: 总方向、两条主线、人类可掌舵运行模式
+- `ARCHITECTURE_DIRECTION.md`: 总方向、四个专业研发方向、人类可掌舵运行模式
 - `STORAGE_AND_RECOVERY_DISCUSSION.md`: 持久化、checkpoint、restore、supervisor
 - `GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md`: GoalContract、LoopController、控制门
 - `AI_AGENT_EFFICIENCY_ENGINEERING.md`: 效率指标、成本、质量、恢复、多模型路由

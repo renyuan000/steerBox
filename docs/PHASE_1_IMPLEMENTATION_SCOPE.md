@@ -10,22 +10,28 @@
 
 第一阶段不应该做成只能演示的 demo。
 
-但第一阶段也不应该一次性实现完整的自适应多模型路由、插件市场、向量记忆、图记忆、dream learning、自动进化、完整安全运营和通用 Manus-like agent。
+但第一阶段也不应该一次性实现完整的自适应多模型路由、插件市场、向量记忆、图记忆、dream learning、自动进化、四个专业方向的完整闭环和通用 Manus-like agent。
 
 更合理的目标是：
 
 ```text
 用最小但真实可扩展的 harness core，
 跑通一个软件开发智能体垂直切片，
-同时为安全智能体和长期演进能力保留清晰接口。
+同时为持续运维、安全评估与漏洞研究、安全运营和长期演进能力保留清晰接口。
 ```
 
 换句话说：
 
 - 第一阶段要验证 `steerBox` 的核心控制模型是否成立
 - 第一阶段优先服务软件开发智能体
-- 安全智能体先保留 track 边界、policy 边界和 side-effect 边界
+- 其他三个方向先保留 track 边界、授权/policy 边界和 side-effect 边界
 - 通用全功能智能体暂不作为第一阶段目标
+
+### 长期运行目标与 Phase 1 实现边界
+
+架构目标是四个专业方向都支持 7x24 常驻和多年可恢复生命周期；这不是 Phase 1 已实现能力的声明。Phase 1 只实现本地单机、顺序执行、持久化事件、任务状态和最小 `RecoveryCheckpoint`，用软件开发垂直切片验证恢复契约。
+
+Phase 1 不实现分布式 worker、高可用故障转移、完整安全运营常驻服务、自动渗透测试执行链或自动安全处置闭环。后续方向必须复用共享 Harness 的任务、证据、授权、审批和恢复接口，而不能另起一套不可审计的常驻循环。
 
 ## 第一阶段必须实现
 
@@ -217,7 +223,7 @@ Phase 1 的对象、事件、状态迁移、幂等、版本冲突、投影和敏
 - 自动 policy 进化
 - 跨项目全局记忆
 - 完整交互式 TUI/Web control plane
-- 安全智能体完整运营闭环
+- 持续运维、安全评估与漏洞研究、安全运营的完整运营闭环
 - 通用 Manus-like agent
 
 占位的要求是：
@@ -240,7 +246,7 @@ Phase 1 的对象、事件、状态迁移、幂等、版本冲突、投影和敏
 - 完整向量检索和图推理系统
 - 完整 self-evolution runtime
 
-这些能力保留在长期方向中，但不进入第一阶段交付标准。
+这些能力保留在长期方向中，但不进入第一阶段交付标准。长期方向的正式划分和验收依赖见 `AGENT_RND_ROADMAP.md`、`CONTINUOUS_OPERATIONS_AGENT_DESIGN.md`、`SECURITY_ASSESSMENT_AGENT_DESIGN.md` 和 `SECURITY_OPERATIONS_AGENT_DESIGN.md`。
 
 ## 第一阶段推荐技术边界
 
@@ -281,7 +287,7 @@ recipes/           -> baseline tool recipes
 8. 能用事件日志复盘一次完整任务
 9. 能说明哪些能力只是占位，哪些已经实现
 
-如果这些成立，即使没有复杂 UI、向量记忆、自适应多模型路由和安全智能体完整闭环，第一阶段也是成功的。
+如果这些成立，即使没有复杂 UI、向量记忆、自适应多模型路由和后三个专业方向的完整闭环，第一阶段也是成功的。
 
 ## 第一阶段建议实现顺序
 
@@ -307,7 +313,11 @@ recipes/           -> baseline tool recipes
 ## 与其他文档的关系
 
 - `ARCHITECTURE_DIRECTION.md` 定义项目方向
-- `TRACKS_AND_CAPABILITIES.md` 定义主线与横向能力关系
+- `TRACKS_AND_CAPABILITIES.md` 定义四个专业方向与横向能力关系
+- `AGENT_RND_ROADMAP.md` 定义四个方向的长期优先级、依赖和验收阶段
+- `CONTINUOUS_OPERATIONS_AGENT_DESIGN.md` 定义持续运维方向
+- `SECURITY_ASSESSMENT_AGENT_DESIGN.md` 定义安全评估与漏洞研究方向
+- `SECURITY_OPERATIONS_AGENT_DESIGN.md` 定义安全运营方向
 - `STORAGE_AND_RECOVERY_DISCUSSION.md` 定义长期运行和恢复底座
 - `MEMORY_STORAGE_AND_CONSOLIDATION.md` 定义多层记忆和存储演进
 - `GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md` 定义 goal / loop 模型

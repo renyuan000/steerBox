@@ -4,7 +4,7 @@
 
 ## English
 
-Practice Harness Engineering by building software development agents and security agents in a safe, steered environment.
+Practice Harness Engineering through four professional agent directions in a safe, steered environment: software development, continuous operations, security assessment and vulnerability research, and security operations.
 
 ### Positioning
 
@@ -19,7 +19,7 @@ Its core question is not simply whether an agent can do work, but how to combine
 - auditable behavior
 - traceable decision and execution flows
 
-### Two Tracks
+### Four Professional Directions
 
 #### 1. Software Development Agents
 
@@ -30,13 +30,26 @@ Its core question is not simply whether an agent can do work, but how to combine
 - development workflow control
 - continuous feedback and correction
 
-#### 2. Security Agents
+#### 2. Continuous Operations Agents
 
-- long-running security operations
-- long-running security log analysis
-- long-running security event detection and incident response
-- automated offensive/defensive analysis and vulnerability research
-- secure development and security review related scenarios
+- service health, availability, performance, capacity, and cost
+- deployment and change observation
+- incident diagnosis, recovery orchestration, and recovery verification
+- hybrid-cloud resource governance
+
+#### 3. Security Assessment and Vulnerability Research Agents
+
+- authorized security review and attack-surface analysis
+- vulnerability research and controlled PoC simulation
+- authorized penetration testing and attack-path validation
+- remediation verification with evidence
+
+#### 4. Security Operations Agents
+
+- continuously ingest and correlate logs, alerts, assets, and threat intelligence
+- investigate vulnerabilities, backdoors, malware, and APT-related signals
+- orchestrate controlled validation and risk-based response
+- allow users to inspect, approve, pause, resume, or take over long-running investigations
 
 ### Core Principles
 
@@ -72,7 +85,7 @@ Its core question is not simply whether an agent can do work, but how to combine
 
 ## 简体中文
 
-在一个安全、可控、可引导的环境中，通过构建软件开发智能体与安全智能体，练习 Harness Engineering。
+在一个安全、可控、可引导的环境中，通过软件开发、持续运维、安全评估与漏洞研究、安全运营四个专业方向，练习 Harness Engineering。
 
 ### 项目定位
 
@@ -87,7 +100,7 @@ Its core question is not simply whether an agent can do work, but how to combine
 - 行为可审计
 - 决策与执行流程可追踪
 
-### 两条主线
+### 四个专业方向
 
 #### 1. 软件开发智能体
 
@@ -98,13 +111,26 @@ Its core question is not simply whether an agent can do work, but how to combine
 - 开发工作流控制
 - 持续反馈与持续修正
 
-#### 2. 安全智能体
+#### 2. 持续运维智能体
 
-- 长时间自动化安全运维
-- 长时间自动化安全日志分析
-- 长时间自动化安全事件发现与响应
-- 自动化攻防分析与漏洞发掘分析
-- 安全开发与安全审查相关场景
+- 服务健康、可用性、性能、容量和成本治理
+- 部署和变更观察
+- 故障定位、恢复编排和恢复后验证
+- 混合云资源治理
+
+#### 3. 安全评估与漏洞研究智能体
+
+- 授权安全审查与攻击面分析
+- 漏洞研究与受控 PoC 模拟验证
+- 授权渗透测试与攻击路径验证
+- 有证据的修复复测
+
+#### 4. 安全运营智能体
+
+- 持续接入并关联日志、告警、资产和威胁情报
+- 调查漏洞、后门、病毒和 APT 相关线索
+- 编排受控验证和分级处置
+- 允许用户随时查询、审批、暂停、恢复或接管长期调查
 
 ### 核心原则
 
@@ -123,6 +149,12 @@ Its core question is not simply whether an agent can do work, but how to combine
 - [Architecture Direction](./docs/ARCHITECTURE_DIRECTION.md)
 - [Architecture Questions](./docs/ARCHITECTURE_QUESTIONS.md)
 - [Documentation Map](./docs/DOCUMENTATION_MAP.md)
+- [Agent R&D Roadmap](./docs/AGENT_RND_ROADMAP.md)
+- [Continuous Operations Agent Design](./docs/CONTINUOUS_OPERATIONS_AGENT_DESIGN.md)
+- [Security Assessment Agent Design](./docs/SECURITY_ASSESSMENT_AGENT_DESIGN.md)
+- [Security Operations Agent Design](./docs/SECURITY_OPERATIONS_AGENT_DESIGN.md)
+- [Shared Harness Security Model](./docs/SECURITY_MODEL_DISCUSSION.md)
+- [Agent Security Research 2024-2026](./docs/AGENT_SECURITY_RESEARCH_2024_2026.md)
 - [Tracks and Supporting Capabilities](./docs/TRACKS_AND_CAPABILITIES.md)
 - [Goal and Loop Engineering Discussion](./docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md)
 - [Goal Alignment Checkpoints](./docs/GOAL_ALIGNMENT_CHECKS.md)

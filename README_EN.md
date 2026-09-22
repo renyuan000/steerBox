@@ -2,7 +2,7 @@
 
 [README.md](./README.md) | [简体中文](./README_CN.md)
 
-Practice Harness Engineering by building software development agents and security agents in a safe, steered environment.
+Practice Harness Engineering through four professional agent directions in a safe, steered environment: software development, continuous operations, security assessment and vulnerability research, and security operations.
 
 ## Positioning
 
@@ -17,7 +17,7 @@ Its core question is not simply whether an agent can do work, but how to combine
 - auditable behavior
 - traceable decision and execution flows
 
-## Two Tracks
+## Four Professional Directions
 
 ### 1. Software Development Agents
 
@@ -30,15 +30,32 @@ Current focus:
 - development workflow control
 - continuous feedback and correction
 
-### 2. Security Agents
+### 2. Continuous Operations Agents
 
 Current focus:
 
-- long-running security operations
-- long-running security log analysis
-- long-running security event detection and incident response
-- automated offensive/defensive analysis and vulnerability research
-- secure development and security review related scenarios
+- service health, availability, performance, capacity, and cost
+- deployment and change observation
+- incident diagnosis, recovery orchestration, and recovery verification
+- hybrid-cloud resource governance
+
+### 3. Security Assessment and Vulnerability Research Agents
+
+Current focus:
+
+- authorized security review and attack-surface analysis
+- vulnerability research and controlled PoC simulation
+- authorized penetration testing and attack-path validation
+- remediation verification with evidence
+
+### 4. Security Operations Agents
+
+Current focus:
+
+- continuously ingest and correlate logs, alerts, assets, and threat intelligence
+- investigate vulnerabilities, backdoors, malware, and APT-related signals
+- orchestrate controlled validation and risk-based response
+- allow users to inspect, approve, pause, resume, or take over long-running investigations
 
 Notes:
 
@@ -68,6 +85,11 @@ Notes:
 - [Architecture Direction](./docs/ARCHITECTURE_DIRECTION.md)
 - [Architecture Questions](./docs/ARCHITECTURE_QUESTIONS.md)
 - [Documentation Map](./docs/DOCUMENTATION_MAP.md)
+- [Agent R&D Roadmap](./docs/AGENT_RND_ROADMAP.md)
+- [Continuous Operations Agent Design](./docs/CONTINUOUS_OPERATIONS_AGENT_DESIGN.md)
+- [Security Assessment Agent Design](./docs/SECURITY_ASSESSMENT_AGENT_DESIGN.md)
+- [Security Operations Agent Design](./docs/SECURITY_OPERATIONS_AGENT_DESIGN.md)
+- [Shared Harness Security Model](./docs/SECURITY_MODEL_DISCUSSION.md)
 - [Tracks and Supporting Capabilities](./docs/TRACKS_AND_CAPABILITIES.md)
 - [Goal and Loop Engineering Discussion](./docs/GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md)
 - [Goal Alignment Checkpoints](./docs/GOAL_ALIGNMENT_CHECKS.md)

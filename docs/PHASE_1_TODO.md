@@ -22,7 +22,7 @@
 - [ ] 阅读并确认 PHASE_1_CONTRACTS.md 是 schema、event、state 和 projection 的 Phase 1 规范源
 - [ ] 确认当前文档变更已提交或明确保留在工作区
 - [ ] 确认第一阶段只按 `PHASE_1_IMPLEMENTATION_SCOPE.md` 和 `PHASE_1_DESIGN.md` 开发
-- [ ] 确认第一阶段不创建安全智能体完整闭环
+- [ ] 确认第一阶段不创建持续运维、安全评估与漏洞研究、安全运营的完整闭环
 - [ ] 确认运行数据目录不会污染源码提交
 
 验收：

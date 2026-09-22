@@ -26,7 +26,7 @@
 
 | 主题 | 当前状态 | 依据与边界 |
 |---|---|---|
-| 核心边界 | `partially_resolved` | Phase 1 固定为 shared harness core + software development agent vertical slice；安全智能体仍是后续主线 |
+| 核心边界 | `partially_resolved` | Phase 1 固定为 shared harness core + software development agent vertical slice；持续运维、安全评估与漏洞研究、安全运营属于后续方向 |
 | 长时运行 | `partially_resolved` | Goal / Loop、EventLog、StateStore、checkpoint 有设计；生产级恢复和调度仍待实现 |
 | Steering / PolicyGate | `partially_resolved` | 有人类模式、策略门和审计边界；完整策略评估与权限模型仍待收敛 |
 | 人在环 | `partially_resolved` | 已定义观察、审批、暂停、恢复和接管模式；控制面交互仍未实现 |
@@ -34,7 +34,7 @@
 | Portfolio / Board | `partially_resolved` | Phase 1 固定 schema 和只读 projection fixture；真实多项目并行调度不在 Phase 1 |
 | 多模型 | `partially_resolved` | 已有静态 profile、规则路由、prompt pack 和 fallback 契约；adapter 运行时和供应商差异仍待独立收敛 |
 | 自进化 | `partially_resolved` | 已有 SystemEvolutionTask 和 local → project → portfolio → global 晋升边界；验证、审批和回滚 runtime 仍待实现 |
-| 安全模型 | `open` | 需要单独形成 threat model、trust boundary、secret 和高风险动作策略 |
+| 安全模型 | `partially_resolved` | 已有 `SECURITY_MODEL_DISCUSSION.md` 和研究清单；具体 schema、运行时策略和测试仍待实现 |
 | 语言和构建 | `open` | 先按模块职责和验证结果选型，当前不把语言选择写死 |
 
 ### Phase 1 收敛边界
@@ -58,14 +58,14 @@ Portfolio、Task、Attempt 和 BoardProjection 在 Phase 1 进入 schema、事�
 优先问题：
 
 - `steerBox` 的最小通用核心是什么
-- 哪些能力必须同时服务开发智能体和安全智能体
+- 哪些能力必须同时服务四个专业方向
 - 哪些能力不应放在核心层，而应留在领域层
 - 项目的第一阶段，是先验证通用 harness，还是先验证某一条主线
 
 当前已知方向：
 
 - 项目保持一个统一核心
-- 项目承载两条主线：软件开发智能体、安全智能体
+- 项目承载四个专业方向：软件开发、持续运维、安全评估与漏洞研究、安全运营
 - 核心目标是组合长时执行、约束控制、反馈闭环、人在环、审计和 tracing
 
 ## 2. 长时运行模型
@@ -106,7 +106,7 @@ Portfolio、Task、Attempt 和 BoardProjection 在 Phase 1 进入 schema、事�
 
 ## 4. 工具调用与权限控制
 
-无论是开发还是安全方向，都离不开工具调用与环境访问，因此必须尽早定义权限边界。
+无论是开发、运维还是安全领域方向，都离不开工具调用与环境访问，因此必须尽早定义权限边界。
 
 优先问题：
 
@@ -194,26 +194,26 @@ Portfolio、Task、Attempt 和 BoardProjection 在 Phase 1 进入 schema、事�
 - 重点不是“会生成代码”
 - 重点是“能在受控约束和验证反馈下长期推进开发任务”
 
-## 9. 安全方向的专用问题
+## 9. 安全评估与安全运营的专用问题
 
-安全智能体方向后续至少需要回答以下问题：
+安全评估与安全运营方向后续至少需要回答以下问题：
 
 - 安全日志与信号的输入模型是什么
 - 任务是流式持续分析，还是按窗口/批次分析
 - 事件发现、分析结论、响应建议和响应执行如何分层
 - 什么动作只能建议，什么动作可以自动执行
 - 自动化响应是否必须经过审批
-- 如何避免安全方向的自动化能力越权、误报或误处置
-- 如何支持持续运行中的观察、干预和接管
+- 如何避免安全评估越权、越界验证，或安全运营误报、误处置
+- 如何支持两个安全方向持续运行中的观察、干预和接管
 
 设计关注点：
 
-- 当前优先落点更接近持续工作的安全运维智能体
+- 当前优先落点分别是授权安全评估和持续工作的安全运营智能体
 - 自动化不能脱离安全边界与审批模型单独讨论
 
 ## 10. 通用层与领域层的接口问题
 
-一个项目承载两条主线，最终成败很大程度上取决于接口边界是否清楚。
+一个项目承载四个专业方向，最终成败很大程度上取决于接口边界是否清楚。
 
 优先问题：
 

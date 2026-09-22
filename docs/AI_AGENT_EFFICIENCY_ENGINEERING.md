@@ -133,7 +133,7 @@ Agent Efficiency = Verified Goal Achievement / Total Cost
 - `unintended_file_change_count`
 - `code_practice_violation_count`
 
-安全方向指标包括：
+安全领域方向指标包括：
 
 - `false_positive_rate`
 - `false_negative_rate`
@@ -456,9 +456,11 @@ Agent Efficiency = Verified Goal Achievement / Total Cost
 
 AI 智能体效率工程应该成为 `steerBox` 的横向核心能力。
 
-它服务于两条主线：
+它服务于四个专业方向：
 
 - 软件开发智能体：更快、更稳、更高质量地完成真实代码任务
-- 安全智能体：更低资源、更低误报漏报、更可审计地长期分析和响应安全事件
+- 持续运维智能体：更低资源、更快发现和恢复服务/资源问题
+- 安全评估与漏洞研究智能体：更高验证质量、更低副作用、更可审计地完成授权评估
+- 安全运营智能体：更低误报漏报、更可审计地长期分析和响应安全事件
 
 最终目标不是让 agent 看起来自动化，而是让 agent 在真实约束下以最小总成本稳定达成高质量、可验证、可恢复的目标。
