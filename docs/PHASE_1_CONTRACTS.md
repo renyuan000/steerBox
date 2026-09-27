@@ -505,6 +505,21 @@ timeout
 | Secret boundary | 序列化和 trace 中没有认证明文 |
 | Failure category | 失败可分类并可反查原始证据 |
 
+## 十三、Memory Contract 边界
+
+Phase 1 采用 `docs/MEMORY_SCOPE_AND_LIFECYCLE_CONTRACTS.md` 作为 memory scope、lifecycle、provenance、visibility 和 promotion 的补充规范。实现必须遵守以下最小边界：
+
+- `WorkingMemory` 只服务当前 run；
+- `MemoryCandidate` 可以从事件和验证结果产生，但不等同于 accepted memory；
+- Project memory 必须带 `project_id`、来源和适用范围；
+- Global memory 和 CrossProjectLink 在 Phase 1 只保留 schema/事件边界，不自动 promotion、不隐式共享；
+- checkpoint、event log、state store 和 long-term memory 不能混成一个事实表；
+- retrieval 先执行 PolicyGate、scope、lifecycle 和 provenance 过滤，再使用可选索引；
+- memory、recipe、skill 或 routing 的提升必须有证据、验证、版本和回滚引用。
+- Wiki 只能作为带 source citation 的派生知识视图；`WikiPageCandidate` 不等同于事实或全局规则。
+
+Phase 1 允许实现：durable event/state/checkpoint、run 级 working memory、项目级 candidate、确定性 metadata retrieval 和 local verified recipe candidate chain。向量库、图数据库、全局自动提升、跨项目隐式可见和无审批自进化均属于后续阶段。
+
 ## 当前结论
 
 完成本文件并同步 Phase 1 Scope、Design、TODO、Validation 后，才可以把 Phase 1 标记为：

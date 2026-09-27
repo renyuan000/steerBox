@@ -320,6 +320,8 @@ recipes/           -> baseline tool recipes
 - `SECURITY_OPERATIONS_AGENT_DESIGN.md` 定义安全运营方向
 - `STORAGE_AND_RECOVERY_DISCUSSION.md` 定义长期运行和恢复底座
 - `MEMORY_STORAGE_AND_CONSOLIDATION.md` 定义多层记忆和存储演进
+- `MEMORY_SCOPE_AND_LIFECYCLE_CONTRACTS.md` 定义记忆 scope、provenance、lifecycle、promotion 和可见性
+- `RAG_WIKI_KNOWLEDGE_COMPILATION.md` 定义 RAG 证据到项目 Wiki 派生视图的编译、回链、过期和分级发布
 - `GOAL_AND_LOOP_ENGINEERING_DISCUSSION.md` 定义 goal / loop 模型
 - `GOAL_ALIGNMENT_CHECKS.md` 定义方向检查
 - `DRIFT_GUARD_DISCUSSION.md` 定义防破坏性漂移

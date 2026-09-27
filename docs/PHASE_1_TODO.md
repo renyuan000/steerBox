@@ -82,11 +82,27 @@
 - [ ] 实现 trace JSONL append
 - [ ] 实现 run summary 写入
 
+Memory 最小实现：
+
+- [ ] 定义 `MemoryRecord`、`MemoryCandidate`、`MemoryPromotion` 的 Phase 1 子集
+- [ ] 定义 `WorkingMemory` 与 project-scoped candidate 的可见性边界
+- [ ] 实现 candidate 的 provenance、confidence、lifecycle state 和 source event refs
+- [ ] 实现按 project / goal / task 的确定性 metadata retrieval
+- [ ] 将 memory 写入、检索和 promotion decision 写入 EventLog
+- [ ] 明确 Phase 1 不启用 vector index、graph index、global auto-promotion 或 cross-project implicit visibility
+- [ ] 定义 `EvidencePack`、`WikiPage`、`WikiRevision` 的 Phase 1 子集
+- [ ] 实现通过验证结果生成项目范围 `WikiPageCandidate`
+- [ ] 实现 wiki-first 查询、source citation、expiry 和 revalidation 事件
+- [ ] 实现低风险项目页自动发布，高风险/global/cross-project 只生成 candidate
+
 验收：
 
 - 写入一轮 fake loop 后，event/state/trace 都能查询
 - 进程重启后能读取 current state
 - trace 文件可被 `tail` / `rg` 阅读
+- candidate 可从 source event 反查，且 project scope 过滤不会返回其他项目的记录
+- memory candidate 不会自动变为 global policy、skill 或 model routing
+- Wiki 页面可以反查 EvidencePack/source ref，过期页面不会直接支撑高风险动作
 
 ### P4. ToolRegistry
 
