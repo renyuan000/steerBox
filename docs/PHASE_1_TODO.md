@@ -143,12 +143,18 @@ Memory 最小实现：
 - [ ] 支持 step start / complete / fail
 - [ ] 支持 stop condition
 - [ ] 支持失败后 reflection summary
+- [ ] 实现 `UserCommandInbox` 持久化和边界读取
+- [ ] 实现 `GoalRevision` / `PlanRevision` 与旧计划失效
+- [ ] 实现 `InterruptRequest` 的安全边界和 `side_effect_uncertain` 分支
+- [ ] 实现 `LoopBudget` 与 `NoProgressObservation`，达到上限后停止自动重试
 
 验收：
 
 - 能跑完一个无文件修改的只读 loop
 - 能跑完一个有文件修改和验证的 dev loop
 - 每个 step 都有 event 和 trace
+- 插话不会清零 TaskRun budget、Attempt lineage、retry 或 no-progress counter
+- 重复动作、重复失败和重复计划能触发 `no_progress_detected`
 
 ### P7. RecoveryCheckpoint
 
@@ -268,6 +274,8 @@ Memory 最小实现：
 - [ ] 更新第一阶段完成状态
 - [ ] 记录已实现能力和占位能力
 - [ ] 记录已知限制
+- [ ] 明确运行数据写入 `/temp/steerbox/<project_ref>/.steerbox/`
+- [ ] 明确用户插话、计划失效和死循环停止契约
 
 验收：
 

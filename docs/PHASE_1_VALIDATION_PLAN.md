@@ -25,10 +25,12 @@
 推荐数据目录：
 
 ```text
-.steerbox/
+/temp/steerbox/<project_ref>/.steerbox/
 ```
 
-该目录应作为运行产物处理，不应默认提交。
+该目录应作为运行产物处理，不应默认提交；项目目录内的 `target/` 和 `.steerbox/` 仍需由 `.gitignore` 兜底排除。
+
+WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log -1 --oneline --decorate` 和运行数据目录存在性检查，再继续 loop；不能把文档状态或内存状态当作 runtime 已恢复的证据。
 
 ## 最小端到端验证任务
 

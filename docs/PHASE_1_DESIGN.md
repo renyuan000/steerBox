@@ -106,6 +106,9 @@ updated_at
 - 调用 PolicyGate
 - 记录 EventLog 和 TraceRecord
 - 决定是否触发 GoalAlignmentCheck、DriftGuard、RecoveryCheckpoint、人类介入
+- 在模型返回、工具完成、LoopStep 完成、验证开始、checkpoint 创建和 heartbeat 边界读取 `UserCommandInbox`
+- 在高风险动作前重新读取控制指令；安全边界外的 pause/cancel/takeover 必须进入 `waiting_human` 或 `blocked`
+- 对每个 TaskRun 维护 `LoopBudget` 和 `NoProgressObservation`，达到任一预算或重复动作上限后停止自动重试
 
 第一阶段支持的 loop pattern：
 
@@ -114,6 +117,20 @@ updated_at
 - `plan_execute_loop`
 - `reflection_after_failure`
 - `manual_or_policy_router`
+
+用户 steering 与 loop guard 的运行顺序：
+
+```text
+receive command -> persist UserCommandInbox
+  -> classify control vs steer vs independent task
+  -> apply control at safe boundary
+  -> create GoalRevision and invalidate old Plan when relevant
+  -> execute one bounded step
+  -> record progress observation and budget counters
+  -> continue, wait_human, blocked, failed, or complete
+```
+
+普通输入不能直接覆盖当前 context；相关输入必须产生 `GoalRevision`/`PlanRevision`，无关输入创建独立 Task。预算、Attempt lineage、retry count 和无进展计数在插话后保持不变。
 
 ### 4. ToolRegistry
 
@@ -191,6 +208,15 @@ side_effect_recorded
 step_completed
 loop_completed
 loop_failed
+user_command_received
+steering_request_classified
+goal_revision_created
+plan_invalidated
+interrupt_requested
+interrupt_applied
+no_progress_detected
+loop_budget_exhausted
+human_takeover_requested
 ```
 
 ### 7. StateStore
@@ -318,10 +344,10 @@ Trace、StateStore 和 BoardProjection 都不是独立事实源；EventLog 是�
 
 ## 存储布局
 
-第一阶段推荐运行数据目录：
+第一阶段推荐运行数据目录（必须位于持久化 `/temp`，不能放在易因 WSL2 重启丢失的临时目录）：
 
 ```text
-.steerbox/
+/temp/steerbox/<project_ref>/.steerbox/
   state.sqlite
   events.sqlite
   traces/
@@ -343,7 +369,7 @@ Trace、StateStore 和 BoardProjection 都不是独立事实源；EventLog 是�
 说明：
 
 - 具体目录名后续实现可调整
-- 运行数据目录应默认不污染项目源码提交
+- 运行数据目录应默认不污染项目源码提交；`.gitignore` 必须排除项目内的 `target/` 和 `.steerbox/` 兜底路径
 - 文档阶段只定义逻辑结构，不提前创建目录
 
 ## 最小数据关系

@@ -209,6 +209,19 @@ manual intervention -> manual_takeover
 
 Phase 1 的对象、事件、状态迁移、幂等、版本冲突、投影和敏感数据规则以 PHASE_1_CONTRACTS.md 为准。
 
+### 12. User steering 与有限 Loop
+
+第一阶段必须实现可审计的插话入口和停止条件，即使暂不提供交互式 TUI/Web：
+
+- 新输入先持久化到 `UserCommandInbox`，控制指令优先于普通 steer；
+- 在模型返回、工具完成、LoopStep 完成、验证开始、checkpoint、heartbeat 和高风险动作前读取 inbox；
+- 相关输入创建 `GoalRevision` 并使旧 `PlanRevision` 失效；无关输入创建独立 Task；
+- `pause`、`cancel`、`takeover` 和拒绝高风险动作不能跳过 `PolicyGate`；side effect 不确定时进入 `waiting_human` 或 `blocked`；
+- `LoopBudget` 至少限制 step、tool call、model call、Attempt、GoalRevision、连续 verification failure、无进展步数和相同动作重复次数；
+- 达到上限必须写事件并停止自动重试，不能通过插话或重新规划清零预算和无进展计数。
+
+这里的“有进展”只接受状态、evidence、文件边界、verification 结果或新失败原因变化；重复计划、重复动作和重复失败不计进展。
+
 ## 第一阶段只做占位
 
 以下能力第一阶段必须在 schema 或接口上留位置，但不要求完整实现：

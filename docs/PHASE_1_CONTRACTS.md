@@ -141,6 +141,15 @@ side_effect_recorded
 checkpoint_created
 lesson_candidate_created
 human_intervention
+user_command_received
+steering_request_classified
+goal_revision_created
+plan_invalidated
+interrupt_requested
+interrupt_applied
+no_progress_detected
+loop_budget_exhausted
+human_takeover_requested
 task_run_waiting
 task_run_succeeded
 task_run_failed
@@ -423,6 +432,91 @@ payload
 2. 提供 `expected_object_version` 时，版本不匹配必须拒绝并返回 conflict；不能覆盖较新的状态。
 3. 查询命令不写 EventLog；暂停、恢复、取消、重试、审批和 reprioritize 必须经过 authorization、PolicyGate 和事件记录。
 4. Phase 1 不实现多 worker 并发写，但 schema 必须保留版本和 command_id，避免未来无法加入并发控制。
+
+### 3. 用户插话、计划失效与 Loop guard
+
+用户在一次模型返回、工具完成或任务步骤之间发出的新要求，先进入持久化的 UserCommandInbox，不能直接覆盖当前 context 或跳过 PolicyGate。
+
+~~~text
+UserCommandInbox {
+  command_id
+  actor_ref
+  target_type?
+  target_id?
+  command_kind       # steer | pause | resume | cancel | approve | takeover | new_task
+  received_at
+  correlation_id
+  payload_ref
+  status             # pending | classified | applied | rejected | superseded
+}
+
+GoalRevision {
+  revision_id
+  goal_id
+  previous_version
+  new_version
+  command_id
+  changed_fields
+  impact
+  approval_required
+  created_at
+}
+
+PlanRevision {
+  plan_revision_id
+  goal_revision_id
+  invalidates_plan_id
+  replacement_plan_id?
+  created_at
+}
+
+InterruptRequest {
+  interrupt_id
+  command_id
+  target_type
+  target_id
+  kind                 # pause | cancel | takeover | reject_action
+  requested_at
+  safe_boundary        # next_boundary | immediate | human_required
+  status               # requested | applied | waiting_human | rejected
+  side_effect_state    # none | known | side_effect_uncertain
+}
+
+NoProgressObservation {
+  observation_id
+  task_run_id
+  attempt_id
+  step_id
+  action_fingerprint
+  progress_kind        # state | evidence | file_boundary | verification | failure_reason | none
+  no_progress_steps
+  same_action_repetitions
+  detected_at
+}
+
+LoopBudget {
+  max_loop_steps
+  max_tool_calls
+  max_model_calls
+  max_attempts
+  max_goal_revisions
+  max_no_progress_steps
+  max_same_action_repetitions
+  max_consecutive_verification_failures
+  counters_are_task_run_scoped
+}
+~~~
+
+处理边界：
+
+1. 普通 steer 指令在模型返回、工具完成、LoopStep 完成、验证开始、checkpoint 创建和 heartbeat 检查点读取；高风险动作前必须重新读取。
+2. pause、cancel、takeover、拒绝高风险动作等控制指令优先处理。当前外部动作不能安全中断时，必须记录 side_effect_uncertain 并进入 waiting_human 或 blocked，不能声称已经停止。
+3. 与当前 GoalContract、project、workspace 或 TaskRun 相关的指令创建 GoalRevision；旧 plan 必须标记失效后才能重新规划。无关要求创建独立 Task，不把另一项目上下文注入当前 Loop。
+4. Goal revision、plan revision、Attempt、step 和预算计数不能因为用户插话重置；每次 retry、fallback、resume 或 fork 都必须创建新 Attempt，并受 TaskRun 总预算限制。
+5. 当前 Loop 必须同时受有限预算和无进展检测约束：最大 step、tool call、model call、Attempt、连续无进展步数和相同动作重复次数。达到任一上限时产生 loop_budget_exhausted 或 no_progress_detected，进入 waiting_human、blocked 或 failed，不得无条件重试。
+6. 有进展至少应体现为状态变化、新 evidence、文件边界变化、验证结果变化或明确的新失败原因；仅重新生成计划或重复相同失败不算进展。
+7. `InterruptRequest` 只在安全边界应用；应用前后必须写入 `interrupt_requested` / `interrupt_applied`，若副作用状态不确定则写入 `side_effect_uncertain` 并等待人工决定。
+8. `LoopBudget` 的计数属于 TaskRun/Attempt lineage；用户插话、plan revision、fallback、resume 或人工接管都不能清零。任一上限达到后必须停止继续动作，并写入 `loop_budget_exhausted` 或 `no_progress_detected`。
 
 ## 八、Verification、Artifact 与 Evidence
 
