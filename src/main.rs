@@ -1,7 +1,10 @@
+use serde_json::Value;
 use std::env;
 use std::error::Error;
 use std::process;
+use steerbox::domain::{EventEnvelope, GoalContract, LoopBudget};
 use steerbox::event_log::EventLog;
+use steerbox::loop_controller::ReadOnlyLoopController;
 use steerbox::runtime_config::RuntimeConfig;
 
 fn main() {
@@ -61,6 +64,58 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 );
             }
         }
+        (Some("event"), Some("append")) => {
+            let config_path = args.next().ok_or("missing config path")?;
+            let event_type = args.next().ok_or("missing event_type")?;
+            let aggregate_type = args.next().ok_or("missing aggregate_type")?;
+            let aggregate_id = args.next().ok_or("missing aggregate_id")?;
+            let event_id = args.next().ok_or("missing event_id")?;
+            let correlation_id = args.next().ok_or("missing correlation_id")?;
+            let payload_text = args.next().unwrap_or_else(|| "{}".into());
+            let payload = serde_json::from_str::<Value>(&payload_text)
+                .map_err(|error| format!("invalid payload JSON: {error}"))?;
+            let config = RuntimeConfig::load(config_path)?;
+            let mut log = EventLog::open(config.events_path())?;
+            let event = EventEnvelope::new(
+                aggregate_type,
+                event_id,
+                event_type,
+                aggregate_id,
+                correlation_id,
+                payload,
+            )?;
+            let sequence = log.append(event)?;
+            println!("appended sequence={sequence}");
+        }
+        (Some("loop"), Some("readonly")) => {
+            let config_path = args.next().ok_or("missing config path")?;
+            let project_id = args.next().ok_or("missing project_id")?;
+            let goal_id = args.next().ok_or("missing goal_id")?;
+            let loop_run_id = args.next().ok_or("missing loop_run_id")?;
+            let task_run_id = args.next().ok_or("missing task_run_id")?;
+            let step_id = args.next().ok_or("missing step_id")?;
+            let objective = args.next().ok_or("missing objective")?;
+            let observation = args.next().ok_or("missing observation")?;
+            let config = RuntimeConfig::load(config_path)?;
+            let log = EventLog::open(config.events_path())?;
+            let goal = GoalContract::new(
+                goal_id,
+                project_id,
+                objective,
+                vec![".".into()],
+                Vec::new(),
+                vec!["manual_review".into()],
+            );
+            let budget = LoopBudget::new(1, 0, 0, 1, 0, 1, 1, 1);
+            let mut controller =
+                ReadOnlyLoopController::start(log, goal, loop_run_id, task_run_id, budget)?;
+            let step = controller.run_observation(step_id, observation)?;
+            let run = controller.complete()?;
+            println!(
+                "loop={} status={:?} step={} step_status={:?}",
+                run.loop_run_id, run.status, step.step_id, step.status
+            );
+        }
         _ => {
             print_usage();
         }
@@ -73,4 +128,6 @@ fn print_usage() {
     eprintln!("  steerbox runtime init <project_ref>");
     eprintln!("  steerbox config validate <config.json>");
     eprintln!("  steerbox event list <config.json>");
+    eprintln!("  steerbox event append <config.json> <event_type> <aggregate_type> <aggregate_id> <event_id> <correlation_id> [payload_json]");
+    eprintln!("  steerbox loop readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <objective> <observation>");
 }

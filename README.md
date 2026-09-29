@@ -28,9 +28,11 @@ cargo test
 cargo run -- runtime init demo-project
 cargo run -- config validate /temp/steerbox/demo-project/config.json
 cargo run -- event list /temp/steerbox/demo-project/config.json
+cargo run -- event append /temp/steerbox/demo-project/config.json note_added note note-1 event-1 corr-1 '{"summary":"fixture"}'
+cargo run -- loop readonly /temp/steerbox/demo-project/config.json demo-project goal-1 loop-1 task-run-1 step-1 'inspect repository' 'repository inspected'
 ```
 
-Runtime data is written below `/temp/steerbox/<project_ref>/.steerbox/`. The current CLI initializes and validates configuration and reads the append-only event log; model adapters, tool execution, policy gate, and the end-to-end development loop remain in later Phase 1 slices.
+Runtime data is written below `/temp/steerbox/<project_ref>/.steerbox/`. The current CLI initializes and validates configuration, appends a secret-free event, reads the append-only event log, and runs a read-only observation loop. The loop performs no model calls, tool execution, or file writes; model adapters, policy gate, and the end-to-end development loop remain in later Phase 1 slices.
 
 ### Four Professional Directions
 

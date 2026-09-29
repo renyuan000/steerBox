@@ -139,7 +139,7 @@ Memory 最小实现：
 
 - [ ] 支持 Task 状态合法迁移和非法迁移拒绝
 
-- [ ] 实现 `single_agent_loop` skeleton
+- [x] 实现 `single_agent_loop` skeleton（只读 observation loop；无模型、工具和文件副作用）
 - [ ] 实现 `react_tool_loop` 的最小 step 流程
 - [ ] 实现 `plan_execute_loop` 的最小阶段状态
 - [ ] 支持 step start / complete / fail

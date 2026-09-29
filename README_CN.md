@@ -76,8 +76,8 @@
 
 - 第一阶段主语言和构建工具已确定为 `Rust` + `Cargo`
 - 当前已实现并验证领域模型、配置校验和 append-only JSONL EventLog
-- 当前 CLI 可以初始化 `/temp/steerbox/<project_ref>/`、校验 `config.json` 和读取事件日志
-- 当前仍不是可连接模型并执行开发任务的 Agent；模型 adapter、工具执行、PolicyGate、LoopController 和端到端开发 loop 尚未实现
+- 当前 CLI 可以初始化 `/temp/steerbox/<project_ref>/`、校验 `config.json`、写入/读取事件日志和运行只读 observation loop
+- 当前仍不是可连接模型并执行开发任务的 Agent；模型 adapter、工具执行、PolicyGate 和完整开发 loop 尚未实现，现有 LoopController 仅覆盖无副作用的只读 observation loop
 
 最小验证命令：
 
@@ -86,9 +86,11 @@ cargo test
 cargo run -- runtime init demo-project
 cargo run -- config validate /temp/steerbox/demo-project/config.json
 cargo run -- event list /temp/steerbox/demo-project/config.json
+cargo run -- event append /temp/steerbox/demo-project/config.json note_added note note-1 event-1 corr-1 '{"summary":"fixture"}'
+cargo run -- loop readonly /temp/steerbox/demo-project/config.json demo-project goal-1 loop-1 task-run-1 step-1 'inspect repository' 'repository inspected'
 ```
 
-运行数据固定写入 `/temp/steerbox/<project_ref>/.steerbox/`，不写入仓库工作区。
+当前只读 loop 只记录 `loop_started`、`step_started`、`step_completed`、`loop_completed` 事件，不调用模型、不执行工具、不修改文件。运行数据固定写入 `/temp/steerbox/<project_ref>/.steerbox/`，不写入仓库工作区。
 
 ## 文档
 
