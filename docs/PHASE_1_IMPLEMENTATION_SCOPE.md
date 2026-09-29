@@ -27,6 +27,10 @@
 - 其他三个方向先保留 track 边界、授权/policy 边界和 side-effect 边界
 - 通用全功能智能体暂不作为第一阶段目标
 
+### 当前可执行切片
+
+已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝和 append-only JSONL `EventLog`。CLI 目前只支持 runtime 初始化、配置校验和事件读取；这不等于模型接入、工具执行或完整开发 loop 已完成。
+
 ### 长期运行目标与 Phase 1 实现边界
 
 架构目标是四个专业方向都支持 7x24 常驻和多年可恢复生命周期；这不是 Phase 1 已实现能力的声明。Phase 1 只实现本地单机、顺序执行、持久化事件、任务状态和最小 `RecoveryCheckpoint`，用软件开发垂直切片验证恢复契约。

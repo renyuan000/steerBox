@@ -366,6 +366,8 @@ Trace、StateStore 和 BoardProjection 都不是独立事实源；EventLog 是�
       summary.json
 ```
 
+当前已实现的最小切片：`RuntimeConfig` 使用 JSON 配置文件，配置只接受 `auth_ref` 而不接受认证明文；`EventLog` 先以 append-only JSONL 落盘到 `.steerbox/events.jsonl`，打开时校验既有记录并恢复下一个 sequence。SQLite、StateStore、TraceStore 和完整 runtime 仍按后续 TODO 实现，不能把当前 JSONL 切片描述为完整 Phase 1 持久化闭环。
+
 说明：
 
 - 具体目录名后续实现可调整

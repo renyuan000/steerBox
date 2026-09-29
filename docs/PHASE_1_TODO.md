@@ -32,11 +32,11 @@
 
 ### P1. 项目骨架
 
-- [ ] 选择第一阶段主语言和构建工具
-- [ ] 创建最小源码目录
-- [ ] 创建最小测试目录
-- [ ] 创建最小 CLI 或 runtime 入口
-- [ ] 添加基础格式化 / lint / test 命令
+- [x] 选择第一阶段主语言和构建工具（Rust + Cargo）
+- [x] 创建最小源码目录
+- [x] 创建最小测试目录
+- [x] 创建最小 CLI 或 runtime 入口
+- [x] 添加基础格式化 / test / build 命令（当前提供 fmt、test、build）
 
 验收：
 
@@ -46,15 +46,15 @@
 
 ### P2. Core Schema
 
-- [ ] 定义 EventEnvelope、event_id、sequence_no、correlation_id 和 causation_id
+- [x] 定义 EventEnvelope、event_id、sequence_no、correlation_id 和 causation_id
 - [ ] 定义 Portfolio、Project、Task、TaskRun、Attempt 和 TaskDependency
 - [ ] 定义 Task 状态及合法迁移表
 - [ ] 定义 BoardProjection / BoardTaskCard
 - [ ] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory
 
-- [ ] 定义 `GoalContract`
-- [ ] 定义 `LoopRun`
-- [ ] 定义 `LoopStep`
+- [x] 定义 `GoalContract`
+- [x] 定义 `LoopRun`
+- [x] 定义 `LoopStep`
 - [ ] 定义 `ToolCallRecord`
 - [ ] 定义 `PolicyDecision`
 - [ ] 定义 `SideEffectEvent`
@@ -77,10 +77,12 @@
 
 - [ ] 初始化 `events.sqlite`
 - [ ] 初始化 `state.sqlite`
-- [ ] 实现 append-only event write
+- [x] 实现 append-only event write（JSONL 第一切片）
 - [ ] 实现 current state update
 - [ ] 实现 trace JSONL append
 - [ ] 实现 run summary 写入
+
+- [x] 实现 RuntimeConfig JSON 解析、`/temp/steerbox` 路径校验和未知字段拒绝
 
 Memory 最小实现：
 
@@ -143,6 +145,7 @@ Memory 最小实现：
 - [ ] 支持 step start / complete / fail
 - [ ] 支持 stop condition
 - [ ] 支持失败后 reflection summary
+- [x] 实现 LoopBudget 与 NoProgressTracker 的领域级停止规则
 - [ ] 实现 `UserCommandInbox` 持久化和边界读取
 - [ ] 实现 `GoalRevision` / `PlanRevision` 与旧计划失效
 - [ ] 实现 `InterruptRequest` 的安全边界和 `side_effect_uncertain` 分支
@@ -270,7 +273,7 @@ Memory 最小实现：
 
 - [ ] 更新 PHASE_1_CONTRACTS.md 的引用和当前实现状态
 
-- [ ] 更新 README 或开发说明中的运行命令
+- [x] 更新 README 或开发说明中的运行命令
 - [ ] 更新第一阶段完成状态
 - [ ] 记录已实现能力和占位能力
 - [ ] 记录已知限制

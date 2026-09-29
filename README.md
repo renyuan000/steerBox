@@ -19,6 +19,19 @@ Its core question is not simply whether an agent can do work, but how to combine
 - auditable behavior
 - traceable decision and execution flows
 
+### Current Phase 1 Runtime Slice
+
+The repository currently contains a verified Rust domain and local persistence slice. It is not yet a model-connected coding agent. The reproducible commands are:
+
+```bash
+cargo test
+cargo run -- runtime init demo-project
+cargo run -- config validate /temp/steerbox/demo-project/config.json
+cargo run -- event list /temp/steerbox/demo-project/config.json
+```
+
+Runtime data is written below `/temp/steerbox/<project_ref>/.steerbox/`. The current CLI initializes and validates configuration and reads the append-only event log; model adapters, tool execution, policy gate, and the end-to-end development loop remain in later Phase 1 slices.
+
 ### Four Professional Directions
 
 #### 1. Software Development Agents

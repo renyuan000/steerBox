@@ -1,7 +1,20 @@
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use steerbox::domain::{
     BoardColumn, BudgetKind, EventEnvelope, EventEnvelopeError, GoalContract, HumanSteeringMode,
     LoopBudget, LoopRun, LoopStep, NoProgressTracker, RiskLevel, Task, TaskState,
 };
+use steerbox::event_log::EventLog;
+use steerbox::runtime_config::{ConfigError, RuntimeConfig};
+
+fn test_data_dir(label: &str) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock is after epoch")
+        .as_nanos();
+    PathBuf::from(format!("/temp/steerbox/test-{label}-{nonce}"))
+}
 
 #[test]
 fn event_envelope_serializes_contract_fields_without_secret_payloads() {
@@ -161,4 +174,94 @@ fn loop_budget_and_no_progress_tracker_stop_repetition() {
     tracker.reset_after_progress();
     assert!(!tracker.stop_requested());
     assert!(!tracker.observe("new-action", true));
+}
+
+#[test]
+fn runtime_config_requires_temp_root_and_auth_refs_only() {
+    let config = RuntimeConfig::from_json_str(
+        r#"{
+          "schema_version": 1,
+          "project_ref": "demo-project",
+          "data_root": "/temp/steerbox/demo-project",
+          "model_profiles": [{
+            "model_id": "local-fixture",
+            "provider": "fixture",
+            "endpoint": "local://fixture",
+            "auth_ref": "fixture-auth",
+            "capabilities": ["text"]
+          }]
+        }"#,
+    )
+    .expect("valid runtime config");
+
+    assert_eq!(config.project_ref, "demo-project");
+    assert_eq!(config.model_profiles.len(), 1);
+    assert!(RuntimeConfig::from_json_str(
+        r#"{"schema_version":1,"project_ref":"demo","data_root":"/tmp/volatile"}"#
+    )
+    .is_err());
+    assert!(RuntimeConfig::from_json_str(
+        r#"{"schema_version":1,"project_ref":"demo","data_root":"/temp/steerbox/other"}"#
+    )
+    .is_err());
+    assert!(matches!(
+        RuntimeConfig::from_json_str(
+            r#"{"schema_version":1,"project_ref":"demo","data_root":"/temp/steerbox/demo","api_key":"fixture-only"}"#
+        ),
+        Err(ConfigError::UnknownField { .. })
+    ));
+}
+
+#[test]
+fn event_log_appends_sequences_and_recovers_after_reopen() {
+    let directory = test_data_dir("event-log");
+    fs::create_dir_all(&directory).expect("test data directory creates");
+    let path = directory.join("events.jsonl");
+    let first = EventEnvelope::new(
+        "goal",
+        "event-1",
+        "goal_created",
+        "goal-1",
+        "correlation-1",
+        serde_json::json!({"objective": "fixture"}),
+    )
+    .expect("event payload is safe");
+    let second = EventEnvelope::new(
+        "task",
+        "event-2",
+        "task_created",
+        "task-1",
+        "correlation-1",
+        serde_json::json!({"title": "fixture"}),
+    )
+    .expect("event payload is safe");
+
+    let mut log = EventLog::open(&path).expect("event log opens");
+    assert!(path.exists());
+    assert_eq!(log.append(first).expect("first event appends"), 1);
+    assert_eq!(log.append(second).expect("second event appends"), 2);
+    drop(log);
+
+    let mut reopened = EventLog::open(&path).expect("event log reopens");
+    let third = EventEnvelope::new(
+        "task",
+        "event-3",
+        "task_state_changed",
+        "task-1",
+        "correlation-1",
+        serde_json::json!({"state": "running"}),
+    )
+    .expect("event payload is safe");
+    assert_eq!(reopened.append(third).expect("third event appends"), 3);
+    let events = reopened.read_all().expect("events read");
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].sequence_no, Some(1));
+    assert_eq!(events[2].sequence_no, Some(3));
+    assert_eq!(
+        fs::read_to_string(path)
+            .expect("event log reads")
+            .lines()
+            .count(),
+        3
+    );
 }

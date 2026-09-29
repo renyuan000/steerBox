@@ -74,9 +74,21 @@
 
 ## 当前状态
 
-- 项目暂不预设最终目录结构
-- 当前候选语言包括 `Rust`、`Python`、`C`、`Go`，但尚未定稿
-- 当前重点是先收敛文档、问题定义和架构方向，再决定第一阶段原型
+- 第一阶段主语言和构建工具已确定为 `Rust` + `Cargo`
+- 当前已实现并验证领域模型、配置校验和 append-only JSONL EventLog
+- 当前 CLI 可以初始化 `/temp/steerbox/<project_ref>/`、校验 `config.json` 和读取事件日志
+- 当前仍不是可连接模型并执行开发任务的 Agent；模型 adapter、工具执行、PolicyGate、LoopController 和端到端开发 loop 尚未实现
+
+最小验证命令：
+
+```bash
+cargo test
+cargo run -- runtime init demo-project
+cargo run -- config validate /temp/steerbox/demo-project/config.json
+cargo run -- event list /temp/steerbox/demo-project/config.json
+```
+
+运行数据固定写入 `/temp/steerbox/<project_ref>/.steerbox/`，不写入仓库工作区。
 
 ## 文档
 
