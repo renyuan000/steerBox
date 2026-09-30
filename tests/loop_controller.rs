@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use steerbox::domain::{GoalContract, LoopBudget, LoopStatus};
+use steerbox::domain::{BudgetKind, GoalContract, LoopBudget, LoopStatus};
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{LoopControllerError, ReadOnlyLoopController};
 use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
@@ -222,4 +222,49 @@ fn fixture_model_continue_decision_leaves_loop_running_and_records_step_events()
     assert_eq!(events[2].event_type, "model_call_started");
     assert_eq!(events[3].event_type, "model_call_completed");
     assert_eq!(events[4].event_type, "step_completed");
+}
+
+#[test]
+fn fixture_model_respects_model_call_budget_across_steps() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let log = EventLog::open(directory.join("events.jsonl")).expect("event log opens");
+    let goal = GoalContract::new(
+        "goal-model-budget",
+        "project-model-budget",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["manual_review".into()],
+    );
+    let budget = LoopBudget::new(2, 0, 1, 1, 0, 1, 1, 1);
+    let mut controller = ReadOnlyLoopController::start(
+        log,
+        goal,
+        "loop-model-budget",
+        "task-run-model-budget",
+        budget,
+    )
+    .expect("loop starts");
+    let adapter =
+        LocalFixtureModelAdapter::new(ModelDecision::ContinueObservation, "one model call allowed");
+    controller
+        .run_model_step(&adapter, "local-fixture", "step-1", "first observation")
+        .expect("first model step completes");
+    assert!(matches!(
+        controller.run_model_step(&adapter, "local-fixture", "step-2", "second observation"),
+        Err(LoopControllerError::BudgetExhausted(BudgetKind::ModelCalls))
+    ));
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert_eq!(
+        events.last().expect("budget event exists").event_type,
+        "loop_budget_exhausted"
+    );
+    assert_eq!(
+        events.last().expect("budget event exists").payload["budget_kind"],
+        "ModelCalls"
+    );
 }

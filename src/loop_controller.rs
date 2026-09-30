@@ -140,6 +140,14 @@ impl ReadOnlyLoopController {
             )?;
             return Err(LoopControllerError::BudgetExhausted(kind));
         }
+        if let Err(kind) = self.budget.consume_model_call() {
+            self.append_model_event(
+                "loop_budget_exhausted",
+                &format!("{}:budget:model_call", self.loop_run.loop_run_id),
+                json!({"budget_kind": format!("{kind:?}")}),
+            )?;
+            return Err(LoopControllerError::BudgetExhausted(kind));
+        }
         let step_id = step_id.into();
         let mut step = LoopStep::new(
             step_id.clone(),
