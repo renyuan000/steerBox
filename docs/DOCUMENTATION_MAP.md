@@ -464,8 +464,13 @@ README 不应该承载完整架构细节。
 
 后续可继续补充但当前尚未完成的文档：
 
-- `docs/MEMORY_AND_DREAM_LEARNING_DISCUSSION.md`
-- `docs/CODE_LOGIC_INDEX_DISCUSSION.md`
+- `docs/MEMORY_AND_DREAM_LEARNING_DISCUSSION.md`（引用目标当前不存在，不作为现行实现依据）
+- `docs/CODE_LOGIC_INDEX_DISCUSSION.md`（引用目标当前不存在，不作为现行实现依据）
+- `docs/EVALUATION_DATASET_DISCUSSION.md`（引用目标当前不存在，不作为现行实现依据）
+- `docs/OBSERVABILITY_AND_EVALUATION_DISCUSSION.md`（引用目标当前不存在，不作为现行实现依据）
+- `docs/REAL_TIME_SELF_EVOLUTION_DISCUSSION.md`（引用目标当前不存在，不作为现行实现依据）
+- `docs/TOOL_USAGE_RECIPE_EVOLUTION.md`（引用目标当前不存在，不作为现行实现依据）
+- `docs/TRACE_SCHEMA_DISCUSSION.md`（引用目标当前不存在，不作为现行实现依据）
 - `docs/SECURITY_MODEL_DISCUSSION.md`
 
-这些缺口不影响当前文档体系成立，但进入实现前需要逐步补齐。
+这些是未来讨论材料缺口，不阻断当前 Phase 1 实现；如果其他文档将其作为必须依据，须先补齐目标文档或移除该引用。

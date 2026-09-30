@@ -4,6 +4,8 @@ use crate::domain::{
 };
 use crate::event_log::{EventLog, EventLogError};
 use crate::model_adapter::{ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest};
+use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequest};
+use crate::tool_registry::ToolRegistry;
 use serde_json::json;
 use thiserror::Error;
 
@@ -19,6 +21,13 @@ pub enum LoopControllerError {
     Terminal,
     #[error("model adapter failed: {0}")]
     ModelAdapter(#[from] ModelAdapterError),
+    #[error("tool call denied by policy: {decision:?}: {reason}")]
+    PolicyDenied {
+        decision: PolicyDecision,
+        reason: String,
+    },
+    #[error("policy gate failed: {0}")]
+    PolicyGate(#[from] PolicyGateError),
 }
 
 /// Minimal sequential loop that records observations only.
@@ -247,6 +256,49 @@ impl ReadOnlyLoopController {
             self.complete()?;
         }
         Ok(decision)
+    }
+
+    pub fn request_tool_call(
+        &mut self,
+        registry: &ToolRegistry,
+        gate: &PolicyGate,
+        tool_id: impl Into<String>,
+        step_id: impl Into<String>,
+    ) -> Result<(), LoopControllerError> {
+        if self.loop_run.status != LoopStatus::Running {
+            return Err(LoopControllerError::Terminal);
+        }
+        let tool_id = tool_id.into();
+        let step_id = step_id.into();
+        let request = PolicyRequest {
+            policy_event_id: format!("{step_id}:policy"),
+            tool_id: tool_id.clone(),
+            project_id: self.goal.project_id.clone(),
+            goal_id: self.goal.goal_id.clone(),
+            task_run_id: self.loop_run.task_run_id.clone(),
+            loop_run_id: self.loop_run.loop_run_id.clone(),
+            step_id: step_id.clone(),
+            correlation_id: self.loop_run.loop_run_id.clone(),
+            human_steering_mode: self.goal.human_steering_mode,
+        };
+        let result = gate.evaluate(registry, &self.goal, &request);
+        gate.record_decision(&mut self.event_log, &request, &result)?;
+        if result.decision != PolicyDecision::Allow {
+            return Err(LoopControllerError::PolicyDenied {
+                decision: result.decision,
+                reason: result.reason,
+            });
+        }
+        self.append_model_event(
+            "tool_call_requested",
+            &format!("{step_id}:tool_requested"),
+            json!({
+                "tool_id": tool_id,
+                "side_effect_class": result.side_effect_class,
+                "risk_level": result.risk_level,
+            }),
+        )?;
+        Ok(())
     }
 
     fn append_model_event(

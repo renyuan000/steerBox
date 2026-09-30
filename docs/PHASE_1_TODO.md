@@ -123,7 +123,7 @@ Memory 最小实现：
 
 ### P5. PolicyGate
 
-- [x] 实现工具调用前 policy check（独立最小 API，尚未接入实际执行器）
+- [x] 实现工具调用前 policy check（已接入 LoopController 请求入口，尚未接入实际执行器）
 - [ ] 实现文件写入前 policy check
 - [x] 实现高风险动作升级到 human approval
 - [x] 实现 forbidden tool 阻断
@@ -272,14 +272,14 @@ Memory 最小实现：
 
 ### P14. Documentation Update
 
-- [ ] 更新 PHASE_1_CONTRACTS.md 的引用和当前实现状态
+- [x] 更新 PHASE_1_CONTRACTS.md 的引用（当前实现状态在本 TODO、Scope 和 Validation Plan 中维护）
 
 - [x] 更新 README 或开发说明中的运行命令
-- [ ] 更新第一阶段完成状态
-- [ ] 记录已实现能力和占位能力
-- [ ] 记录已知限制
-- [ ] 明确运行数据写入 `/temp/steerbox/<project_ref>/.steerbox/`
-- [ ] 明确用户插话、计划失效和死循环停止契约
+- [x] 更新第一阶段完成状态
+- [x] 记录已实现能力和占位能力
+- [x] 记录已知限制
+- [x] 明确运行数据写入 `/temp/steerbox/<project_ref>/.steerbox/`
+- [x] 明确用户插话、计划失效和死循环停止契约
 
 验收：
 

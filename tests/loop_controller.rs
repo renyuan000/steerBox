@@ -5,6 +5,8 @@ use steerbox::domain::{BudgetKind, GoalContract, LoopBudget, LoopStatus};
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{LoopControllerError, ReadOnlyLoopController};
 use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
+use steerbox::policy_gate::{PolicyDecision, PolicyGate};
+use steerbox::tool_registry::ToolRegistry;
 
 fn test_data_dir() -> PathBuf {
     let nonce = SystemTime::now()
@@ -312,4 +314,90 @@ fn fixture_model_stops_repeated_no_progress_actions() {
         events.last().expect("no-progress event exists").event_type,
         "no_progress_detected"
     );
+}
+
+#[test]
+fn controller_records_policy_and_tool_request_for_allowed_read_only_tool() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let log = EventLog::open(directory.join("events.jsonl")).expect("event log opens");
+    let mut goal = GoalContract::new(
+        "goal-tool-request",
+        "project-tool-request",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["git status".into()],
+    );
+    goal.allowed_tools = vec!["git_status".into()];
+    let budget = LoopBudget::new(1, 1, 1, 1, 0, 1, 1, 1);
+    let mut controller = ReadOnlyLoopController::start(
+        log,
+        goal,
+        "loop-tool-request",
+        "task-run-tool-request",
+        budget,
+    )
+    .expect("loop starts");
+    controller
+        .request_tool_call(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &PolicyGate::new(),
+            "git_status",
+            "step-tool-request",
+        )
+        .expect("read-only tool request is allowed");
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert_eq!(events[1].event_type, "policy_decision");
+    assert_eq!(events[1].payload["decision"], "allow");
+    assert_eq!(events[2].event_type, "tool_call_requested");
+    assert_eq!(events[2].payload["tool_id"], "git_status");
+}
+
+#[test]
+fn controller_records_policy_and_denies_forbidden_tool_request() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let log = EventLog::open(directory.join("events.jsonl")).expect("event log opens");
+    let mut goal = GoalContract::new(
+        "goal-tool-denied",
+        "project-tool-denied",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["manual_review".into()],
+    );
+    goal.allowed_tools = vec!["git_status".into()];
+    goal.forbidden_tools = vec!["git_status".into()];
+    let budget = LoopBudget::new(1, 1, 1, 1, 0, 1, 1, 1);
+    let mut controller = ReadOnlyLoopController::start(
+        log,
+        goal,
+        "loop-tool-denied",
+        "task-run-tool-denied",
+        budget,
+    )
+    .expect("loop starts");
+    assert!(matches!(
+        controller.request_tool_call(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &PolicyGate::new(),
+            "git_status",
+            "step-tool-denied",
+        ),
+        Err(LoopControllerError::PolicyDenied {
+            decision: PolicyDecision::Block,
+            ..
+        })
+    ));
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].event_type, "policy_decision");
+    assert_eq!(events[1].payload["decision"], "block");
 }

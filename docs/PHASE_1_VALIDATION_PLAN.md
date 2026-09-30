@@ -47,6 +47,21 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 - 副作用主要是本地可逆修改
 - 适合测试 event、trace、checkpoint、drift guard
 
+## 当前验证状态
+
+本表只记录当前仓库已取得的代码/测试证据；“未验证”不等于设计无效，也不等于实现完成。
+
+| 用例 | 当前状态 | 当前证据 |
+|---|---|---|
+| V0 Core Contract | 部分验证 | domain/EventEnvelope 序列化与敏感字段测试；完整 V0 仍待补齐 |
+| V1 GoalContract | 部分验证 | `tests/domain_contracts.rs` |
+| V2 LoopRun | 部分验证 | `tests/loop_controller.rs` |
+| V3 ToolRegistry/PolicyGate | 已验证切片 | `tests/tool_policy.rs`、`tests/loop_controller.rs` |
+| V4 EventLog | 已验证切片 | EventLog append/reopen 测试 |
+| V5-V17 | 未验证闭环 | 依赖 TraceStore、Checkpoint、工具执行、BoardProjection 等尚未实现能力 |
+
+状态更新规则：只有可复现命令、测试输出或运行日志支持时，才能把“未验证”改为“已验证”。
+
 ## 验证用例
 
 ### V0. Phase 1 Core Contract

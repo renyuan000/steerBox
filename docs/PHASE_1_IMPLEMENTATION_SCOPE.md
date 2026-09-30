@@ -29,11 +29,11 @@
 
 ### 当前可执行切片
 
-已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop、secret-free `LocalFixtureModelAdapter` 决策链，以及独立的最小 `ToolRegistry`/`PolicyGate` 规则切片。当前 CLI 支持 runtime 初始化、配置校验、事件写入/读取、只读 loop 和本地 fixture loop；ToolRegistry/PolicyGate 已有可复现测试，但尚未接入实际工具执行或完整开发 loop。这不等于真实模型接入、文件修改、验证编排或完整 Agent 已完成。
+已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop、secret-free `LocalFixtureModelAdapter` 决策链，以及接入 `LoopController` 工具请求入口的 `ToolRegistry`/`PolicyGate` 规则切片。当前 CLI 支持 runtime 初始化、配置校验、事件写入/读取、只读 loop 和本地 fixture loop；controller 会在工具请求前记录 `policy_decision`，允许后记录 `tool_call_requested`，但尚未执行真实工具或文件操作。这不等于真实模型接入、工具执行器、文件修改、验证编排或完整 Agent 已完成。
 
 ### 长期运行目标与 Phase 1 实现边界
 
-架构目标是四个专业方向都支持 7x24 常驻和多年可恢复生命周期；这不是 Phase 1 已实现能力的声明。Phase 1 只实现本地单机、顺序执行、持久化事件、任务状态和最小 `RecoveryCheckpoint`，用软件开发垂直切片验证恢复契约。
+架构目标是四个专业方向都支持 7x24 常驻和多年可恢复生命周期；这不是 Phase 1 已实现能力的声明。Phase 1 的目标边界包含本地单机、顺序执行、持久化事件、任务状态和最小 `RecoveryCheckpoint`，但当前代码尚未实现 checkpoint、StateStore 或恢复闭环；它们仍是后续必须完成的验收项。
 
 Phase 1 不实现分布式 worker、高可用故障转移、完整安全运营常驻服务、自动渗透测试执行链或自动安全处置闭环。后续方向必须复用共享 Harness 的任务、证据、授权、审批和恢复接口，而不能另起一套不可审计的常驻循环。
 
