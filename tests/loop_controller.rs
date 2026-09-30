@@ -6,6 +6,7 @@ use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{LoopControllerError, ReadOnlyLoopController};
 use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
 use steerbox::policy_gate::{PolicyDecision, PolicyGate};
+use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallInput};
 use steerbox::tool_registry::ToolRegistry;
 
 fn test_data_dir() -> PathBuf {
@@ -400,4 +401,52 @@ fn controller_records_policy_and_denies_forbidden_tool_request() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[1].event_type, "policy_decision");
     assert_eq!(events[1].payload["decision"], "block");
+}
+
+#[test]
+fn controller_executes_allowed_git_status_and_records_completion() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let log = EventLog::open(directory.join("events.jsonl")).expect("event log opens");
+    let mut goal = GoalContract::new(
+        "goal-tool-execution",
+        "project-tool-execution",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["git status".into()],
+    );
+    goal.allowed_tools = vec!["git_status".into()];
+    let budget = LoopBudget::new(1, 1, 1, 1, 0, 1, 1, 1);
+    let mut controller = ReadOnlyLoopController::start(
+        log,
+        goal,
+        "loop-tool-execution",
+        "task-run-tool-execution",
+        budget,
+    )
+    .expect("loop starts");
+    let workspace = std::env::current_dir().expect("current directory exists");
+    let output = controller
+        .execute_read_only_tool(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &PolicyGate::new(),
+            &ReadOnlyToolExecutor,
+            &workspace,
+            ToolCallInput {
+                tool_id: "git_status".into(),
+                arguments: serde_json::json!({}),
+            },
+            "step-tool-execution",
+        )
+        .expect("allowed read-only tool executes");
+    assert!(output.result["executed"].as_bool().unwrap());
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert_eq!(events[1].event_type, "policy_decision");
+    assert_eq!(events[2].event_type, "tool_call_requested");
+    assert_eq!(events[3].event_type, "tool_call_completed");
+    assert_eq!(events[3].payload["tool_id"], "git_status");
 }

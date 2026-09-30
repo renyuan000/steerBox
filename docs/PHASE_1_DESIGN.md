@@ -157,6 +157,8 @@ recipe_ref
 version
 ```
 
+Phase 1 的工具执行必须与注册和策略判断分层。当前只实现一个受控只读执行切片：`git_status` 使用固定 argv `git status --short --branch`，调用方只能提供结构化 arguments，不能传入 shell 字符串；workspace 必须是已存在目录，输出必须限长。`rg_fixed` 和 `markdown_link_check` 目前只有 registry/recipe 边界，尚未接入真实执行器。任何写入、网络或外部系统动作仍不得通过该执行器执行。
+
 ### 5. PolicyGate
 
 职责：

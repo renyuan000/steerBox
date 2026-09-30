@@ -77,7 +77,7 @@
 - 第一阶段主语言和构建工具已确定为 `Rust` + `Cargo`
 - 当前已实现并验证领域模型、配置校验和 append-only JSONL EventLog
 - 当前 CLI 可以初始化 `/temp/steerbox/<project_ref>/`、校验 `config.json`、写入/读取事件日志和运行只读 observation loop
-- 当前仍不是可连接模型并执行开发任务的 Agent；已有 secret-free fixture model adapter，以及 LoopController 接入 ToolRegistry/PolicyGate 和 fixture-only 只读执行器，但执行器不运行真实命令，尚未接入文件修改、验证编排或完整开发 loop，现有 LoopController 仍主要覆盖无副作用的只读流程
+- 当前仍不是可连接模型并执行开发任务的 Agent；已有 secret-free fixture model adapter，以及 LoopController 接入 ToolRegistry/PolicyGate 和受控只读 `git status` 执行器，但不接受 shell 字符串或写操作，尚未接入文件修改、验证编排或完整开发 loop
 
 最小验证命令：
 

@@ -29,7 +29,7 @@
 
 ### 当前可执行切片
 
-已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop、secret-free `LocalFixtureModelAdapter` 决策链，以及接入 `LoopController` 的 `ToolRegistry`/`PolicyGate` 和 fixture-only 只读工具执行器切片。当前 CLI 支持 runtime 初始化、配置校验、事件写入/读取、只读 loop 和本地 fixture loop；controller 会在工具请求前记录 `policy_decision`，允许后记录 `tool_call_requested` 与 `tool_call_completed`，但 executor 不执行真实命令或文件操作。这不等于真实模型接入、生产工具执行器、文件修改、验证编排或完整 Agent 已完成。
+已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop、secret-free `LocalFixtureModelAdapter` 决策链，以及接入 `LoopController` 的 `ToolRegistry`/`PolicyGate` 和受控只读工具执行器切片。当前 executor 只执行固定 argv 的 `git status --short --branch`，不接受 shell 字符串、不执行写操作，且对 workspace 和输出大小做限制；controller 会记录 `policy_decision`、`tool_call_requested` 与 `tool_call_completed`。这不等于真实模型接入、完整工具执行器、文件修改、验证编排或完整 Agent 已完成。
 
 ### 长期运行目标与 Phase 1 实现边界
 

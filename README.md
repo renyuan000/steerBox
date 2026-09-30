@@ -33,7 +33,7 @@ cargo run -- loop readonly /temp/steerbox/demo-project/config.json demo-project 
 cargo run -- loop fixture /temp/steerbox/demo-project/config.json demo-project goal-1 loop-2 task-run-2 local-fixture complete_loop 'repository inspected' 'fixture complete'
 ```
 
-Runtime data is written below `/temp/steerbox/<project_ref>/.steerbox/`. The current CLI initializes and validates configuration, appends a secret-free event, reads the append-only event log, and runs either a fixed observation loop or a secret-free local fixture model decision loop. The runtime also exposes `ToolRegistry`, `PolicyGate`, and a fixture-only read-only executor; `LoopController` checks policy before recording tool request/completion events, while the executor deliberately performs no real command or file operation. The fixture performs no external model calls, and the end-to-end development loop remains in later Phase 1 slices.
+Runtime data is written below `/temp/steerbox/<project_ref>/.steerbox/`. The current CLI initializes and validates configuration, appends a secret-free event, reads the append-only event log, and runs either a fixed observation loop or a secret-free local fixture model decision loop. The runtime also exposes `ToolRegistry`, `PolicyGate`, and a constrained read-only executor for fixed-argv `git status`; `LoopController` checks policy before recording tool request/completion events. No shell string, write action, or external model call is accepted, and the end-to-end development loop remains in later Phase 1 slices.
 
 ### Four Professional Directions
 
