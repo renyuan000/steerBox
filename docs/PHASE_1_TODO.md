@@ -108,12 +108,12 @@ Memory 最小实现：
 
 ### P4. ToolRegistry
 
-- [ ] 定义 `ToolProfile`
-- [ ] 注册只读工具
+- [x] 定义 `ToolProfile`
+- [x] 注册只读工具
 - [ ] 注册 shell / command 工具的受控包装
-- [ ] 为每个工具配置 side-effect class
-- [ ] 为每个工具绑定 risk level
-- [ ] 读取 baseline tool recipes
+- [x] 为每个工具配置 side-effect class
+- [x] 为每个工具绑定 risk level
+- [x] 读取 baseline tool recipes
 
 验收：
 
@@ -123,11 +123,11 @@ Memory 最小实现：
 
 ### P5. PolicyGate
 
-- [ ] 实现工具调用前 policy check
+- [x] 实现工具调用前 policy check（独立最小 API，尚未接入实际执行器）
 - [ ] 实现文件写入前 policy check
-- [ ] 实现高风险动作升级到 human approval
-- [ ] 实现 forbidden tool 阻断
-- [ ] 实现 policy decision event 记录
+- [x] 实现高风险动作升级到 human approval
+- [x] 实现 forbidden tool 阻断
+- [x] 实现 policy decision event 记录
 
 验收：
 
@@ -149,7 +149,7 @@ Memory 最小实现：
 - [ ] 实现 `UserCommandInbox` 持久化和边界读取
 - [ ] 实现 `GoalRevision` / `PlanRevision` 与旧计划失效
 - [ ] 实现 `InterruptRequest` 的安全边界和 `side_effect_uncertain` 分支
-- [ ] 实现 `LoopBudget` 与 `NoProgressObservation`，达到上限后停止自动重试
+- [x] 实现 `LoopBudget` 与 `NoProgressObservation`，达到上限后停止自动重试（model loop 已接入重复动作检测）
 
 验收：
 

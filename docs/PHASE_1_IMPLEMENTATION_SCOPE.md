@@ -29,7 +29,7 @@
 
 ### 当前可执行切片
 
-已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop 和 secret-free `LocalFixtureModelAdapter` 决策链。CLI 目前支持 runtime 初始化、配置校验、事件写入/读取、只读 loop 和本地 fixture loop；这不等于真实模型接入、工具执行、PolicyGate 或完整开发 loop 已完成。
+已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop、secret-free `LocalFixtureModelAdapter` 决策链，以及独立的最小 `ToolRegistry`/`PolicyGate` 规则切片。当前 CLI 支持 runtime 初始化、配置校验、事件写入/读取、只读 loop 和本地 fixture loop；ToolRegistry/PolicyGate 已有可复现测试，但尚未接入实际工具执行或完整开发 loop。这不等于真实模型接入、文件修改、验证编排或完整 Agent 已完成。
 
 ### 长期运行目标与 Phase 1 实现边界
 

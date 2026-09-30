@@ -1,6 +1,6 @@
 use crate::domain::{
     BudgetKind, EventEnvelope, EventEnvelopeError, GoalContract, LoopBudget, LoopRun, LoopStatus,
-    LoopStep,
+    LoopStep, NoProgressTracker,
 };
 use crate::event_log::{EventLog, EventLogError};
 use crate::model_adapter::{ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest};
@@ -29,6 +29,7 @@ pub struct ReadOnlyLoopController {
     budget: LoopBudget,
     event_log: EventLog,
     next_step_no: u32,
+    no_progress: NoProgressTracker,
 }
 
 impl ReadOnlyLoopController {
@@ -40,6 +41,8 @@ impl ReadOnlyLoopController {
         budget: LoopBudget,
     ) -> Result<Self, LoopControllerError> {
         let loop_run = LoopRun::new(loop_run_id, goal.goal_id.clone(), task_run_id);
+        let max_no_progress_steps = budget.max_no_progress_steps;
+        let max_same_action_repetitions = budget.max_same_action_repetitions;
         append_loop_event(
             &mut event_log,
             &goal,
@@ -54,6 +57,7 @@ impl ReadOnlyLoopController {
             budget,
             event_log,
             next_step_no: 1,
+            no_progress: NoProgressTracker::new(max_no_progress_steps, max_same_action_repetitions),
         })
     }
 
@@ -149,6 +153,32 @@ impl ReadOnlyLoopController {
             return Err(LoopControllerError::BudgetExhausted(kind));
         }
         let step_id = step_id.into();
+        let observation = observation.into();
+        let model_id = model_id.into();
+        let action_fingerprint = format!("{model_id}\n{}\n{observation}", self.goal.goal_id);
+        let repeated_action = self.next_step_no > 1;
+        if repeated_action && self.no_progress.observe(&action_fingerprint, false) {
+            self.append_model_event(
+                "no_progress_detected",
+                &format!("{step_id}:no_progress"),
+                json!({
+                    "no_progress_steps": self.no_progress.no_progress_steps,
+                    "same_action_repetitions": self.no_progress.same_action_repetitions,
+                }),
+            )?;
+            return Err(LoopControllerError::BudgetExhausted(
+                if self.no_progress.same_action_repetitions
+                    >= self.no_progress.max_same_action_repetitions
+                {
+                    BudgetKind::SameActionRepetitions
+                } else {
+                    BudgetKind::NoProgressSteps
+                },
+            ));
+        }
+        if !repeated_action {
+            self.no_progress.observe(&action_fingerprint, false);
+        }
         let mut step = LoopStep::new(
             step_id.clone(),
             self.loop_run.loop_run_id.clone(),
@@ -166,12 +196,12 @@ impl ReadOnlyLoopController {
             json!({"phase": step.phase, "step_no": step.step_no}),
         )?;
         let request = ModelRequest {
-            model_id: model_id.into(),
+            model_id,
             goal_id: self.goal.goal_id.clone(),
             loop_run_id: self.loop_run.loop_run_id.clone(),
             step_id: step_id.clone(),
             objective: self.goal.objective.clone(),
-            observation: observation.into(),
+            observation,
         };
         self.append_model_event(
             "model_call_started",

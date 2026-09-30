@@ -268,3 +268,48 @@ fn fixture_model_respects_model_call_budget_across_steps() {
         "ModelCalls"
     );
 }
+
+#[test]
+fn fixture_model_stops_repeated_no_progress_actions() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let log = EventLog::open(directory.join("events.jsonl")).expect("event log opens");
+    let goal = GoalContract::new(
+        "goal-no-progress",
+        "project-no-progress",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["manual_review".into()],
+    );
+    let budget = LoopBudget::new(3, 0, 3, 1, 0, 3, 2, 1);
+    let mut controller = ReadOnlyLoopController::start(
+        log,
+        goal,
+        "loop-no-progress",
+        "task-run-no-progress",
+        budget,
+    )
+    .expect("loop starts");
+    let adapter = LocalFixtureModelAdapter::new(
+        ModelDecision::ContinueObservation,
+        "same action with no new evidence",
+    );
+    controller
+        .run_model_step(&adapter, "local-fixture", "step-1", "same observation")
+        .expect("first step completes");
+    assert!(matches!(
+        controller.run_model_step(&adapter, "local-fixture", "step-2", "same observation"),
+        Err(LoopControllerError::BudgetExhausted(
+            BudgetKind::SameActionRepetitions
+        ))
+    ));
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert_eq!(
+        events.last().expect("no-progress event exists").event_type,
+        "no_progress_detected"
+    );
+}
