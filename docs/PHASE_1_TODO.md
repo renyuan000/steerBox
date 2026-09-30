@@ -110,7 +110,7 @@ Memory 最小实现：
 
 - [x] 定义 `ToolProfile`
 - [x] 注册只读工具
-- [ ] 注册 shell / command 工具的受控包装
+- [x] 注册 shell / command 工具的受控包装（当前仅 secret-free fixture executor，不执行真实命令）
 - [x] 为每个工具配置 side-effect class
 - [x] 为每个工具绑定 risk level
 - [x] 读取 baseline tool recipes
@@ -140,7 +140,7 @@ Memory 最小实现：
 - [ ] 支持 Task 状态合法迁移和非法迁移拒绝
 
 - [x] 实现 `single_agent_loop` skeleton（只读 observation loop；无模型、工具和文件副作用）
-- [ ] 实现 `react_tool_loop` 的最小 step 流程
+- [x] 实现 `react_tool_loop` 的最小 step 流程（策略检查 + fixture-only 只读执行）
 - [ ] 实现 `plan_execute_loop` 的最小阶段状态
 - [ ] 支持 step start / complete / fail
 - [ ] 支持 stop condition

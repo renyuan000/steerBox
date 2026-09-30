@@ -5,6 +5,9 @@ use crate::domain::{
 use crate::event_log::{EventLog, EventLogError};
 use crate::model_adapter::{ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest};
 use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequest};
+use crate::tool_executor::{
+    ReadOnlyToolExecutor, ToolCallInput, ToolCallOutput, ToolExecutionError,
+};
 use crate::tool_registry::ToolRegistry;
 use serde_json::json;
 use thiserror::Error;
@@ -28,6 +31,8 @@ pub enum LoopControllerError {
     },
     #[error("policy gate failed: {0}")]
     PolicyGate(#[from] PolicyGateError),
+    #[error("tool execution failed: {0}")]
+    ToolExecution(#[from] ToolExecutionError),
 }
 
 /// Minimal sequential loop that records observations only.
@@ -299,6 +304,26 @@ impl ReadOnlyLoopController {
             }),
         )?;
         Ok(())
+    }
+
+    pub fn execute_read_only_tool(
+        &mut self,
+        registry: &ToolRegistry,
+        gate: &PolicyGate,
+        executor: &ReadOnlyToolExecutor,
+        workspace: &std::path::Path,
+        input: ToolCallInput,
+        step_id: impl Into<String>,
+    ) -> Result<ToolCallOutput, LoopControllerError> {
+        let step_id = step_id.into();
+        self.request_tool_call(registry, gate, input.tool_id.clone(), step_id.clone())?;
+        let output = executor.execute(registry, workspace, input.clone())?;
+        self.append_model_event(
+            "tool_call_completed",
+            &format!("{step_id}:tool_completed"),
+            json!({"tool_id": input.tool_id, "summary": output.summary, "result": output.result}),
+        )?;
+        Ok(output)
     }
 
     fn append_model_event(
