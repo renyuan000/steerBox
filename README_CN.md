@@ -88,9 +88,10 @@ cargo run -- config validate /temp/steerbox/demo-project/config.json
 cargo run -- event list /temp/steerbox/demo-project/config.json
 cargo run -- event append /temp/steerbox/demo-project/config.json note_added note note-1 event-1 corr-1 '{"summary":"fixture"}'
 cargo run -- loop readonly /temp/steerbox/demo-project/config.json demo-project goal-1 loop-1 task-run-1 step-1 'inspect repository' 'repository inspected'
+cargo run -- loop fixture /temp/steerbox/demo-project/config.json demo-project goal-1 loop-2 task-run-2 local-fixture complete_loop 'repository inspected' 'fixture complete'
 ```
 
-当前只读 loop 只记录 `loop_started`、`step_started`、`step_completed`、`loop_completed` 事件，不调用模型、不执行工具、不修改文件。运行数据固定写入 `/temp/steerbox/<project_ref>/.steerbox/`，不写入仓库工作区。
+当前 fixture loop 只使用本地结构化决策，不调用真实模型、不执行工具、不修改文件；它会记录 `model_call_started`、`model_call_completed`，以及 `complete_loop` 或 `request_human` 对应事件。运行数据固定写入 `/temp/steerbox/<project_ref>/.steerbox/`，不写入仓库工作区。
 
 ## 文档
 

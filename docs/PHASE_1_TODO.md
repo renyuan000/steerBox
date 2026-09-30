@@ -233,6 +233,7 @@ Memory 最小实现：
 
 - [ ] 实现静态 `ModelRegistry` 和 `PromptRegistry`
 - [ ] 接入至少一个真实 model adapter
+- [x] 接入 secret-free `LocalFixtureModelAdapter`，并记录结构化 model decision 事件
 - [ ] 配置 cheap/fast、strong/slow、specialized、evaluator 或 local profile fixture
 - [ ] 按 task type、agent role、能力、风险、成本和延迟执行规则式路由
 - [ ] 生成并持久化 `RouteDecision`
