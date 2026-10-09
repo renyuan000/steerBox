@@ -476,7 +476,7 @@ control command (CLI / future API)
 - 命令必须绑定 `project_id`、`goal_id`、`task_run_id`、`loop_run_id`；不能对未指定运行实例的后台任务做隐式广播。
 - `pause`、`cancel`、`takeover` 只能在安全边界生效；若工具副作用状态不确定，必须进入 `waiting_human` 或 `blocked`，不能假定已停止。
 - 插话不得清零预算、重试 lineage 或 no-progress counter；相关目标修改必须产生 `GoalRevision`，计划变化必须使旧计划失效并留下原因。
-- 当前状态仍是“方案已定义、运行时未实现”；直到 Inbox、边界读取和审计测试落地前，不得宣称支持中途接入后台 agent。
+- 当前状态是“UserCommandInbox 持久化边界已实现并有审计测试，但运行时安全边界读取和命令应用仍未实现”；在后两者落地前，不得宣称支持中途接入后台 agent。
 
 ## 当前结论
 

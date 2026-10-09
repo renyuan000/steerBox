@@ -368,7 +368,7 @@ Trace、StateStore 和 BoardProjection 都不是独立事实源；EventLog 是�
       summary.json
 ```
 
-当前已实现的最小切片：`RuntimeConfig` 使用 JSON 配置文件，配置只接受 `auth_ref` 而不接受认证明文；`EventLog` 以 append-only JSONL 落盘并支持分页读取；`StateStore` 可从事件重建 loop/step projection，并以 JSON 原子写入方式持久化后 reopen；`TraceRecord`、`CheckpointMetadata`、最小 `SideEffectRecord` 和 dev loop 的 `RunSummary` 可持久化；`GoalAlignmentCheck` 与 `DriftGuard` 已有静态规则报告和测试；软件开发垂直切片可执行受审批的 Markdown 修改、链接验证并在验证失败时以非零退出。SQLite、运行中 `UserCommandInbox`/pause/resume/takeover 控制面、完整 side-effect 执行接线、真实模型 provider 和完整恢复 runtime 仍未实现，不能把当前切片描述为完整 Phase 1 Agent。
+当前已实现的最小切片：`RuntimeConfig` 使用 JSON 配置文件，配置只接受 `auth_ref` 而不接受认证明文；`EventLog` 以 append-only JSONL 落盘并支持分页读取；`StateStore` 可从事件重建 loop/step projection，并以 JSON 原子写入方式持久化后 reopen；`TraceRecord`、`CheckpointMetadata`、最小 `SideEffectRecord`、`UserCommandInbox` 和 dev loop 的 `RunSummary` 可持久化；`UserCommandInbox` 已验证 command_id 幂等、不同内容冲突拒绝、状态追加和按 loop 的 pending 去重；`GoalAlignmentCheck` 与 `DriftGuard` 已有静态规则报告和测试；软件开发垂直切片可执行受审批的 Markdown 修改、链接验证并在验证失败时以非零退出。SQLite、LoopController 安全边界读取与命令应用、pause/resume/takeover 控制面、完整 side-effect 执行接线、真实模型 provider 和完整恢复 runtime 仍未实现，不能把当前切片描述为完整 Phase 1 Agent。
 
 说明：
 

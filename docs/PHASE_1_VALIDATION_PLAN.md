@@ -64,13 +64,13 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V8 SideEffectLedger | 已验证切片 | `tests/loop_controller.rs`、`tests/dev_vertical_slice.rs` |
 | V9 GoalAlignmentCheck | 已验证切片 | `tests/drift_guard.rs`；结果写入完整 loop 仍待接线 |
 | V10 DriftGuard | 已验证切片 | `tests/drift_guard.rs` |
-| V11 Human Steering Mode | 未验证闭环 | 当前只有 enum/策略基础；UserCommandInbox、运行中 pause/resume/takeover 未实现 |
+| V11 Human Steering Mode | 已验证持久化切片 | `tests/user_command_inbox.rs`；LoopController 安全边界读取、pause/resume/takeover 应用仍未实现 |
 | V12 Baseline Tool Recipes | 未验证闭环 | registry/recipe 边界已有，失败 LessonCandidate 和 recipe candidate 未实现 |
 | V13 Model Routing | 未验证闭环 | 多模型 registry/router、真实 adapter、prompt resolution 和 fallback 未实现 |
 | V14 Run Summary | 已验证最小切片 | `tests/audit_store.rs`、`tests/runtime_cli.rs`；完整 task/attempt/evidence 反查仍待实现 |
 | V15 Task 状态迁移 | 已验证最小切片 | `tests/domain_contracts.rs`；TaskRun/Attempt 命令 lineage 仍待实现 |
 | V16 BoardProjection | 已验证最小切片 | `tests/board_projection.rs`、`tests/runtime_cli.rs`；依赖和完整 Attempt 投影仍待实现 |
-| V17 Command 幂等与版本冲突 | 未验证闭环 | mutating command idempotency、expected_object_version 冲突处理未实现 |
+| V17 Command 幂等与版本冲突 | 已验证最小切片 | `tests/user_command_inbox.rs` 验证 command_id 幂等、冲突拒绝和状态去重；expected_object_version 冲突处理仍未实现 |
 
 状态更新规则：只有可复现命令、测试输出或运行日志支持时，才能把“未验证”改为“已验证”。
 

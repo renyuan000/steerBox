@@ -10,4 +10,5 @@ pub mod runtime_config;
 pub mod state_store;
 pub mod tool_executor;
 pub mod tool_registry;
+pub mod user_command_inbox;
 pub mod workspace_edit;
