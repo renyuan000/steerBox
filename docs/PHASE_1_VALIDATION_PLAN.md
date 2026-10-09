@@ -58,7 +58,19 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V2 LoopRun | 部分验证 | `tests/loop_controller.rs` |
 | V3 ToolRegistry/PolicyGate | 已验证切片 | `tests/tool_policy.rs`、`tests/loop_controller.rs` |
 | V4 EventLog | 已验证切片 | EventLog append/reopen 测试 |
-| V5-V17 | 未验证闭环 | 依赖 TraceStore、Checkpoint、工具执行、BoardProjection 等尚未实现能力 |
+| V5 Trace 可读性 | 已验证切片 | `tests/loop_controller.rs`、`tests/runtime_cli.rs`；完整回放工具仍未实现 |
+| V6 文件修改与 diff boundary | 已验证切片 | `tests/dev_vertical_slice.rs`、`tests/runtime_cli.rs` |
+| V7 RecoveryCheckpoint metadata | 已验证切片 | `tests/audit_store.rs`、`tests/dev_vertical_slice.rs` |
+| V8 SideEffectLedger | 已验证切片 | `tests/loop_controller.rs`、`tests/dev_vertical_slice.rs` |
+| V9 GoalAlignmentCheck | 已验证切片 | `tests/drift_guard.rs`；结果写入完整 loop 仍待接线 |
+| V10 DriftGuard | 已验证切片 | `tests/drift_guard.rs` |
+| V11 Human Steering Mode | 未验证闭环 | 当前只有 enum/策略基础；UserCommandInbox、运行中 pause/resume/takeover 未实现 |
+| V12 Baseline Tool Recipes | 未验证闭环 | registry/recipe 边界已有，失败 LessonCandidate 和 recipe candidate 未实现 |
+| V13 Model Routing | 未验证闭环 | 多模型 registry/router、真实 adapter、prompt resolution 和 fallback 未实现 |
+| V14 Run Summary | 已验证最小切片 | `tests/audit_store.rs`、`tests/runtime_cli.rs`；完整 task/attempt/evidence 反查仍待实现 |
+| V15 Task 状态迁移 | 已验证最小切片 | `tests/domain_contracts.rs`；TaskRun/Attempt 命令 lineage 仍待实现 |
+| V16 BoardProjection | 已验证最小切片 | `tests/board_projection.rs`、`tests/runtime_cli.rs`；依赖和完整 Attempt 投影仍待实现 |
+| V17 Command 幂等与版本冲突 | 未验证闭环 | mutating command idempotency、expected_object_version 冲突处理未实现 |
 
 状态更新规则：只有可复现命令、测试输出或运行日志支持时，才能把“未验证”改为“已验证”。
 

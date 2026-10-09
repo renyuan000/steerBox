@@ -75,9 +75,10 @@
 ## 当前状态
 
 - 第一阶段主语言和构建工具已确定为 `Rust` + `Cargo`
-- 当前已实现并验证领域模型、配置校验和 append-only JSONL EventLog
-- 当前 CLI 可以初始化 `/temp/steerbox/<project_ref>/`、校验 `config.json`、写入/读取事件日志和运行只读 observation loop
-- 当前仍不是可连接模型并执行开发任务的 Agent；已有 secret-free fixture model adapter，以及 LoopController 接入 ToolRegistry/PolicyGate 和受控只读 `git status` 执行器，但不接受 shell 字符串或写操作，尚未接入文件修改、验证编排或完整开发 loop
+- 当前已实现并验证领域契约、配置校验、append-only JSONL EventLog（含分页读取）、StateStore 重建/持久化、Trace/Checkpoint/SideEffect 记录、GoalAlignment/DriftGuard 最小报告和只读 BoardProjection fixture
+- 当前开发垂直切片可执行受审批的 Markdown 文件修改与链接验证，成功/失败均写入 run summary；验证失败会保留事件、状态和摘要并以非零退出
+- 当前仍不是可连接真实模型并自主执行开发任务的 Agent：只有 secret-free fixture model adapter；尚无真实 provider、多模型路由、运行中 UserCommandInbox/pause/resume/takeover 控制面、通用工具执行器或完整恢复闭环
+- 用户中途接入后台任务已有设计契约，但没有常驻后台 worker 或可连接它的交互控制面；见 [Human Steering Modes](./docs/HUMAN_STEERING_MODES.md) 与 [Control Plane Discussion](./docs/CONTROL_PLANE_DISCUSSION.md)
 
 最小验证命令：
 
@@ -119,3 +120,6 @@ cargo run -- loop fixture /temp/steerbox/demo-project/config.json demo-project g
 - [Agent Evolution Reading List and Notes](./docs/AGENT_EVOLUTION_READING_LIST.md)
 - [Agent Evolution Innovation Synthesis](./docs/AGENT_EVOLUTION_INNOVATION_SYNTHESIS.md)
 - [Storage and Recovery Discussion](./docs/STORAGE_AND_RECOVERY_DISCUSSION.md)
+- [Phase 1 Implementation Scope](./docs/PHASE_1_IMPLEMENTATION_SCOPE.md)
+- [Human Steering Modes](./docs/HUMAN_STEERING_MODES.md)
+- [Control Plane Discussion](./docs/CONTROL_PLANE_DISCUSSION.md)

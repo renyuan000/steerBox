@@ -83,6 +83,30 @@ impl RuntimeConfig {
         self.data_root.join(".steerbox").join("events.jsonl")
     }
 
+    pub fn state_path(&self) -> PathBuf {
+        self.data_root.join(".steerbox").join("state.json")
+    }
+
+    pub fn traces_path(&self) -> PathBuf {
+        self.data_root.join(".steerbox").join("traces.jsonl")
+    }
+
+    pub fn checkpoints_path(&self) -> PathBuf {
+        self.data_root.join(".steerbox").join("checkpoints.jsonl")
+    }
+
+    pub fn side_effects_path(&self) -> PathBuf {
+        self.data_root.join(".steerbox").join("side-effects.jsonl")
+    }
+
+    pub fn run_summary_path(&self, loop_run_id: &str) -> PathBuf {
+        self.data_root
+            .join(".steerbox")
+            .join("runs")
+            .join(loop_run_id)
+            .join("summary.json")
+    }
+
     pub fn config_path(&self) -> PathBuf {
         self.data_root.join("config.json")
     }

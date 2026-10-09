@@ -17,6 +17,36 @@ fn test_data_dir(label: &str) -> PathBuf {
 }
 
 #[test]
+fn goal_scope_rejects_traversal_and_absolute_paths() {
+    let goal = GoalContract::new("g", "p", "docs", vec!["docs".into()], vec![], vec![]);
+    for path in [
+        "../docs/a.md",
+        "docs/../../a.md",
+        "/docs/a.md",
+        "docs\\a.md",
+    ] {
+        assert!(!goal.is_within_scope(path), "unsafe path allowed: {path}");
+    }
+    assert!(goal.is_within_scope("./docs/a.md"));
+    assert!(!goal.is_within_scope("docs-other/a.md"));
+}
+
+#[test]
+fn goal_root_scope_excludes_named_subtrees() {
+    let goal = GoalContract::new(
+        "g",
+        "p",
+        "docs",
+        vec![".".into()],
+        vec!["private".into()],
+        vec![],
+    );
+    assert!(goal.is_within_scope("docs/a.md"));
+    assert!(!goal.is_within_scope("private/a.md"));
+    assert!(!goal.is_within_scope("../a.md"));
+}
+
+#[test]
 fn event_envelope_serializes_contract_fields_without_secret_payloads() {
     let event = EventEnvelope::new(
         "goal",
@@ -52,6 +82,33 @@ fn event_envelope_rejects_sensitive_payload_fields() {
         result,
         Err(EventEnvelopeError::SensitivePayload { field }) if field == "api_key"
     ));
+}
+
+#[test]
+fn event_envelope_rejects_common_credential_field_names_recursively() {
+    for key in [
+        "access_token",
+        "client_secret",
+        "session_token",
+        "ssh_key",
+        "private_key",
+        "secret_key",
+    ] {
+        let payload = serde_json::json!({"nested": [{key: "fixture-only"}]});
+        let result = EventEnvelope::new(
+            "task",
+            "event-sensitive-field",
+            "tool_call_completed",
+            "task-1",
+            "correlation-1",
+            payload,
+        );
+
+        assert!(
+            matches!(result, Err(EventEnvelopeError::SensitivePayload { .. })),
+            "sensitive field {key} must be rejected"
+        );
+    }
 }
 
 #[test]
@@ -264,4 +321,55 @@ fn event_log_appends_sequences_and_recovers_after_reopen() {
             .count(),
         3
     );
+}
+
+#[test]
+fn event_log_reads_events_in_bounded_pages() {
+    let directory = test_data_dir("event-pages");
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let path = directory.join("events.jsonl");
+    let mut log = EventLog::open(&path).expect("event log opens");
+
+    for index in 1..=5 {
+        let event = EventEnvelope::new(
+            "task",
+            format!("event-{index}"),
+            "task_state_changed",
+            "task-1",
+            "correlation-1",
+            serde_json::json!({"index": index}),
+        )
+        .expect("event payload is safe");
+        log.append(event).expect("event appends");
+    }
+
+    let first_page = log.read_page(0, 2).expect("first page reads");
+    let second_page = log.read_page(2, 2).expect("second page reads");
+    let final_page = log.read_page(4, 2).expect("final page reads");
+
+    assert_eq!(
+        first_page
+            .iter()
+            .map(|event| event.sequence_no)
+            .collect::<Vec<_>>(),
+        vec![Some(1), Some(2)]
+    );
+    assert_eq!(
+        second_page
+            .iter()
+            .map(|event| event.sequence_no)
+            .collect::<Vec<_>>(),
+        vec![Some(3), Some(4)]
+    );
+    assert_eq!(
+        final_page
+            .iter()
+            .map(|event| event.sequence_no)
+            .collect::<Vec<_>>(),
+        vec![Some(5)]
+    );
+    assert!(log
+        .read_page(0, 0)
+        .expect("zero-sized page reads")
+        .is_empty());
 }

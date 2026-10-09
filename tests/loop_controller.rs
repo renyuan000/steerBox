@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use steerbox::audit_store::{SideEffectLedger, TraceStore};
 use steerbox::domain::{BudgetKind, GoalContract, LoopBudget, LoopStatus};
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{LoopControllerError, ReadOnlyLoopController};
@@ -449,4 +450,102 @@ fn controller_executes_allowed_git_status_and_records_completion() {
     assert_eq!(events[2].event_type, "tool_call_requested");
     assert_eq!(events[3].event_type, "tool_call_completed");
     assert_eq!(events[3].payload["tool_id"], "git_status");
+}
+
+#[test]
+fn controller_persists_tool_trace_and_explicit_no_side_effect_record() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let log = EventLog::open(directory.join("events.jsonl")).expect("event log opens");
+    let mut goal = GoalContract::new(
+        "goal-tool-audit",
+        "project-tool-audit",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["git status".into()],
+    );
+    goal.allowed_tools = vec!["git_status".into()];
+    let mut controller = ReadOnlyLoopController::start(
+        log,
+        goal,
+        "loop-tool-audit",
+        "task-run-tool-audit",
+        LoopBudget::new(1, 1, 1, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts")
+    .with_audit_stores(
+        directory.join("traces.jsonl"),
+        directory.join("side-effects.jsonl"),
+    );
+    let workspace = std::env::current_dir().expect("current directory exists");
+    controller
+        .execute_read_only_tool(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &PolicyGate::new(),
+            &ReadOnlyToolExecutor,
+            &workspace,
+            ToolCallInput {
+                tool_id: "git_status".into(),
+                arguments: serde_json::json!({}),
+            },
+            "step-tool-audit",
+        )
+        .expect("read-only tool executes");
+    let traces = TraceStore::open(directory.join("traces.jsonl"))
+        .read_all()
+        .expect("trace reads");
+    let side_effects = SideEffectLedger::open(directory.join("side-effects.jsonl"))
+        .read_all()
+        .expect("side effect ledger reads");
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0].step_id.as_deref(), Some("step-tool-audit"));
+    assert_eq!(side_effects.len(), 1);
+    assert_eq!(side_effects[0].class, "none");
+    assert_eq!(side_effects[0].status, "completed");
+}
+
+#[test]
+fn controller_records_tool_failure_after_policy_allows_request() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let log = EventLog::open(directory.join("events.jsonl")).expect("event log opens");
+    let mut goal = GoalContract::new(
+        "goal-tool-failure",
+        "project-tool-failure",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["git status".into()],
+    );
+    goal.allowed_tools = vec!["git_status".into()];
+    let budget = LoopBudget::new(1, 1, 1, 1, 0, 1, 1, 1);
+    let mut controller = ReadOnlyLoopController::start(
+        log,
+        goal,
+        "loop-tool-failure",
+        "task-run-tool-failure",
+        budget,
+    )
+    .expect("loop starts");
+    assert!(controller
+        .execute_read_only_tool(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &PolicyGate::new(),
+            &ReadOnlyToolExecutor,
+            std::path::Path::new("/tmp/steerbox-no-such-workspace"),
+            ToolCallInput {
+                tool_id: "git_status".into(),
+                arguments: serde_json::json!({}),
+            },
+            "step-tool-failure",
+        )
+        .is_err());
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert_eq!(events[1].event_type, "policy_decision");
+    assert_eq!(events[2].event_type, "tool_call_requested");
+    assert_eq!(events[3].event_type, "tool_call_failed");
 }

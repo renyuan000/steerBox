@@ -29,11 +29,11 @@
 
 ### 当前可执行切片
 
-已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop、secret-free `LocalFixtureModelAdapter` 决策链，以及接入 `LoopController` 的 `ToolRegistry`/`PolicyGate` 和受控只读工具执行器切片。当前 executor 只执行固定 argv 的 `git status --short --branch`，不接受 shell 字符串、不执行写操作，且对 workspace 和输出大小做限制；controller 会记录 `policy_decision`、`tool_call_requested` 与 `tool_call_completed`。这不等于真实模型接入、完整工具执行器、文件修改、验证编排或完整 Agent 已完成。
+已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop、secret-free `LocalFixtureModelAdapter` 决策链，以及接入 `LoopController` 的 `ToolRegistry`/`PolicyGate` 和受控只读工具执行器切片。当前 executor 只执行固定 argv 的 `git status --short --branch`，不接受 shell 字符串、不执行写操作，且对 workspace、超时和输出大小做限制；controller 会记录 `policy_decision`、`tool_call_requested`、成功或失败的工具事件，并追加 trace/side-effect 记录。软件开发垂直切片还可执行受审批的 Markdown 修改、链接验证和 `RunSummary` 写入，验证失败返回非零退出。这不等于真实模型接入、运行中用户命令入口、完整工具执行器或完整 Agent 已完成。
 
 ### 长期运行目标与 Phase 1 实现边界
 
-架构目标是四个专业方向都支持 7x24 常驻和多年可恢复生命周期；这不是 Phase 1 已实现能力的声明。Phase 1 的目标边界包含本地单机、顺序执行、持久化事件、任务状态和最小 `RecoveryCheckpoint`，但当前代码尚未实现 checkpoint、StateStore 或恢复闭环；它们仍是后续必须完成的验收项。
+架构目标是四个专业方向都支持 7x24 常驻和多年可恢复生命周期；这不是 Phase 1 已实现能力的声明。Phase 1 的目标边界包含本地单机、顺序执行、持久化事件、任务状态和最小 `RecoveryCheckpoint`。当前代码已实现 JSON StateStore 持久化 reopen、Trace/Checkpoint/SideEffect JSONL 记录、只读 BoardProjection fixture、静态 GoalAlignment/DriftGuard 报告以及 Markdown 文件修改/链接验证开发 loop；完整恢复闭环、运行中用户控制面和真实模型 provider 仍是未完成验收项。
 
 Phase 1 不实现分布式 worker、高可用故障转移、完整安全运营常驻服务、自动渗透测试执行链或自动安全处置闭环。后续方向必须复用共享 Harness 的任务、证据、授权、审批和恢复接口，而不能另起一套不可审计的常驻循环。
 

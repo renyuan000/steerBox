@@ -157,7 +157,7 @@ recipe_ref
 version
 ```
 
-Phase 1 的工具执行必须与注册和策略判断分层。当前只实现一个受控只读执行切片：`git_status` 使用固定 argv `git status --short --branch`，调用方只能提供结构化 arguments，不能传入 shell 字符串；workspace 必须是已存在目录，输出必须限长。`rg_fixed` 和 `markdown_link_check` 目前只有 registry/recipe 边界，尚未接入真实执行器。任何写入、网络或外部系统动作仍不得通过该执行器执行。
+Phase 1 的工具执行必须与注册和策略判断分层。当前只实现一个受控只读执行切片：`git_status` 使用固定 argv `git status --short --branch`，调用方只能提供结构化 arguments，不能传入 shell 字符串；workspace 必须是已存在目录，子进程有固定超时，stdout/stderr 通过有界管道读取并限长。策略通过但执行失败必须记录 `tool_call_failed`；成功才记录 `tool_call_completed`。`rg_fixed` 和 `markdown_link_check` 目前只有 registry/recipe 边界，尚未接入真实执行器。任何写入、网络或外部系统动作仍不得通过该执行器执行。
 
 ### 5. PolicyGate
 
@@ -368,7 +368,7 @@ Trace、StateStore 和 BoardProjection 都不是独立事实源；EventLog 是�
       summary.json
 ```
 
-当前已实现的最小切片：`RuntimeConfig` 使用 JSON 配置文件，配置只接受 `auth_ref` 而不接受认证明文；`EventLog` 先以 append-only JSONL 落盘到 `.steerbox/events.jsonl`，打开时校验既有记录并恢复下一个 sequence。SQLite、StateStore、TraceStore 和完整 runtime 仍按后续 TODO 实现，不能把当前 JSONL 切片描述为完整 Phase 1 持久化闭环。
+当前已实现的最小切片：`RuntimeConfig` 使用 JSON 配置文件，配置只接受 `auth_ref` 而不接受认证明文；`EventLog` 以 append-only JSONL 落盘并支持分页读取；`StateStore` 可从事件重建 loop/step projection，并以 JSON 原子写入方式持久化后 reopen；`TraceRecord`、`CheckpointMetadata`、最小 `SideEffectRecord` 和 dev loop 的 `RunSummary` 可持久化；`GoalAlignmentCheck` 与 `DriftGuard` 已有静态规则报告和测试；软件开发垂直切片可执行受审批的 Markdown 修改、链接验证并在验证失败时以非零退出。SQLite、运行中 `UserCommandInbox`/pause/resume/takeover 控制面、完整 side-effect 执行接线、真实模型 provider 和完整恢复 runtime 仍未实现，不能把当前切片描述为完整 Phase 1 Agent。
 
 说明：
 

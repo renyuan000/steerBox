@@ -48,8 +48,8 @@
 
 - [x] 定义 EventEnvelope、event_id、sequence_no、correlation_id 和 causation_id
 - [ ] 定义 Portfolio、Project、Task、TaskRun、Attempt 和 TaskDependency
-- [ ] 定义 Task 状态及合法迁移表
-- [ ] 定义 BoardProjection / BoardTaskCard
+- [x] 定义 Task 状态及合法迁移表
+- [x] 定义最小 BoardProjection / BoardTaskCard
 - [ ] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory
 
 - [x] 定义 `GoalContract`
@@ -58,9 +58,9 @@
 - [ ] 定义 `ToolCallRecord`
 - [ ] 定义 `PolicyDecision`
 - [ ] 定义 `SideEffectEvent`
-- [ ] 定义 `CheckpointMetadata`
+- [x] 定义 `CheckpointMetadata`
 - [ ] 定义 `VerificationResult`
-- [ ] 定义 `TraceRecord`
+- [x] 定义 `TraceRecord`
 - [ ] 定义 `ProviderProfile`、`EndpointProfile`、`ModelProfile`
 - [ ] 定义 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`
 - [ ] 定义 `RouteDecision` 和 `ModelCallRecord`
@@ -73,14 +73,16 @@
 
 ### P3. Local Storage
 
-- [ ] 实现从 EventLog 重建 current state / BoardProjection 的最小 fixture
+- [x] 实现从 EventLog 重建 loop/step current state 的最小 StateStore fixture
+- [x] 实现 StateStore JSON 持久化与 reopen 恢复测试
+- [x] 从 EventLog 重建 BoardProjection 的最小 fixture（只读 CLI 输出；完整依赖/Attempt 投影仍待实现）
 
 - [ ] 初始化 `events.sqlite`
 - [ ] 初始化 `state.sqlite`
 - [x] 实现 append-only event write（JSONL 第一切片）
 - [ ] 实现 current state update
-- [ ] 实现 trace JSONL append
-- [ ] 实现 run summary 写入
+- [x] 实现 TraceRecord JSONL append/read 最小切片
+- [x] 实现 run summary 写入（dev markdown 成功/失败两条路径均写入 `runs/<loop_run_id>/summary.json`）
 
 - [x] 实现 RuntimeConfig JSON 解析、`/temp/steerbox` 路径校验和未知字段拒绝
 
@@ -161,7 +163,7 @@ Memory 最小实现：
 
 ### P7. RecoveryCheckpoint
 
-- [ ] 实现 checkpoint metadata 写入
+- [x] 实现 checkpoint metadata JSONL 写入
 - [ ] 记录 checkpoint 与 goal / loop / step 的关系
 - [ ] 记录 checkpoint 前后的文件 diff boundary
 - [ ] 记录 checkpoint 覆盖范围
@@ -175,7 +177,7 @@ Memory 最小实现：
 
 ### P8. SideEffectLedger
 
-- [ ] 实现 side-effect class 枚举
+- [x] 定义最小 side-effect record schema
 - [ ] 实现 tool call 到 side-effect event 的记录
 - [ ] 支持 read-only、本地可逆、部分可逆、可补偿、不可逆、人工处理分类
 - [ ] 高风险副作用要求 policy gate
@@ -188,9 +190,8 @@ Memory 最小实现：
 
 ### P9. GoalAlignmentCheck
 
-- [ ] 实现 root goal 对齐检查报告
-- [ ] 实现 stage goal 对齐检查报告
-- [ ] 检查 scope / out_of_scope
+- [x] 实现 root/stage goal 对齐检查报告
+- [x] 检查 scope / out_of_scope
 - [ ] 检查是否需要 human intervention
 - [ ] 将检查结果写入 event log
 
@@ -201,11 +202,11 @@ Memory 最小实现：
 
 ### P10. DriftGuard
 
-- [ ] 检查修改文件数量
-- [ ] 检查 diff 行数
-- [ ] 检查核心文件触碰
+- [x] 检查修改文件数量
+- [x] 检查 diff 行数
+- [x] 检查核心文件触碰
 - [ ] 检查大规模重命名 / 删除
-- [ ] 输出 allow / warn / require_checkpoint / require_human_approval / block
+- [x] 输出 allow / warn / require_checkpoint / require_human_approval / block
 
 验收：
 
@@ -252,15 +253,15 @@ Memory 最小实现：
 
 ### P13. Dev Agent Vertical Slice
 
-- [ ] 输出只读 BoardProjection / JSON board fixture
+- [x] 输出只读 BoardProjection / JSON board fixture
 
-- [ ] 定义一个小型真实开发任务
-- [ ] 创建 goal
-- [ ] 加载上下文
-- [ ] 执行文件修改
-- [ ] 运行验证命令
-- [ ] 记录 checkpoint 和 side effect
-- [ ] 输出 run summary
+- [x] 定义一个小型真实开发任务（Markdown 修改与链接验证）
+- [x] 创建 goal
+- [x] 加载上下文
+- [x] 执行文件修改
+- [x] 运行验证命令
+- [x] 记录 checkpoint 和 side effect
+- [x] 输出 run summary
 
 验收：
 

@@ -29,10 +29,10 @@
 | 核心边界 | `partially_resolved` | Phase 1 固定为 shared harness core + software development agent vertical slice；持续运维、安全评估与漏洞研究、安全运营属于后续方向 |
 | 长时运行 | `partially_resolved` | Goal / Loop、EventLog、StateStore、checkpoint 有设计；生产级恢复和调度仍待实现 |
 | Steering / PolicyGate | `partially_resolved` | 有人类模式、策略门和审计边界；完整策略评估与权限模型仍待收敛 |
-| 人在环 | `partially_resolved` | 已定义观察、审批、暂停、恢复和接管模式；控制面交互仍未实现 |
+| 人在环 | `partially_resolved` | 已定义观察、审批、暂停、恢复和接管模式；当前代码只有 `HumanSteeringMode` 和策略判断，运行中命令入口、Inbox、控制面交互仍未实现 |
 | 审计 / tracing / 回放 | `partially_resolved` | EventLog 是执行事实源，Trace / StateStore / BoardProjection 可重建；完整回放工具仍待实现 |
 | Portfolio / Board | `partially_resolved` | Phase 1 固定 schema 和只读 projection fixture；真实多项目并行调度不在 Phase 1 |
-| 多模型 | `partially_resolved` | 已有静态 profile、规则路由、prompt pack 和 fallback 契约；adapter 运行时和供应商差异仍待独立收敛 |
+| 多模型 | `partially_resolved` | 已有 profile、规则路由、prompt pack 和 fallback 的设计契约；当前代码只有 `ModelAdapter` 与 secret-free fixture，registry、router、真实 provider adapter 和调用记录仍未实现 |
 | 自进化 | `partially_resolved` | 已有 SystemEvolutionTask 和 local → project → portfolio → global 晋升边界；验证、审批和回滚 runtime 仍待实现 |
 | 安全模型 | `partially_resolved` | 已有 `SECURITY_MODEL_DISCUSSION.md` 和研究清单；具体 schema、运行时策略和测试仍待实现 |
 | 语言和构建 | `open` | 先按模块职责和验证结果选型，当前不把语言选择写死 |

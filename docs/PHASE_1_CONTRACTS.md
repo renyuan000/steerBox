@@ -542,6 +542,8 @@ finished_at
 
 Phase 1 的 run summary 必须能从 task、attempt、event、verification、checkpoint、side effect 和 evidence 反查到原始记录。
 
+最小运行摘要至少记录 `project_id`、`goal_id`、`loop_run_id`、`task_run_id`、`final_status`、`step_ids`、`file_changes`、`verification_status`、`event_ids`、`verification_event_ids`、`trace_ids`、`checkpoint_ids`、`side_effect_ids`、`event_count` 和 `generated_at`。当前开发垂直切片只满足已有 loop/event/verification/trace/checkpoint/side-effect 引用的范围；在 Task/Attempt/Evidence schema 和关联事件实现前，不得宣称满足完整反查契约。
+
 ## 九、错误、失败和恢复
 
 Phase 1 最小 failure category：

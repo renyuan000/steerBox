@@ -1,8 +1,13 @@
+pub mod audit_store;
+pub mod board_projection;
 pub mod domain;
+pub mod drift_guard;
 pub mod event_log;
 pub mod loop_controller;
 pub mod model_adapter;
 pub mod policy_gate;
 pub mod runtime_config;
+pub mod state_store;
 pub mod tool_executor;
 pub mod tool_registry;
+pub mod workspace_edit;

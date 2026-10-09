@@ -1,3 +1,6 @@
+use crate::audit_store::{
+    AuditStoreError, SideEffectLedger, SideEffectRecord, TraceRecord, TraceStore,
+};
 use crate::domain::{
     BudgetKind, EventEnvelope, EventEnvelopeError, GoalContract, LoopBudget, LoopRun, LoopStatus,
     LoopStep, NoProgressTracker,
@@ -33,6 +36,8 @@ pub enum LoopControllerError {
     PolicyGate(#[from] PolicyGateError),
     #[error("tool execution failed: {0}")]
     ToolExecution(#[from] ToolExecutionError),
+    #[error("audit store failed: {0}")]
+    AuditStore(#[from] AuditStoreError),
 }
 
 /// Minimal sequential loop that records observations only.
@@ -44,6 +49,8 @@ pub struct ReadOnlyLoopController {
     event_log: EventLog,
     next_step_no: u32,
     no_progress: NoProgressTracker,
+    trace_store: Option<TraceStore>,
+    side_effect_ledger: Option<SideEffectLedger>,
 }
 
 impl ReadOnlyLoopController {
@@ -72,7 +79,19 @@ impl ReadOnlyLoopController {
             event_log,
             next_step_no: 1,
             no_progress: NoProgressTracker::new(max_no_progress_steps, max_same_action_repetitions),
+            trace_store: None,
+            side_effect_ledger: None,
         })
+    }
+
+    pub fn with_audit_stores(
+        mut self,
+        trace_path: impl Into<std::path::PathBuf>,
+        side_effect_path: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        self.trace_store = Some(TraceStore::open(trace_path));
+        self.side_effect_ledger = Some(SideEffectLedger::open(side_effect_path));
+        self
     }
 
     pub fn run_observation(
@@ -317,13 +336,76 @@ impl ReadOnlyLoopController {
     ) -> Result<ToolCallOutput, LoopControllerError> {
         let step_id = step_id.into();
         self.request_tool_call(registry, gate, input.tool_id.clone(), step_id.clone())?;
-        let output = executor.execute(registry, workspace, input.clone())?;
+        let output = match executor.execute(registry, workspace, input.clone()) {
+            Ok(output) => output,
+            Err(error) => {
+                self.append_model_event(
+                    "tool_call_failed",
+                    &format!("{step_id}:tool_failed"),
+                    json!({"tool_id": input.tool_id, "error": error.to_string()}),
+                )?;
+                self.record_tool_audit(
+                    registry,
+                    &input.tool_id,
+                    &step_id,
+                    "failed",
+                    &error.to_string(),
+                )?;
+                return Err(error.into());
+            }
+        };
         self.append_model_event(
             "tool_call_completed",
             &format!("{step_id}:tool_completed"),
             json!({"tool_id": input.tool_id, "summary": output.summary, "result": output.result}),
         )?;
+        self.record_tool_audit(
+            registry,
+            &input.tool_id,
+            &step_id,
+            "completed",
+            &output.summary,
+        )?;
         Ok(output)
+    }
+
+    fn record_tool_audit(
+        &self,
+        registry: &ToolRegistry,
+        tool_id: &str,
+        step_id: &str,
+        status: &str,
+        summary: &str,
+    ) -> Result<(), LoopControllerError> {
+        let occurred_at = chrono::Utc::now().to_rfc3339();
+        if let Some(store) = &self.trace_store {
+            store.append(&TraceRecord {
+                trace_id: format!("{step_id}:tool:{status}"),
+                goal_id: Some(self.goal.goal_id.clone()),
+                loop_run_id: Some(self.loop_run.loop_run_id.clone()),
+                step_id: Some(step_id.to_owned()),
+                kind: format!("tool_{status}"),
+                summary: summary.to_owned(),
+                occurred_at: occurred_at.clone(),
+            })?;
+        }
+        if let Some(ledger) = &self.side_effect_ledger {
+            let class = registry
+                .get(tool_id)
+                .map(|profile| format!("{:?}", profile.side_effect_class).to_ascii_lowercase())
+                .unwrap_or_else(|| "unknown".into());
+            ledger.append(&SideEffectRecord {
+                side_effect_id: format!("{step_id}:side-effect"),
+                goal_id: self.goal.goal_id.clone(),
+                loop_run_id: self.loop_run.loop_run_id.clone(),
+                tool_id: tool_id.to_owned(),
+                class,
+                status: status.to_owned(),
+                summary: summary.to_owned(),
+                created_at: occurred_at,
+            })?;
+        }
+        Ok(())
     }
 
     fn append_model_event(

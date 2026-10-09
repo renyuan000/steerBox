@@ -21,7 +21,7 @@ Its core question is not simply whether an agent can do work, but how to combine
 
 ### Current Phase 1 Runtime Slice
 
-The repository currently contains a verified Rust domain and local persistence slice. It is not yet a model-connected coding agent. The reproducible commands are:
+The repository currently contains a verified Rust domain and local runtime slice, including EventLog/StateStore, trace/checkpoint metadata, a read-only board fixture, and an approved Markdown edit-and-verify development slice. A verification failure is persisted and returns a non-zero exit code. It is not yet a model-connected coding agent. The reproducible commands are:
 
 ```bash
 cargo test
@@ -33,7 +33,7 @@ cargo run -- loop readonly /temp/steerbox/demo-project/config.json demo-project 
 cargo run -- loop fixture /temp/steerbox/demo-project/config.json demo-project goal-1 loop-2 task-run-2 local-fixture complete_loop 'repository inspected' 'fixture complete'
 ```
 
-Runtime data is written below `/temp/steerbox/<project_ref>/.steerbox/`. The current CLI initializes and validates configuration, appends a secret-free event, reads the append-only event log, and runs either a fixed observation loop or a secret-free local fixture model decision loop. The runtime also exposes `ToolRegistry`, `PolicyGate`, and a constrained read-only executor for fixed-argv `git status`; `LoopController` checks policy before recording tool request/completion events. No shell string, write action, or external model call is accepted, and the end-to-end development loop remains in later Phase 1 slices.
+Runtime data is written below `/temp/steerbox/<project_ref>/.steerbox/`. The current CLI initializes and validates configuration, appends and reads events, runs fixed observation or secret-free fixture-model loops, and provides a constrained fixed-argv `git status` executor. The Markdown development slice requires an explicit approval marker, records checkpoint/side-effect/verification/trace references, and writes `runs/<loop_run_id>/summary.json`. It is still fixture-driven: there is no real provider, multi-model router, runtime user-command inbox, background control plane, or complete recovery loop.
 
 ### Four Professional Directions
 

@@ -33,6 +33,27 @@ ControlPlaneCommand
   -> updated BoardProjection
 ~~~
 
+### Phase 1 最小运行中控制入口
+
+Phase 1 不实现完整 TUI/Web 控制面，但必须为“用户中途接入正在运行的任务”保留可测试的命令边界。最小实现可以先由 CLI 或本地 API 写入 `UserCommandInbox`，再由 `LoopController` 在模型返回、工具完成、step 完成、验证开始、checkpoint 和 heartbeat 等安全边界读取。
+
+每条控制命令至少携带：
+
+```text
+command_id
+requested_by
+command_type: pause | resume | cancel | steer | takeover | approve | reject
+project_id
+goal_id
+task_run_id
+loop_run_id
+payload_summary
+created_at
+expires_at?
+```
+
+命令处理必须产生可审计结果：`accepted`、`applied`、`rejected`、`expired` 或 `waiting_human`。`command_id` 负责幂等；`loop_run_id` 负责精确定位运行实例；EventLog 记录事实，StateStore/BoardProjection 只做可重建状态和查询视图。当前这些 Inbox、边界读取、命令状态和恢复语义尚未实现，因此本节是 Phase 1 的待实现方案，不是现有后台服务能力的声明。
+
 ## 一、一等领域对象
 
 ### 1. 层级与运行关系

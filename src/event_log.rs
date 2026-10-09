@@ -104,6 +104,44 @@ impl EventLog {
         Ok(events)
     }
 
+    pub fn read_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<EventEnvelope>, EventLogError> {
+        if limit == 0 || !self.path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let file = File::open(&self.path)?;
+        let reader = BufReader::new(file);
+        let mut events = Vec::with_capacity(limit);
+        let mut event_index = 0usize;
+        for (line_index, line) in reader.lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if event_index < offset {
+                event_index += 1;
+                continue;
+            }
+            events.push(
+                serde_json::from_str::<EventEnvelope>(&line).map_err(|source| {
+                    EventLogError::InvalidEvent {
+                        line: line_index + 1,
+                        source,
+                    }
+                })?,
+            );
+            event_index += 1;
+            if events.len() == limit {
+                break;
+            }
+        }
+        Ok(events)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

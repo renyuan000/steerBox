@@ -102,12 +102,18 @@ fn is_forbidden_payload_key(key: &str) -> bool {
         normalized.as_str(),
         "apikey"
             | "authorization"
+            | "accesstoken"
             | "bearertoken"
             | "cookie"
             | "credentialresponse"
+            | "clientsecret"
             | "password"
+            | "privatekey"
             | "refreshtoken"
             | "secret"
+            | "secretkey"
+            | "sessiontoken"
+            | "sshkey"
             | "token"
     )
 }
@@ -195,17 +201,39 @@ impl GoalContract {
     }
 
     pub fn is_within_scope(&self, path: &str) -> bool {
-        let normalized = path.trim_start_matches("./");
-        let excluded = self.out_of_scope.iter().any(|prefix| {
-            let prefix = prefix.trim_start_matches("./").trim_end_matches('/');
-            normalized == prefix || normalized.starts_with(&format!("{prefix}/"))
-        });
-        let included = self.scope.iter().any(|prefix| {
-            let prefix = prefix.trim_start_matches("./").trim_end_matches('/');
-            normalized == prefix || normalized.starts_with(&format!("{prefix}/"))
-        });
+        let Some(normalized) = scope_path(path) else {
+            return false;
+        };
+        if normalized.is_empty() {
+            return false;
+        }
+        let matches = |prefix: &String| {
+            scope_path(prefix).is_some_and(|prefix| {
+                prefix.is_empty()
+                    || normalized == prefix
+                    || normalized.starts_with(&format!("{prefix}/"))
+            })
+        };
+        let excluded = self.out_of_scope.iter().any(matches);
+        let included = self.scope.iter().any(matches);
         included && !excluded
     }
+}
+
+// Scope is a portable workspace-relative path, never an absolute or traversing path.
+fn scope_path(path: &str) -> Option<String> {
+    if path.is_empty() || path.contains('\\') || path.contains(':') {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for component in std::path::Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(part) => parts.push(part.to_str()?),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(parts.join("/"))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -261,6 +289,7 @@ pub struct LoopBudget {
 }
 
 impl LoopBudget {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         max_steps: u32,
         max_tool_calls: u32,

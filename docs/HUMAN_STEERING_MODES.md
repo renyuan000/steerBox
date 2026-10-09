@@ -453,6 +453,31 @@ resume_policy
 audit_record_id
 ```
 
+## Phase 1 运行中接入边界
+
+上述模式是目标设计；截至当前实现，代码只提供 `HumanSteeringMode`、高风险策略判断和事件审计基础，尚未提供让用户接入常驻后台任务的运行时控制面。
+
+Phase 1 后续实现的最小入口约定如下，先作为可验收的 runtime 契约，不把 TUI/Web 作为前置条件：
+
+```text
+control command (CLI / future API)
+  -> command_id + loop_run_id + requested_by
+  -> append UserCommandInbox record
+  -> LoopController 在安全边界读取
+  -> classify: control / steer / independent_task
+  -> PolicyGate + current side-effect state
+  -> apply, wait_human, blocked, or reject
+  -> append HumanInterventionEvent + resulting GoalRevision/PlanRevision
+```
+
+最小可观测性要求：
+
+- 用户命令必须能按 `command_id` 查询接收、应用、拒绝或过期结果；重复 `command_id` 不得重复产生副作用。
+- 命令必须绑定 `project_id`、`goal_id`、`task_run_id`、`loop_run_id`；不能对未指定运行实例的后台任务做隐式广播。
+- `pause`、`cancel`、`takeover` 只能在安全边界生效；若工具副作用状态不确定，必须进入 `waiting_human` 或 `blocked`，不能假定已停止。
+- 插话不得清零预算、重试 lineage 或 no-progress counter；相关目标修改必须产生 `GoalRevision`，计划变化必须使旧计划失效并留下原因。
+- 当前状态仍是“方案已定义、运行时未实现”；直到 Inbox、边界读取和审计测试落地前，不得宣称支持中途接入后台 agent。
+
 ## 当前结论
 
 `steerBox` 应同时支持人在环、人类可驾驭自主运行和人工接管。
