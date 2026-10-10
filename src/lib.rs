@@ -1,5 +1,6 @@
 pub mod audit_store;
 pub mod board_projection;
+pub mod budget_calculator;
 pub mod domain;
 pub mod drift_guard;
 pub mod event_log;
