@@ -77,7 +77,8 @@
 - 第一阶段主语言和构建工具已确定为 `Rust` + `Cargo`
 - 当前已实现并验证领域契约、配置校验、append-only JSONL EventLog（含分页读取）、StateStore 重建/持久化、Trace/Checkpoint/SideEffect 记录、GoalAlignment/DriftGuard 最小报告和只读 BoardProjection fixture
 - 当前开发垂直切片可执行受审批的 Markdown 文件修改与链接验证，成功/失败均写入 run summary；验证失败会保留事件、状态和摘要并以非零退出
-- 当前仍不是可连接真实网络模型并自主执行开发任务的 Agent：已有 secret-free fixture model adapter、provider-neutral OpenAI-compatible adapter/fake transport、严格 provider-to-ModelAdapter bridge、规则式多模型路由边界、metadata-only execution history/query 与 CLI 流式生命周期输出；但尚无真实网络 transport/凭据解析、LoopController 内部模型路由接线、动态 fallback 重试、takeover 控制面、常驻后台 worker 或完整恢复闭环
+- 当前仍不是可连接真实网络模型并自主执行开发任务的 Agent：已有本地 fixture、OpenAI-compatible fake transport、严格 provider-to-ModelAdapter bridge，以及接入 LoopController 的规则式模型路由；路由和调用事件关联 `route_decision_id`，需要审批的路由会留下人工介入事件并拒绝调用，模型失败会结束对应 step。独立 `ModelCallStore` 可校验并持久化调用记录，但尚未接入实际调用；真实网络 transport/凭据解析、完整 prompt resolution、动态 fallback、审批恢复、takeover 和完整恢复闭环仍未完成
+- 历史查询支持 metadata-only `execution list/show/page`，分页是读取全量事件后的 detached snapshot，不是流式读取或 live cursor；CLI 生命周期输出仅在真实完成时报告 loop completed
 - 用户中途接入后台任务已有设计契约，但没有常驻后台 worker 或可连接它的交互控制面；见 [Human Steering Modes](./docs/HUMAN_STEERING_MODES.md) 与 [Control Plane Discussion](./docs/CONTROL_PLANE_DISCUSSION.md)
 
 最小验证命令：
@@ -92,9 +93,12 @@ cargo run -- loop readonly /temp/steerbox/demo-project/config.json demo-project 
 cargo run -- loop fixture /temp/steerbox/demo-project/config.json demo-project goal-1 loop-2 task-run-2 local-fixture complete_loop 'repository inspected' 'fixture complete'
 cargo run -- execution list /temp/steerbox/demo-project/config.json
 cargo run -- execution show /temp/steerbox/demo-project/config.json loop-1
+cargo run -- execution page /temp/steerbox/demo-project/config.json loop-1 0 10
 ```
 
 当前 fixture loop 只使用本地结构化决策，不调用真实模型、不执行工具、不修改文件；它会记录 `model_call_started`、`model_call_completed`，以及 `complete_loop` 或 `request_human` 对应事件。运行数据固定写入 `/temp/steerbox/<project_ref>/.steerbox/`，不写入仓库工作区。
+
+`continue_observation` 和 `request_human` 都不表示 loop 已完成；后者已有人工介入事件，但当前 loop 状态仍为 Running，不应误报 Paused。路由入口目前是库 API，不是上述 fixture CLI 自动使用的入口。审计 schema 拒绝未知认证字段并校验标识/成本，不等于对任意字符串内容做凭据检测。
 
 ## 文档
 

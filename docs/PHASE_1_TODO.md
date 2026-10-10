@@ -61,9 +61,9 @@
 - [x] 定义 `CheckpointMetadata`
 - [ ] 定义 `VerificationResult`
 - [x] 定义 `TraceRecord`
-- [ ] 定义 `ProviderProfile`、`EndpointProfile`、`ModelProfile`
-- [ ] 定义 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`
-- [ ] 定义 `RouteDecision` 和 `ModelCallRecord`
+- [x] 定义 `ProviderProfile`、`EndpointProfile`、`ModelProfile`（已有注册/序列化及关联验证）
+- [ ] 定义 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`（仅 PromptProfile 已实现，其余 pack 尚未实现）
+- [x] 定义 `RouteDecision` 和 `ModelCallRecord`（字段结构和最小语义校验已有测试；完整调用审计接线仍待完成）
 
 验收：
 
@@ -125,8 +125,8 @@ Memory 最小实现：
 
 ### P5. PolicyGate
 
-- [x] 实现工具调用前 policy check（已接入 LoopController 请求入口，尚未接入实际执行器）
-- [ ] 实现文件写入前 policy check
+- [x] 实现工具调用前 policy check（LoopController 先通过 PolicyGate，才调用只读执行器）
+- [ ] 实现文件写入前 policy check（Markdown CLI 已有最小审批切片；统一 controller 写动作尚未接线）
 - [x] 实现高风险动作升级到 human approval
 - [x] 实现 forbidden tool 阻断
 - [x] 实现 policy decision event 记录
@@ -232,16 +232,16 @@ Memory 最小实现：
 
 ### P12. Model Registry、Prompt Resolution 与规则路由
 
-- [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（registry、关联校验、prompt 版本/role/task 查询已有测试；尚未接入 LoopController）
+- [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（注册及 registry JSON 反序列化重验标识/关联，prompt 版本/role/task 查询已有测试；模型路由已使用 registry，完整 prompt resolution 尚未接线）
 - [x] 建立 provider-neutral OpenAI-compatible adapter、fake transport 和严格错误分类（真实网络 transport、凭据解析和 LoopController 接线仍待实现）
 - [x] 建立 provider-to-`ModelAdapter` bridge（仅接受严格 `decision`/`summary` JSON envelope；自然语言不猜测）
 - [ ] 接入至少一个真实网络 model provider
 - [x] 接入 secret-free `LocalFixtureModelAdapter`，并记录结构化 model decision 事件
 - [ ] 配置 cheap/fast、strong/slow、specialized、evaluator 或 local profile fixture
-- [x] 实现按 task type、agent role、能力、风险、成本和延迟过滤与排序的规则式路由边界（尚未接入 LoopController）
-- [x] 定义并序列化 `RouteDecision`（实际规则路由和持久化仍待接线）
+- [x] 实现按 task type、agent role、能力、风险、成本和延迟过滤与排序的规则式路由，并通过 `ModelAdapterRegistry` 接入 LoopController（需审批时 fail-closed；审批恢复尚未实现）
+- [x] 定义、校验并持久化 `RouteDecision` 到 EventLog；routed 模型调用的开始/成功/失败事件关联 route ID
 - [x] 按 provider、model、role、task 定义最小 prompt binding 查询（完整 `ResolvedPromptPack` 解析仍待实现）
-- [x] 定义并序列化 `ModelCallRecord`、prompt 版本和验证状态（实际调用记录接线仍待实现）
+- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore`（尚未将实际调用和 resolved prompt 写入该 store）
 - [ ] 实现能力兼容、非静默的 fallback 事件
 - [ ] 验证 registry、prompt、trace、event log 和 checkpoint 不保存认证明文
 
@@ -282,7 +282,7 @@ Memory 最小实现：
 - [x] 记录已实现能力和占位能力
 - [x] 记录已知限制
 - [x] 明确运行数据写入 `/temp/steerbox/<project_ref>/.steerbox/`
-- [x] 增加 metadata-only execution history/query 投影、`execution list/show` CLI 和 detached snapshot 分页（底层仍使用 `read_all()`，不是 live cursor）
+- [x] 增加 metadata-only execution history/query 投影、`execution list/show/page` CLI 和 detached snapshot 分页（底层仍使用 `read_all()`，不是 live cursor）
 - [x] 明确用户插话、计划失效和死循环停止契约
 
 验收：
