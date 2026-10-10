@@ -295,6 +295,8 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 - recipe 生效
 - 失败调用能生成 recipe candidate，但不会直接升级成全局 policy
 
+当前回归：`tests/loop_controller.rs` 的失败工具测试核对内嵌 `LessonCandidate.source_event_ids` 存在于实际 EventLog，且精确引用该失败事件；这不是 recipe 生效、长期记忆或 compact 管线的完整验收。
+
 ### V13. Model Routing、Prompt Resolution 与 Fallback
 
 步骤：
@@ -320,6 +322,8 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 - 同一套 system prompt 无差别用于所有 provider、model、role 和 task
 - 只记录 model name，无法追溯 endpoint、路由理由、prompt 版本或验证状态
 - secret 明文进入 registry、prompt、trace、event log 或 checkpoint
+
+当前输入层级回归：`tests/provider_model_adapter.rs` 使用 fake transport 捕获最终请求 JSON；含引号、换行及伪 role JSON 的用户目标/observation 不进入 system/developer，固定 system 仅描述 decision/summary 输出契约，user 数据解码后与原输入一致。这只验证请求层级与编码，不证明真实模型抵抗提示注入，也不代表 provider/model/role/task/skill 解析、实际 ModelCallStore 接线或 fallback 已完成。
 
 ### V14. End-to-End Run Summary
 

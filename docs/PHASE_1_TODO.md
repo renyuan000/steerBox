@@ -216,7 +216,7 @@ Memory 最小实现：
 
 ### P11. Baseline Tool Recipes
 
-- [x] ToolUseErrorEvent 能关联原始 tool call、failure category 和 LessonCandidate（通过 `tool_call_failed` 事件 payload；recipe candidate 仍待实现）
+- [x] ToolUseErrorEvent 能关联原始 tool call、failure category 和 LessonCandidate（通过 `tool_call_failed` 事件 payload；candidate 的 source_event_ids 精确引用实际持久化失败事件，已有回归；recipe candidate 仍待实现）
 
 - [ ] 写入 shell safe quoting recipe
 - [ ] 写入 `rg -F` recipe
@@ -234,13 +234,14 @@ Memory 最小实现：
 
 - [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（注册及 registry JSON 反序列化重验标识/关联，prompt 版本/role/task 查询已有测试；模型路由已使用 registry，完整 prompt resolution 尚未接线）
 - [x] 建立 provider-neutral OpenAI-compatible adapter、fake transport 和严格错误分类（真实网络 transport、凭据解析和 LoopController 接线仍待实现）
-- [x] 建立 provider-to-`ModelAdapter` bridge（仅接受严格 `decision`/`summary` JSON envelope；自然语言不猜测）
+- [x] 建立 provider-to-`ModelAdapter` bridge（仅接受严格 `decision`/`summary` JSON envelope；固定输出契约放 system，用户目标与 observation 作为 JSON 编码数据放 user，不升格为 system/developer；fake transport 实际请求体已有回归，不代表完整 prompt 解析或提示注入防护）
 - [ ] 接入至少一个真实网络 model provider
 - [x] 接入 secret-free `LocalFixtureModelAdapter`，并记录结构化 model decision 事件
 - [ ] 配置 cheap/fast、strong/slow、specialized、evaluator 或 local profile fixture
 - [x] 实现按 task type、agent role、能力、风险、成本和延迟过滤与排序的规则式路由，并通过 `ModelAdapterRegistry` 接入 LoopController（需审批时 fail-closed；审批恢复尚未实现）
 - [x] 定义、校验并持久化 `RouteDecision` 到 EventLog；routed 模型调用的开始/成功/失败事件关联 route ID
-- [x] 按 provider、model、role、task 定义最小 prompt binding 查询（完整 `ResolvedPromptPack` 解析仍待实现）
+- [x] 实现按 prompt ID/version、role/task 的最小 prompt binding 查询
+- [ ] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成实际调用使用的 `ResolvedPromptPack`（当前 role/task 查询不能证明模板已进入模型输入）
 - [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore`（尚未将实际调用和 resolved prompt 写入该 store）
 - [ ] 实现能力兼容、非静默的 fallback 事件
 - [ ] 验证 registry、prompt、trace、event log 和 checkpoint 不保存认证明文
