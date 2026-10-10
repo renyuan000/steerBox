@@ -232,14 +232,14 @@ Memory 最小实现：
 
 ### P12. Model Registry、Prompt Resolution 与规则路由
 
-- [ ] 实现静态 `ModelRegistry` 和 `PromptRegistry`
+- [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（registry、关联校验、prompt 版本/role/task 查询已有测试；尚未接入 LoopController）
 - [ ] 接入至少一个真实 model adapter
 - [x] 接入 secret-free `LocalFixtureModelAdapter`，并记录结构化 model decision 事件
 - [ ] 配置 cheap/fast、strong/slow、specialized、evaluator 或 local profile fixture
 - [ ] 按 task type、agent role、能力、风险、成本和延迟执行规则式路由
-- [ ] 生成并持久化 `RouteDecision`
-- [ ] 按 provider、model、role、task 解析 `ResolvedPromptPack`
-- [ ] 记录 `ModelCallRecord`、prompt 版本和验证状态
+- [x] 定义并序列化 `RouteDecision`（实际规则路由和持久化仍待接线）
+- [x] 按 provider、model、role、task 定义最小 prompt binding 查询（完整 `ResolvedPromptPack` 解析仍待实现）
+- [x] 定义并序列化 `ModelCallRecord`、prompt 版本和验证状态（实际调用记录接线仍待实现）
 - [ ] 实现能力兼容、非静默的 fallback 事件
 - [ ] 验证 registry、prompt、trace、event log 和 checkpoint 不保存认证明文
 

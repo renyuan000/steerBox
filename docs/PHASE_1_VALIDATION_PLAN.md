@@ -66,7 +66,8 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V10 DriftGuard | 已验证切片 | `tests/drift_guard.rs` |
 | V11 Human Steering Mode | 已验证最小运行时切片 | `tests/user_command_inbox.rs`、`tests/loop_controller.rs`、`tests/state_store.rs`；已覆盖 Inbox 幂等、pause/resume/cancel 安全边界和状态重建，takeover、后台 worker、控制面仍未实现 |
 | V12 Baseline Tool Recipes | 部分验证 | registry/recipe 边界已有；`tool_call_failed` 已记录 tool_call_id、failure category 和最小 LessonCandidate，recipe candidate、shell quoting 和 link-check recipe 仍未实现 |
-| V13 Model Routing | 未验证闭环 | 多模型 registry/router、真实 adapter、prompt resolution 和 fallback 未实现 |
+| V13 Model Routing | 已验证 schema 切片 | `tests/model_registry.rs`、`tests/model_contracts.rs`；registry、prompt binding、RouteDecision、ModelCallRecord 已有序列化/敏感字段测试，真实 adapter、规则路由、ResolvedPromptPack、fallback 和运行时接线仍未实现 |
+| V18 StreamReporter | 已验证独立切片 | `tests/stream_reporter.rs`；支持 lifecycle/progress/disable/writer error/redaction，尚未接入 LoopController 或 CLI |
 | V14 Run Summary | 已验证最小切片 | `tests/audit_store.rs`、`tests/runtime_cli.rs`；完整 task/attempt/evidence 反查仍待实现 |
 | V15 Task 状态迁移 | 已验证最小切片 | `tests/domain_contracts.rs`；TaskRun/Attempt 命令 lineage 仍待实现 |
 | V16 BoardProjection | 已验证最小切片 | `tests/board_projection.rs`、`tests/runtime_cli.rs`；依赖和完整 Attempt 投影仍待实现 |
