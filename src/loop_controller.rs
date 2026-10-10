@@ -1,9 +1,10 @@
 use crate::audit_store::{
     AuditStoreError, SideEffectLedger, SideEffectRecord, TraceRecord, TraceStore,
 };
+use crate::budget_calculator::BudgetCalculator;
 use crate::domain::{
     BudgetKind, EventEnvelope, EventEnvelopeError, FailureCategory, GoalContract, LoopBudget,
-    LoopRun, LoopStatus, LoopStep, NoProgressTracker,
+    LoopRun, LoopStatus, LoopStep, NoProgressTracker, RiskLevel,
 };
 use crate::event_log::{EventLog, EventLogError};
 use crate::model_adapter::{
@@ -12,6 +13,8 @@ use crate::model_adapter::{
 use crate::model_contracts::ModelContractError;
 use crate::model_router::{ModelRouter, ModelRouterError, RouteRequest};
 use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequest};
+use crate::strategy_selector::{StrategyDecision, StrategySelectionError, StrategySelector};
+use crate::task_features::TaskFeatures;
 use crate::tool_executor::{
     ReadOnlyToolExecutor, ToolCallInput, ToolCallOutput, ToolExecutionError,
 };
@@ -46,6 +49,12 @@ pub enum LoopControllerError {
     RouteDecisionSerialization(String),
     #[error("model audit contract rejected: {0}")]
     ModelContract(#[from] ModelContractError),
+    #[error("strategy selection failed: {0}")]
+    StrategySelection(#[from] StrategySelectionError),
+    #[error("execution strategy requires human approval: {strategy_event_id}")]
+    StrategyApprovalRequired { strategy_event_id: String },
+    #[error("strategy revision number overflow")]
+    StrategyRevisionOverflow,
     #[error("tool call denied by policy: {decision:?}: {reason}")]
     PolicyDenied {
         decision: PolicyDecision,
@@ -73,6 +82,8 @@ pub struct ReadOnlyLoopController {
     trace_store: Option<TraceStore>,
     side_effect_ledger: Option<SideEffectLedger>,
     command_inbox: Option<UserCommandInbox>,
+    strategy: Option<StrategyDecision>,
+    strategy_revision: u64,
 }
 
 impl ReadOnlyLoopController {
@@ -104,7 +115,126 @@ impl ReadOnlyLoopController {
             trace_store: None,
             side_effect_ledger: None,
             command_inbox: None,
+            strategy: None,
+            strategy_revision: 0,
         })
+    }
+
+    /// Select an execution policy from explicit features before starting a loop.
+    /// The authorized budget is a hard ceiling, not a strategy-generated grant.
+    pub fn start_with_strategy(
+        event_log: EventLog,
+        goal: GoalContract,
+        loop_run_id: impl Into<String>,
+        task_run_id: impl Into<String>,
+        base_budget: LoopBudget,
+        authorized_budget: LoopBudget,
+        features: TaskFeatures,
+    ) -> Result<Self, LoopControllerError> {
+        let features = with_goal_risk_floor(features, goal.risk_level);
+        let decision = StrategySelector::new().select(&features)?;
+        decision.validate(&features)?;
+        let budget =
+            BudgetCalculator::calculate(&base_budget, &authorized_budget, decision.strategy);
+        let mut controller =
+            Self::start(event_log, goal, loop_run_id, task_run_id, authorized_budget)?;
+        controller.record_strategy(
+            features,
+            decision,
+            &base_budget,
+            budget,
+            "strategy_selected",
+        )?;
+        Ok(controller)
+    }
+
+    /// Changes policy only at a safe boundary. Limits can tighten but never expand,
+    /// and neither consumed budget nor repeat-detection history is reset.
+    pub fn select_strategy(
+        &mut self,
+        features: TaskFeatures,
+        base_budget: &LoopBudget,
+    ) -> Result<StrategyDecision, LoopControllerError> {
+        self.prepare_action()?;
+        let features = with_goal_risk_floor(features, self.goal.risk_level);
+        let decision = StrategySelector::new().select(&features)?;
+        decision.validate(&features)?;
+        let budget = BudgetCalculator::calculate(base_budget, &self.budget, decision.strategy);
+        let event_type = if self.strategy.is_some() {
+            "strategy_adjusted"
+        } else {
+            "strategy_selected"
+        };
+        self.record_strategy(features, decision.clone(), base_budget, budget, event_type)?;
+        Ok(decision)
+    }
+
+    fn record_strategy(
+        &mut self,
+        features: TaskFeatures,
+        decision: StrategyDecision,
+        base_budget: &LoopBudget,
+        budget: LoopBudget,
+        event_type: &str,
+    ) -> Result<(), LoopControllerError> {
+        let revision = self
+            .strategy_revision
+            .checked_add(1)
+            .ok_or(LoopControllerError::StrategyRevisionOverflow)?;
+        let event_id = format!("{}:strategy:{revision}", self.loop_run.loop_run_id);
+        self.append_model_event(
+            event_type,
+            &event_id,
+            json!({
+                "schema_version": 1,
+                "strategy_revision": revision,
+                "previous_strategy": self.strategy.as_ref().map(|value| value.strategy),
+                "decision": decision,
+                "features": features,
+                "base_budget": base_budget,
+                "previous_budget": self.budget,
+                "effective_budget": budget,
+                "goal_verification_required": !self.goal.verification_plan.is_empty(),
+                "verification_requirement_only": true,
+                "execution_mode": "sequential_only",
+                "no_progress_steps": self.no_progress.no_progress_steps,
+                "same_action_repetitions": self.no_progress.same_action_repetitions,
+            }),
+        )?;
+        // Commit the fail-closed state before the supplementary approval event.
+        // An I/O error in that event must not leave the old permissive policy live.
+        self.strategy_revision = revision;
+        self.no_progress.max_no_progress_steps = budget.max_no_progress_steps;
+        self.no_progress.max_same_action_repetitions = budget.max_same_action_repetitions;
+        self.no_progress.no_progress_steps = self
+            .no_progress
+            .no_progress_steps
+            .max(budget.no_progress_steps_used);
+        self.no_progress.same_action_repetitions = self
+            .no_progress
+            .same_action_repetitions
+            .max(budget.same_action_repetitions_used);
+        self.budget = budget;
+        self.strategy = Some(decision.clone());
+        if decision.approval_required {
+            self.append_model_event(
+                "human_intervention_required",
+                &format!("{event_id}:approval_required"),
+                json!({
+                    "strategy_event_id": event_id,
+                    "reason": "execution strategy requires human approval",
+                }),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn strategy(&self) -> Option<&StrategyDecision> {
+        self.strategy.as_ref()
+    }
+
+    pub fn budget(&self) -> &LoopBudget {
+        &self.budget
     }
 
     pub fn with_audit_stores(
@@ -127,7 +257,7 @@ impl ReadOnlyLoopController {
         step_id: impl Into<String>,
         observation: impl Into<String>,
     ) -> Result<LoopStep, LoopControllerError> {
-        self.prepare_action()?;
+        self.prepare_step_action()?;
         if let Err(kind) = self.budget.consume_step() {
             append_loop_event(
                 &mut self.event_log,
@@ -201,7 +331,7 @@ impl ReadOnlyLoopController {
         observation: impl Into<String>,
         route_decision_id: Option<&str>,
     ) -> Result<ModelDecision, LoopControllerError> {
-        self.prepare_action()?;
+        self.prepare_step_action()?;
         if let Err(kind) = self.budget.consume_step() {
             self.append_model_event(
                 "loop_budget_exhausted",
@@ -340,7 +470,7 @@ impl ReadOnlyLoopController {
         step_id: impl Into<String>,
         observation: impl Into<String>,
     ) -> Result<ModelDecision, LoopControllerError> {
-        self.prepare_action()?;
+        self.prepare_step_action()?;
         let route_decision = router.route(&route_request)?;
         route_decision.validate()?;
         let route_payload = serde_json::to_value(&route_decision)
@@ -386,7 +516,7 @@ impl ReadOnlyLoopController {
         tool_id: impl Into<String>,
         step_id: impl Into<String>,
     ) -> Result<(), LoopControllerError> {
-        self.prepare_action()?;
+        self.prepare_step_action()?;
         let tool_id = tool_id.into();
         let step_id = step_id.into();
         let request = PolicyRequest {
@@ -407,6 +537,16 @@ impl ReadOnlyLoopController {
                 decision: result.decision,
                 reason: result.reason,
             });
+        }
+        if self.strategy.is_some() {
+            if let Err(kind) = self.budget.consume_tool_call() {
+                self.append_model_event(
+                    "loop_budget_exhausted",
+                    &format!("{step_id}:budget:tool_call"),
+                    json!({"budget_kind": format!("{kind:?}")}),
+                )?;
+                return Err(LoopControllerError::BudgetExhausted(kind));
+            }
         }
         self.append_model_event(
             "tool_call_requested",
@@ -533,12 +673,58 @@ impl ReadOnlyLoopController {
     fn prepare_action(&mut self) -> Result<(), LoopControllerError> {
         self.apply_pending_commands()?;
         match self.loop_run.status {
-            LoopStatus::Running => Ok(()),
+            LoopStatus::Running => {
+                if self
+                    .strategy
+                    .as_ref()
+                    .is_some_and(|decision| decision.approval_required)
+                {
+                    return Err(LoopControllerError::StrategyApprovalRequired {
+                        strategy_event_id: format!(
+                            "{}:strategy:{}",
+                            self.loop_run.loop_run_id, self.strategy_revision
+                        ),
+                    });
+                }
+                Ok(())
+            }
             LoopStatus::Paused => Err(LoopControllerError::Paused),
             LoopStatus::Completed | LoopStatus::Cancelled | LoopStatus::Failed => {
                 Err(LoopControllerError::Terminal)
             }
         }
+    }
+
+    fn prepare_step_action(&mut self) -> Result<(), LoopControllerError> {
+        self.prepare_action()?;
+        if self.strategy.is_some() {
+            let exhausted =
+                if self.no_progress.no_progress_steps >= self.no_progress.max_no_progress_steps {
+                    Some(BudgetKind::NoProgressSteps)
+                } else if self.no_progress.same_action_repetitions
+                    >= self.no_progress.max_same_action_repetitions
+                {
+                    Some(BudgetKind::SameActionRepetitions)
+                } else if self.budget.consecutive_verification_failures
+                    >= self.budget.max_consecutive_verification_failures
+                {
+                    Some(BudgetKind::VerificationFailures)
+                } else {
+                    None
+                };
+            if let Some(kind) = exhausted {
+                self.append_model_event(
+                    "loop_budget_exhausted",
+                    &format!("{}:strategy:guard", self.loop_run.loop_run_id),
+                    json!({
+                        "budget_kind": format!("{kind:?}"),
+                        "strategy_revision": self.strategy_revision,
+                    }),
+                )?;
+                return Err(LoopControllerError::BudgetExhausted(kind));
+            }
+        }
+        Ok(())
     }
 
     fn apply_pending_commands(&mut self) -> Result<(), LoopControllerError> {
@@ -619,6 +805,16 @@ impl ReadOnlyLoopController {
         }
         Ok(())
     }
+}
+
+fn with_goal_risk_floor(mut features: TaskFeatures, goal_risk: RiskLevel) -> TaskFeatures {
+    features.risk_level = match (features.risk_level, goal_risk) {
+        (RiskLevel::Critical, _) | (_, RiskLevel::Critical) => RiskLevel::Critical,
+        (RiskLevel::High, _) | (_, RiskLevel::High) => RiskLevel::High,
+        (RiskLevel::Medium, _) | (_, RiskLevel::Medium) => RiskLevel::Medium,
+        _ => RiskLevel::Low,
+    };
+    features
 }
 
 fn tool_failure_payload(
