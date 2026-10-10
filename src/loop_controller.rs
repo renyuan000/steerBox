@@ -576,10 +576,11 @@ impl ReadOnlyLoopController {
             Err(error) => {
                 let tool_call_id =
                     format!("{}:{step_id}:{}", self.loop_run.loop_run_id, input.tool_id);
+                let failure_event_id = format!("{step_id}:tool_failed");
                 self.append_model_event(
                     "tool_call_failed",
-                    &format!("{step_id}:tool_failed"),
-                    tool_failure_payload(&tool_call_id, &input.tool_id, &error),
+                    &failure_event_id,
+                    tool_failure_payload(&failure_event_id, &tool_call_id, &input.tool_id, &error),
                 )?;
                 self.record_tool_audit(
                     registry,
@@ -818,6 +819,7 @@ fn with_goal_risk_floor(mut features: TaskFeatures, goal_risk: RiskLevel) -> Tas
 }
 
 fn tool_failure_payload(
+    failure_event_id: &str,
     tool_call_id: &str,
     tool_id: &str,
     error: &ToolExecutionError,
@@ -841,7 +843,7 @@ fn tool_failure_payload(
         "summary": error.to_string(),
         "lesson_candidate": {
             "candidate_id": format!("{tool_call_id}:lesson"),
-            "source_event_ids": [format!("{tool_call_id}:failed")],
+            "source_event_ids": [failure_event_id],
             "title": "Review failed tool call before retry",
             "summary": "Classify the failure and preserve the original evidence before retrying.",
             "confidence": "low",

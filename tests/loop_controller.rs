@@ -705,5 +705,18 @@ fn controller_records_tool_failure_after_policy_allows_request() {
         events[3].payload["lesson_candidate"]["lifecycle_state"],
         "candidate"
     );
+    let failure = &events[3];
+    let source_event_ids = failure.payload["lesson_candidate"]["source_event_ids"]
+        .as_array()
+        .expect("lesson source event references exist");
+    assert_eq!(source_event_ids.len(), 1);
+    for reference in source_event_ids {
+        let source_event_id = reference.as_str().expect("source event id is a string");
+        assert!(
+            events.iter().any(|event| event.event_id == source_event_id),
+            "lesson references an event that was never persisted: {source_event_id}"
+        );
+        assert_eq!(source_event_id, failure.event_id);
+    }
     assert!(!events[3].payload.to_string().contains("api_key"));
 }
