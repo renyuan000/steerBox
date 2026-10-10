@@ -6,7 +6,11 @@ use crate::domain::{
     LoopRun, LoopStatus, LoopStep, NoProgressTracker,
 };
 use crate::event_log::{EventLog, EventLogError};
-use crate::model_adapter::{ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest};
+use crate::model_adapter::{
+    ModelAdapter, ModelAdapterError, ModelAdapterRegistry, ModelDecision, ModelRequest,
+};
+use crate::model_contracts::ModelContractError;
+use crate::model_router::{ModelRouter, ModelRouterError, RouteRequest};
 use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequest};
 use crate::tool_executor::{
     ReadOnlyToolExecutor, ToolCallInput, ToolCallOutput, ToolExecutionError,
@@ -32,6 +36,16 @@ pub enum LoopControllerError {
     Paused,
     #[error("model adapter failed: {0}")]
     ModelAdapter(#[from] ModelAdapterError),
+    #[error("model routing failed: {0}")]
+    ModelRouter(#[from] ModelRouterError),
+    #[error("no adapter registered for routed model: {0}")]
+    ModelAdapterNotFound(String),
+    #[error("model route requires human approval: {route_decision_id}")]
+    ModelApprovalRequired { route_decision_id: String },
+    #[error("route decision serialization failed: {0}")]
+    RouteDecisionSerialization(String),
+    #[error("model audit contract rejected: {0}")]
+    ModelContract(#[from] ModelContractError),
     #[error("tool call denied by policy: {decision:?}: {reason}")]
     PolicyDenied {
         decision: PolicyDecision,
@@ -169,12 +183,23 @@ impl ReadOnlyLoopController {
         Ok(self.loop_run.clone())
     }
 
-    pub fn run_model_step<A: ModelAdapter>(
+    pub fn run_model_step<A: ModelAdapter + ?Sized>(
         &mut self,
         adapter: &A,
         model_id: impl Into<String>,
         step_id: impl Into<String>,
         observation: impl Into<String>,
+    ) -> Result<ModelDecision, LoopControllerError> {
+        self.run_model_step_with_route(adapter, model_id, step_id, observation, None)
+    }
+
+    fn run_model_step_with_route<A: ModelAdapter + ?Sized>(
+        &mut self,
+        adapter: &A,
+        model_id: impl Into<String>,
+        step_id: impl Into<String>,
+        observation: impl Into<String>,
+        route_decision_id: Option<&str>,
     ) -> Result<ModelDecision, LoopControllerError> {
         self.prepare_action()?;
         if let Err(kind) = self.budget.consume_step() {
@@ -247,7 +272,11 @@ impl ReadOnlyLoopController {
         self.append_model_event(
             "model_call_started",
             &format!("{step_id}:model_started"),
-            json!({"model_id": request.model_id, "step_id": step_id}),
+            json!({
+                "model_id": request.model_id,
+                "step_id": step_id,
+                "route_decision_id": route_decision_id,
+            }),
         )?;
         let response = match adapter.complete(request) {
             Ok(response) => response,
@@ -255,7 +284,16 @@ impl ReadOnlyLoopController {
                 self.append_model_event(
                     "model_call_failed",
                     &format!("{step_id}:model_failed"),
-                    json!({"error": error.to_string()}),
+                    json!({"error": error.to_string(), "route_decision_id": route_decision_id}),
+                )?;
+                append_step_event(
+                    &mut self.event_log,
+                    &self.goal,
+                    &self.loop_run,
+                    &step,
+                    "step_failed",
+                    &format!("{step_id}:failed"),
+                    json!({"summary": error.to_string()}),
                 )?;
                 return Err(LoopControllerError::ModelAdapter(error));
             }
@@ -265,7 +303,11 @@ impl ReadOnlyLoopController {
         self.append_model_event(
             "model_call_completed",
             &format!("{step_id}:model_completed"),
-            json!({"decision": decision, "summary": summary}),
+            json!({
+                "decision": decision,
+                "summary": summary,
+                "route_decision_id": route_decision_id,
+            }),
         )?;
         if decision == ModelDecision::RequestHuman {
             self.append_model_event(
@@ -288,6 +330,53 @@ impl ReadOnlyLoopController {
             self.complete()?;
         }
         Ok(decision)
+    }
+
+    pub fn run_routed_model_step(
+        &mut self,
+        router: &ModelRouter<'_>,
+        adapters: &ModelAdapterRegistry,
+        route_request: RouteRequest,
+        step_id: impl Into<String>,
+        observation: impl Into<String>,
+    ) -> Result<ModelDecision, LoopControllerError> {
+        self.prepare_action()?;
+        let route_decision = router.route(&route_request)?;
+        route_decision.validate()?;
+        let route_payload = serde_json::to_value(&route_decision)
+            .map_err(|error| LoopControllerError::RouteDecisionSerialization(error.to_string()))?;
+        self.append_model_event(
+            "model_route_decided",
+            &route_decision.route_decision_id,
+            route_payload,
+        )?;
+        // No approval resolver is wired yet. Record the request and fail closed
+        // before allocating a step, consuming call budget, or invoking an adapter.
+        if route_decision.approval_required {
+            self.append_model_event(
+                "human_intervention_required",
+                &format!("{}:approval_required", route_decision.route_decision_id),
+                json!({
+                    "route_decision_id": route_decision.route_decision_id,
+                    "reason": "model route requires human approval",
+                }),
+            )?;
+            return Err(LoopControllerError::ModelApprovalRequired {
+                route_decision_id: route_decision.route_decision_id,
+            });
+        }
+        let adapter = adapters
+            .get(&route_decision.selected_model)
+            .ok_or_else(|| {
+                LoopControllerError::ModelAdapterNotFound(route_decision.selected_model.clone())
+            })?;
+        self.run_model_step_with_route(
+            adapter,
+            route_decision.selected_model,
+            step_id,
+            observation,
+            Some(&route_decision.route_decision_id),
+        )
     }
 
     pub fn request_tool_call(

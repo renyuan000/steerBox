@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::provider_adapter::ProviderErrorClass;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRequest {
@@ -41,6 +42,41 @@ pub enum ModelAdapterError {
 
 pub trait ModelAdapter {
     fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelAdapterError>;
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ModelAdapterRegistryError {
+    #[error("model adapter id must not be empty")]
+    EmptyModelId,
+    #[error("model adapter already registered: {0}")]
+    DuplicateModel(String),
+}
+
+#[derive(Default)]
+pub struct ModelAdapterRegistry {
+    adapters: BTreeMap<String, Box<dyn ModelAdapter>>,
+}
+
+impl ModelAdapterRegistry {
+    pub fn register(
+        &mut self,
+        model_id: impl Into<String>,
+        adapter: Box<dyn ModelAdapter>,
+    ) -> Result<(), ModelAdapterRegistryError> {
+        let model_id = model_id.into();
+        if model_id.trim().is_empty() {
+            return Err(ModelAdapterRegistryError::EmptyModelId);
+        }
+        if self.adapters.contains_key(&model_id) {
+            return Err(ModelAdapterRegistryError::DuplicateModel(model_id));
+        }
+        self.adapters.insert(model_id, adapter);
+        Ok(())
+    }
+
+    pub fn get(&self, model_id: &str) -> Option<&dyn ModelAdapter> {
+        self.adapters.get(model_id).map(Box::as_ref)
+    }
 }
 
 #[derive(Debug, Clone)]
