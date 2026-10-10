@@ -696,4 +696,14 @@ fn controller_records_tool_failure_after_policy_allows_request() {
     assert_eq!(events[1].event_type, "policy_decision");
     assert_eq!(events[2].event_type, "tool_call_requested");
     assert_eq!(events[3].event_type, "tool_call_failed");
+    assert_eq!(events[3].payload["failure_category"], "permission");
+    assert_eq!(
+        events[3].payload["tool_call_id"],
+        "loop-tool-failure:step-tool-failure:git_status"
+    );
+    assert_eq!(
+        events[3].payload["lesson_candidate"]["lifecycle_state"],
+        "candidate"
+    );
+    assert!(!events[3].payload.to_string().contains("api_key"));
 }

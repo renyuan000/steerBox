@@ -50,7 +50,7 @@
 - [ ] 定义 Portfolio、Project、Task、TaskRun、Attempt 和 TaskDependency
 - [x] 定义 Task 状态及合法迁移表
 - [x] 定义最小 BoardProjection / BoardTaskCard
-- [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 已有序列化测试；运行时失败事件关联仍待接线）
+- [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 与最小 `tool_call_failed` 关联事件已有测试；独立 ToolCallRecord 持久化仍待接线）
 
 - [x] 定义 `GoalContract`
 - [x] 定义 `LoopRun`
@@ -216,7 +216,7 @@ Memory 最小实现：
 
 ### P11. Baseline Tool Recipes
 
-- [ ] ToolUseErrorEvent 能关联原始 tool call、failure category 和 LessonCandidate
+- [x] ToolUseErrorEvent 能关联原始 tool call、failure category 和 LessonCandidate（通过 `tool_call_failed` 事件 payload；recipe candidate 仍待实现）
 
 - [ ] 写入 shell safe quoting recipe
 - [ ] 写入 `rg -F` recipe

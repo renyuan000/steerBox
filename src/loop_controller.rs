@@ -2,8 +2,8 @@ use crate::audit_store::{
     AuditStoreError, SideEffectLedger, SideEffectRecord, TraceRecord, TraceStore,
 };
 use crate::domain::{
-    BudgetKind, EventEnvelope, EventEnvelopeError, GoalContract, LoopBudget, LoopRun, LoopStatus,
-    LoopStep, NoProgressTracker,
+    BudgetKind, EventEnvelope, EventEnvelopeError, FailureCategory, GoalContract, LoopBudget,
+    LoopRun, LoopStatus, LoopStep, NoProgressTracker,
 };
 use crate::event_log::{EventLog, EventLogError};
 use crate::model_adapter::{ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest};
@@ -345,10 +345,12 @@ impl ReadOnlyLoopController {
         let output = match executor.execute(registry, workspace, input.clone()) {
             Ok(output) => output,
             Err(error) => {
+                let tool_call_id =
+                    format!("{}:{step_id}:{}", self.loop_run.loop_run_id, input.tool_id);
                 self.append_model_event(
                     "tool_call_failed",
                     &format!("{step_id}:tool_failed"),
-                    json!({"tool_id": input.tool_id, "error": error.to_string()}),
+                    tool_failure_payload(&tool_call_id, &input.tool_id, &error),
                 )?;
                 self.record_tool_audit(
                     registry,
@@ -528,6 +530,40 @@ impl ReadOnlyLoopController {
         }
         Ok(())
     }
+}
+
+fn tool_failure_payload(
+    tool_call_id: &str,
+    tool_id: &str,
+    error: &ToolExecutionError,
+) -> serde_json::Value {
+    let category = match error {
+        ToolExecutionError::TimedOut => FailureCategory::Timeout,
+        ToolExecutionError::InvalidWorkspace(_) | ToolExecutionError::OutsideWorkspace(_) => {
+            FailureCategory::Permission
+        }
+        ToolExecutionError::NotRegistered(_)
+        | ToolExecutionError::NotImplemented(_)
+        | ToolExecutionError::InvalidArguments
+        | ToolExecutionError::StartFailed
+        | ToolExecutionError::WaitFailed
+        | ToolExecutionError::OutputCollectionFailed => FailureCategory::Tool,
+    };
+    json!({
+        "tool_id": tool_id,
+        "tool_call_id": tool_call_id,
+        "failure_category": category,
+        "summary": error.to_string(),
+        "lesson_candidate": {
+            "candidate_id": format!("{tool_call_id}:lesson"),
+            "source_event_ids": [format!("{tool_call_id}:failed")],
+            "title": "Review failed tool call before retry",
+            "summary": "Classify the failure and preserve the original evidence before retrying.",
+            "confidence": "low",
+            "lifecycle_state": "candidate"
+        },
+        "redaction_class": "summary"
+    })
 }
 
 fn append_loop_event(
