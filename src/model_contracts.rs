@@ -3,6 +3,11 @@ use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ModelContractError {
+    #[error("invalid model contract field {field}: {reason}")]
+    InvalidField {
+        field: &'static str,
+        reason: &'static str,
+    },
     #[error("model contract contains forbidden sensitive field: {field}")]
     SensitiveField { field: String },
     #[error("model contract serialization failed: {message}")]
@@ -39,6 +44,51 @@ pub struct RouteDecision {
 }
 
 impl RouteDecision {
+    /// Validate audit bindings and routing semantics before any serialization.
+    /// This does not inspect free-text content or resolve credentials.
+    pub fn validate(&self) -> Result<(), ModelContractError> {
+        for (field, value) in [
+            ("route_decision_id", self.route_decision_id.as_str()),
+            ("task_id", self.task_id.as_str()),
+            ("task_type", self.task_type.as_str()),
+            ("agent_role", self.agent_role.as_str()),
+            ("selected_provider", self.selected_provider.as_str()),
+            ("selected_model", self.selected_model.as_str()),
+            ("selected_endpoint", self.selected_endpoint.as_str()),
+            ("prompt_profile_id", self.prompt_profile_id.as_str()),
+            (
+                "prompt_profile_version",
+                self.prompt_profile_version.as_str(),
+            ),
+        ] {
+            require_nonempty(field, value)?;
+        }
+        if !self.candidate_models.contains(&self.selected_model) {
+            return Err(ModelContractError::InvalidField {
+                field: "selected_model",
+                reason: "must be present in candidate_models",
+            });
+        }
+        let mut fallback_models = std::collections::HashSet::new();
+        for model in &self.fallback_chain {
+            require_nonempty("fallback_chain", model)?;
+            if model == &self.selected_model {
+                return Err(ModelContractError::InvalidField {
+                    field: "fallback_chain",
+                    reason: "must not contain the selected model",
+                });
+            }
+            if !fallback_models.insert(model) {
+                return Err(ModelContractError::InvalidField {
+                    field: "fallback_chain",
+                    reason: "must not contain duplicate models",
+                });
+            }
+        }
+        validate_cost("cost_estimate", self.cost_estimate)?;
+        self.validate_secret_free()
+    }
+
     pub fn validate_secret_free(&self) -> Result<(), ModelContractError> {
         validate_secret_free(self)
     }
@@ -77,9 +127,53 @@ pub struct ModelCallRecord {
 }
 
 impl ModelCallRecord {
+    /// Validate audit identifiers and costs without changing serialized fields.
+    pub fn validate(&self) -> Result<(), ModelContractError> {
+        for (field, value) in [
+            ("model_call_id", self.model_call_id.as_str()),
+            ("task_id", self.task_id.as_str()),
+            ("task_run_id", self.task_run_id.as_str()),
+            ("agent_role", self.agent_role.as_str()),
+            ("provider_id", self.provider_id.as_str()),
+            ("endpoint_id", self.endpoint_id.as_str()),
+            ("model_id", self.model_id.as_str()),
+            ("route_decision_id", self.route_decision_id.as_str()),
+            (
+                "resolved_prompt_pack_id",
+                self.resolved_prompt_pack_id.as_str(),
+            ),
+            ("input_context_hash", self.input_context_hash.as_str()),
+            ("output_artifact_ref", self.output_artifact_ref.as_str()),
+        ] {
+            require_nonempty(field, value)?;
+        }
+        validate_cost("estimated_cost", self.estimated_cost)?;
+        self.validate_secret_free()
+    }
+
     pub fn validate_secret_free(&self) -> Result<(), ModelContractError> {
         validate_secret_free(self)
     }
+}
+
+fn require_nonempty(field: &'static str, value: &str) -> Result<(), ModelContractError> {
+    if value.trim().is_empty() {
+        return Err(ModelContractError::InvalidField {
+            field,
+            reason: "must not be empty",
+        });
+    }
+    Ok(())
+}
+
+fn validate_cost(field: &'static str, value: Option<f64>) -> Result<(), ModelContractError> {
+    if value.is_some_and(|cost| !cost.is_finite() || cost < 0.0) {
+        return Err(ModelContractError::InvalidField {
+            field,
+            reason: "must be finite and nonnegative",
+        });
+    }
+    Ok(())
 }
 
 fn validate_secret_free<T: Serialize>(record: &T) -> Result<(), ModelContractError> {
