@@ -50,12 +50,12 @@
 - [ ] 定义 Portfolio、Project、Task、TaskRun、Attempt 和 TaskDependency
 - [x] 定义 Task 状态及合法迁移表
 - [x] 定义最小 BoardProjection / BoardTaskCard
-- [ ] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory
+- [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 已有序列化测试；运行时失败事件关联仍待接线）
 
 - [x] 定义 `GoalContract`
 - [x] 定义 `LoopRun`
 - [x] 定义 `LoopStep`
-- [ ] 定义 `ToolCallRecord`
+- [x] 定义 `ToolCallRecord`（schema 已有序列化测试；实际 tool executor 记录仍待接线）
 - [ ] 定义 `PolicyDecision`
 - [ ] 定义 `SideEffectEvent`
 - [x] 定义 `CheckpointMetadata`

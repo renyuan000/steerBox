@@ -33,6 +33,57 @@ pub struct EventEnvelope {
     pub redaction_class: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureCategory {
+    Tool,
+    Model,
+    Network,
+    Context,
+    Permission,
+    Verification,
+    Recovery,
+    Timeout,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCallRecord {
+    pub tool_call_id: String,
+    pub tool_id: String,
+    pub project_id: String,
+    pub goal_id: String,
+    pub task_run_id: String,
+    pub loop_run_id: String,
+    pub step_id: String,
+    pub side_effect_class: String,
+    pub status: String,
+    pub summary: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LessonCandidate {
+    pub candidate_id: String,
+    pub project_id: String,
+    pub source_event_ids: Vec<String>,
+    pub title: String,
+    pub summary: String,
+    pub confidence: String,
+    pub lifecycle_state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolUseErrorEvent {
+    pub error_event_id: String,
+    pub tool_call_id: String,
+    pub failure_category: FailureCategory,
+    pub summary: String,
+    pub lesson_candidate: Option<LessonCandidate>,
+    pub redaction_class: String,
+    pub occurred_at: String,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum EventEnvelopeError {
     #[error("event payload contains forbidden sensitive field: {field}")]

@@ -2,8 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use steerbox::domain::{
-    BoardColumn, BudgetKind, EventEnvelope, EventEnvelopeError, GoalContract, HumanSteeringMode,
-    LoopBudget, LoopRun, LoopStep, NoProgressTracker, RiskLevel, Task, TaskState,
+    BoardColumn, BudgetKind, EventEnvelope, EventEnvelopeError, FailureCategory, GoalContract,
+    HumanSteeringMode, LessonCandidate, LoopBudget, LoopRun, LoopStep, NoProgressTracker,
+    RiskLevel, Task, TaskState, ToolCallRecord, ToolUseErrorEvent,
 };
 use steerbox::event_log::EventLog;
 use steerbox::runtime_config::{ConfigError, RuntimeConfig};
@@ -372,4 +373,44 @@ fn event_log_reads_events_in_bounded_pages() {
         .read_page(0, 0)
         .expect("zero-sized page reads")
         .is_empty());
+}
+
+#[test]
+fn failure_and_tool_audit_contracts_round_trip_without_secret_fields() {
+    let tool_call = ToolCallRecord {
+        tool_call_id: "tool-call-1".into(),
+        tool_id: "git_status".into(),
+        project_id: "project-1".into(),
+        goal_id: "goal-1".into(),
+        task_run_id: "task-run-1".into(),
+        loop_run_id: "loop-1".into(),
+        step_id: "step-1".into(),
+        side_effect_class: "none".into(),
+        status: "failed".into(),
+        summary: "command failed with exit status 1".into(),
+        created_at: "2026-10-10T00:00:00Z".into(),
+    };
+    let lesson = LessonCandidate {
+        candidate_id: "lesson-1".into(),
+        project_id: "project-1".into(),
+        source_event_ids: vec!["tool-error-1".into()],
+        title: "Inspect command failure before retry".into(),
+        summary: "Classify the failure and preserve the original evidence.".into(),
+        confidence: "low".into(),
+        lifecycle_state: "candidate".into(),
+    };
+    let error = ToolUseErrorEvent {
+        error_event_id: "tool-error-1".into(),
+        tool_call_id: tool_call.tool_call_id.clone(),
+        failure_category: FailureCategory::Tool,
+        summary: "read-only tool failed".into(),
+        lesson_candidate: Some(lesson),
+        redaction_class: "summary".into(),
+        occurred_at: "2026-10-10T00:00:00Z".into(),
+    };
+
+    let encoded = serde_json::to_string(&(tool_call, error)).expect("audit contracts serialize");
+    assert!(encoded.contains("tool-error-1"));
+    assert!(encoded.contains("tool"));
+    assert!(!encoded.contains("api_key"));
 }
