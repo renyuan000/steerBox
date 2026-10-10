@@ -6,6 +6,7 @@ pub mod event_log;
 pub mod execution_query;
 pub mod loop_controller;
 pub mod model_adapter;
+pub mod model_call_store;
 pub mod model_contracts;
 pub mod model_registry;
 pub mod model_router;
