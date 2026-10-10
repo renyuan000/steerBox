@@ -32,6 +32,10 @@ pub enum PromptRegistryError {
     DuplicatePrompt { prompt_id: String, version: u32 },
     #[error("prompt JSON is invalid: {0}")]
     InvalidJson(String),
+    #[error("prompt map key does not match its profile id")]
+    MapIdMismatch,
+    #[error("prompt version map key does not match its profile version")]
+    MapVersionMismatch,
 }
 
 impl PromptProfile {
@@ -82,10 +86,45 @@ impl PromptProfile {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PromptRegistry {
     profiles: BTreeMap<String, BTreeMap<u32, PromptProfile>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPromptRegistry {
+    profiles: BTreeMap<String, BTreeMap<u32, PromptProfile>>,
+}
+
+impl<'de> Deserialize<'de> for PromptRegistry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawPromptRegistry::deserialize(deserializer)?;
+        let mut registry = Self::default();
+        for (id, versions) in raw.profiles {
+            if id.trim().is_empty() {
+                return Err(serde::de::Error::custom(PromptRegistryError::EmptyPromptId));
+            }
+            for (version, profile) in versions {
+                if id != profile.prompt_id {
+                    return Err(serde::de::Error::custom(PromptRegistryError::MapIdMismatch));
+                }
+                if version != profile.version {
+                    return Err(serde::de::Error::custom(
+                        PromptRegistryError::MapVersionMismatch,
+                    ));
+                }
+                registry
+                    .register(profile)
+                    .map_err(serde::de::Error::custom)?;
+            }
+        }
+        Ok(registry)
+    }
 }
 
 impl PromptRegistry {

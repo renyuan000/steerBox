@@ -51,6 +51,8 @@ pub enum ModelRegistryError {
     ModelNotFound(String),
     #[error("endpoint provider does not match its registered provider")]
     EndpointProviderMismatch,
+    #[error("{entity} map key does not match its profile id")]
+    MapIdMismatch { entity: &'static str },
 }
 
 impl ProviderProfile {
@@ -59,18 +61,22 @@ impl ProviderProfile {
         display_name: impl Into<String>,
         auth_ref: Option<String>,
     ) -> Result<Self, ModelRegistryError> {
-        let provider_id = provider_id.into();
-        let display_name = display_name.into();
-        validate_id(&provider_id, "provider")?;
-        validate_field(&display_name, "display_name")?;
-        if auth_ref.as_deref() == Some("") {
-            return Err(ModelRegistryError::EmptyField { field: "auth_ref" });
-        }
-        Ok(Self {
-            provider_id,
-            display_name,
+        let profile = Self {
+            provider_id: provider_id.into(),
+            display_name: display_name.into(),
             auth_ref,
-        })
+        };
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    fn validate(&self) -> Result<(), ModelRegistryError> {
+        validate_id(&self.provider_id, "provider")?;
+        validate_field(&self.display_name, "display_name")?;
+        if let Some(auth_ref) = &self.auth_ref {
+            validate_field(auth_ref, "auth_ref")?;
+        }
+        Ok(())
     }
 }
 
@@ -81,20 +87,21 @@ impl EndpointProfile {
         base_url: impl Into<String>,
         protocol: impl Into<String>,
     ) -> Result<Self, ModelRegistryError> {
-        let endpoint_id = endpoint_id.into();
-        let provider_id = provider_id.into();
-        let base_url = base_url.into();
-        let protocol = protocol.into();
-        validate_id(&endpoint_id, "endpoint")?;
-        validate_id(&provider_id, "provider")?;
-        validate_field(&base_url, "base_url")?;
-        validate_field(&protocol, "protocol")?;
-        Ok(Self {
-            endpoint_id,
-            provider_id,
-            base_url,
-            protocol,
-        })
+        let profile = Self {
+            endpoint_id: endpoint_id.into(),
+            provider_id: provider_id.into(),
+            base_url: base_url.into(),
+            protocol: protocol.into(),
+        };
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    fn validate(&self) -> Result<(), ModelRegistryError> {
+        validate_id(&self.endpoint_id, "endpoint")?;
+        validate_id(&self.provider_id, "provider")?;
+        validate_field(&self.base_url, "base_url")?;
+        validate_field(&self.protocol, "protocol")
     }
 }
 
@@ -106,25 +113,26 @@ impl ModelProfile {
         model_name: impl Into<String>,
         capabilities: Vec<String>,
     ) -> Result<Self, ModelRegistryError> {
-        let model_id = model_id.into();
-        let provider_id = provider_id.into();
-        let endpoint_id = endpoint_id.into();
-        let model_name = model_name.into();
-        validate_id(&model_id, "model")?;
-        validate_id(&provider_id, "provider")?;
-        validate_id(&endpoint_id, "endpoint")?;
-        validate_field(&model_name, "model_name")?;
-        Ok(Self {
-            model_id,
-            provider_id,
-            endpoint_id,
-            model_name,
+        let profile = Self {
+            model_id: model_id.into(),
+            provider_id: provider_id.into(),
+            endpoint_id: endpoint_id.into(),
+            model_name: model_name.into(),
             capabilities,
-        })
+        };
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    fn validate(&self) -> Result<(), ModelRegistryError> {
+        validate_id(&self.model_id, "model")?;
+        validate_id(&self.provider_id, "provider")?;
+        validate_id(&self.endpoint_id, "endpoint")?;
+        validate_field(&self.model_name, "model_name")
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRegistry {
     providers: BTreeMap<String, ProviderProfile>,
@@ -132,11 +140,63 @@ pub struct ModelRegistry {
     models: BTreeMap<String, ModelProfile>,
 }
 
+// Preserve the persisted map layout while routing decoded profiles through the
+// same validation and association checks as programmatic registration.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawModelRegistry {
+    providers: BTreeMap<String, ProviderProfile>,
+    endpoints: BTreeMap<String, EndpointProfile>,
+    models: BTreeMap<String, ModelProfile>,
+}
+
+impl<'de> Deserialize<'de> for ModelRegistry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = RawModelRegistry::deserialize(deserializer)?;
+        let mut registry = Self::default();
+        for (id, profile) in raw.providers {
+            if id != profile.provider_id {
+                return Err(serde::de::Error::custom(
+                    ModelRegistryError::MapIdMismatch { entity: "provider" },
+                ));
+            }
+            registry
+                .register_provider(profile)
+                .map_err(serde::de::Error::custom)?;
+        }
+        for (id, profile) in raw.endpoints {
+            if id != profile.endpoint_id {
+                return Err(serde::de::Error::custom(
+                    ModelRegistryError::MapIdMismatch { entity: "endpoint" },
+                ));
+            }
+            registry
+                .register_endpoint(profile)
+                .map_err(serde::de::Error::custom)?;
+        }
+        for (id, profile) in raw.models {
+            if id != profile.model_id {
+                return Err(serde::de::Error::custom(
+                    ModelRegistryError::MapIdMismatch { entity: "model" },
+                ));
+            }
+            registry
+                .register_model(profile)
+                .map_err(serde::de::Error::custom)?;
+        }
+        Ok(registry)
+    }
+}
+
 impl ModelRegistry {
     pub fn register_provider(
         &mut self,
         profile: ProviderProfile,
     ) -> Result<(), ModelRegistryError> {
+        profile.validate()?;
         if self.providers.contains_key(&profile.provider_id) {
             return Err(ModelRegistryError::DuplicateProvider(profile.provider_id));
         }
@@ -148,6 +208,7 @@ impl ModelRegistry {
         &mut self,
         profile: EndpointProfile,
     ) -> Result<(), ModelRegistryError> {
+        profile.validate()?;
         if !self.providers.contains_key(&profile.provider_id) {
             return Err(ModelRegistryError::ProviderNotFound(profile.provider_id));
         }
@@ -159,6 +220,7 @@ impl ModelRegistry {
     }
 
     pub fn register_model(&mut self, profile: ModelProfile) -> Result<(), ModelRegistryError> {
+        profile.validate()?;
         if !self.providers.contains_key(&profile.provider_id) {
             return Err(ModelRegistryError::ProviderNotFound(profile.provider_id));
         }

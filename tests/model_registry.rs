@@ -178,3 +178,191 @@ fn prompt_registry_round_trips_as_json() {
     let decoded: PromptRegistry = serde_json::from_str(&encoded).expect("registry deserializes");
     assert_eq!(decoded, registry);
 }
+
+#[test]
+fn provider_rejects_whitespace_auth_reference() {
+    let error = ProviderProfile::new("local", "Local", Some(" \n\t".into()))
+        .expect_err("whitespace auth reference must fail");
+    assert_eq!(error, ModelRegistryError::EmptyField { field: "auth_ref" });
+}
+
+#[test]
+fn model_registration_revalidates_public_profiles_before_insertion() {
+    let mut registry = registry_fixture();
+    let invalid_provider = ProviderProfile {
+        provider_id: "local".into(),
+        display_name: " ".into(),
+        auth_ref: None,
+    };
+    assert!(registry.register_provider(invalid_provider).is_err());
+    assert!(registry.provider("local").is_none());
+
+    let invalid_auth = ProviderProfile {
+        provider_id: "local".into(),
+        display_name: "Local".into(),
+        auth_ref: Some("\t".into()),
+    };
+    assert!(registry.register_provider(invalid_auth).is_err());
+    assert!(registry.provider("local").is_none());
+
+    let invalid_endpoint = EndpointProfile {
+        endpoint_id: "invalid".into(),
+        provider_id: "openai".into(),
+        base_url: " ".into(),
+        protocol: "openai-compatible".into(),
+    };
+    assert!(registry.register_endpoint(invalid_endpoint).is_err());
+    assert!(registry.endpoint("invalid").is_none());
+
+    let invalid_model = ModelProfile {
+        model_id: "invalid".into(),
+        provider_id: "openai".into(),
+        endpoint_id: "openai-default".into(),
+        model_name: "\n".into(),
+        capabilities: vec![],
+    };
+    assert!(registry.register_model(invalid_model).is_err());
+    assert!(registry.model("invalid").is_none());
+}
+
+#[test]
+fn model_registration_rejects_cross_provider_endpoint() {
+    let mut registry = registry_fixture();
+    registry
+        .register_provider(ProviderProfile::new("local", "Local", None).expect("provider"))
+        .expect("second provider registers");
+    let error = registry
+        .register_model(
+            ModelProfile::new("mismatch", "local", "openai-default", "fixture", vec![])
+                .expect("model"),
+        )
+        .expect_err("cross-provider endpoint must fail");
+    assert_eq!(error, ModelRegistryError::EndpointProviderMismatch);
+    assert!(registry.model("mismatch").is_none());
+}
+
+#[test]
+fn model_registry_json_rejects_mismatched_map_ids() {
+    for (section, id, field) in [
+        ("providers", "openai", "provider_id"),
+        ("endpoints", "openai-default", "endpoint_id"),
+        ("models", "gpt-5", "model_id"),
+    ] {
+        let mut encoded = serde_json::to_value(registry_fixture()).expect("fixture serializes");
+        encoded[section][id][field] = json!("different-id");
+        assert!(
+            serde_json::from_value::<ModelRegistry>(encoded).is_err(),
+            "{section} map key must match {field}"
+        );
+    }
+}
+
+#[test]
+fn model_registry_json_rejects_invalid_fields_and_broken_associations() {
+    for (section, id, field) in [
+        ("providers", "openai", "display_name"),
+        ("providers", "openai", "auth_ref"),
+        ("endpoints", "openai-default", "base_url"),
+        ("endpoints", "openai-default", "protocol"),
+        ("models", "gpt-5", "model_name"),
+    ] {
+        let mut encoded = serde_json::to_value(registry_fixture()).expect("fixture serializes");
+        encoded[section][id][field] = json!(" \t");
+        assert!(
+            serde_json::from_value::<ModelRegistry>(encoded).is_err(),
+            "{section}.{field} must be validated after JSON decode"
+        );
+    }
+    for (section, id, field) in [
+        ("endpoints", "openai-default", "provider_id"),
+        ("models", "gpt-5", "provider_id"),
+        ("models", "gpt-5", "endpoint_id"),
+    ] {
+        let mut encoded = serde_json::to_value(registry_fixture()).expect("fixture serializes");
+        encoded[section][id][field] = json!("missing");
+        assert!(
+            serde_json::from_value::<ModelRegistry>(encoded).is_err(),
+            "{section}.{field} must refer to a registered profile"
+        );
+    }
+}
+
+#[test]
+fn model_registry_json_rejects_cross_provider_endpoint() {
+    let mut encoded = serde_json::to_value(registry_fixture()).expect("fixture serializes");
+    encoded["providers"]["local"] =
+        json!({"provider_id": "local", "display_name": "Local", "auth_ref": null});
+    encoded["models"]["gpt-5"]["provider_id"] = json!("local");
+    assert!(serde_json::from_value::<ModelRegistry>(encoded).is_err());
+}
+
+fn prompt_registry_fixture() -> PromptRegistry {
+    let mut registry = PromptRegistry::default();
+    registry
+        .register(
+            PromptProfile::new("planner", 1, "planner", "plan", "Plan safely.").expect("prompt"),
+        )
+        .expect("prompt registers");
+    registry
+}
+
+#[test]
+fn prompt_registration_revalidates_public_profile() {
+    let mut profile = PromptProfile::new("invalid", 1, "planner", "plan", "Plan.").expect("prompt");
+    profile.binding.task = " ".into();
+    let mut registry = PromptRegistry::default();
+    assert!(registry.register(profile).is_err());
+    assert!(registry.get("invalid", 1).is_none());
+}
+
+#[test]
+fn prompt_registry_json_rejects_mismatched_map_id_and_version() {
+    let mut encoded = serde_json::to_value(prompt_registry_fixture()).expect("fixture serializes");
+    encoded["profiles"]["planner"]["1"]["prompt_id"] = json!("different");
+    assert!(serde_json::from_value::<PromptRegistry>(encoded).is_err());
+
+    let mut encoded = serde_json::to_value(prompt_registry_fixture()).expect("fixture serializes");
+    encoded["profiles"]["planner"]["1"]["version"] = json!(2);
+    assert!(serde_json::from_value::<PromptRegistry>(encoded).is_err());
+}
+
+#[test]
+fn prompt_registry_json_rejects_invalid_profiles() {
+    for field in ["template", "prompt_id"] {
+        let mut encoded =
+            serde_json::to_value(prompt_registry_fixture()).expect("fixture serializes");
+        encoded["profiles"]["planner"]["1"][field] = json!(" ");
+        assert!(serde_json::from_value::<PromptRegistry>(encoded).is_err());
+    }
+    for field in ["role", "task"] {
+        let mut encoded =
+            serde_json::to_value(prompt_registry_fixture()).expect("fixture serializes");
+        encoded["profiles"]["planner"]["1"]["binding"][field] = json!(" ");
+        assert!(serde_json::from_value::<PromptRegistry>(encoded).is_err());
+    }
+    let mut encoded = serde_json::to_value(prompt_registry_fixture()).expect("fixture serializes");
+    encoded["profiles"]["planner"]["1"]["version"] = json!(0);
+    assert!(serde_json::from_value::<PromptRegistry>(encoded).is_err());
+}
+
+#[test]
+fn prompt_latest_selects_highest_version_with_matching_binding() {
+    let mut registry = prompt_registry_fixture();
+    let matched =
+        PromptProfile::new("planner", 2, "planner", "plan", "Plan version two.").expect("prompt");
+    registry
+        .register(matched.clone())
+        .expect("version registers");
+    registry
+        .register(
+            PromptProfile::new("planner", 3, "reviewer", "review", "Review.").expect("prompt"),
+        )
+        .expect("unrelated binding registers");
+    assert_eq!(
+        registry.latest_for("planner", "planner", "plan"),
+        Some(&matched)
+    );
+    assert!(registry
+        .latest_for("planner", "planner", "implement")
+        .is_none());
+}
