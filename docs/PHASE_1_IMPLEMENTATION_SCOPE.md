@@ -203,6 +203,19 @@ manual intervention -> manual_takeover
 - fallback 必须能力兼容、显式记录并重新验证；高风险写操作不能静默降级
 - registry、prompt、trace、event log 和 checkpoint 只保存 auth_ref，不保存 API key 或 token
 
+### 10.1 执行策略选择器最小切片
+
+执行策略与 ModelRouter 分工不同：前者选择执行约束，后者选择具体模型。当前策略切片使用显式 TaskFeatures、既有 domain RiskLevel 和固定策略元数据，不推断自然语言任务属性，也不创建多 agent runtime。
+
+- 校验不确定性和预算倍率的有限值/范围；非法输入或倍率不足返回错误，不静默降级安全要求
+- GoalContract 风险是下限；High/Critical、Production、不可逆或显式审批条件均不能被策略降级取消
+- 库接口显式启用；`strategy_selected` / `strategy_adjusted` 关联项目、goal、task_run、loop、特征、理由、基础/前次/有效预算和策略修订号
+- 使用整数分子/分母计算倍率并向下取整，分配不突破原授权和当前上限，保留八个消耗计数；三类进展/失败 guard 只取较小值，不乘倍率；同实例调整不清零独立 tracker 和 action fingerprint
+- 策略路径在执行前约束 step/model/tool 预算；PolicyGate 仍独立生效。审批未解析时零动作，pause/resume 不算审批
+- 验证频率、交叉模型验证及专业策略只是需求元数据，不能撤销 GoalContract verification_plan；实际验证调度、TOML/自定义策略注册、策略恢复和多 agent 编排尚未实现
+
+旧 controller `start()` 和 fixture CLI 不自动使用策略；新建 start_with_strategy 也不是跨实例恢复入口。已有预算对象不等于 Attempt/GoalRevision/验证失败统计八维运行时全部完成。
+
 ### 11. Portfolio、Task 与 BoardProjection 最小切片
 
 第一阶段只实现单 Portfolio、单 Project、本地顺序执行 fixture，但必须先固定未来可扩展的身份和投影边界：

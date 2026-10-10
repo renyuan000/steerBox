@@ -79,6 +79,7 @@
 - 当前开发垂直切片可执行受审批的 Markdown 文件修改与链接验证，成功/失败均写入 run summary；验证失败会保留事件、状态和摘要并以非零退出
 - 当前仍不是可连接真实网络模型并自主执行开发任务的 Agent：已有本地 fixture、OpenAI-compatible fake transport、严格 provider-to-ModelAdapter bridge，以及接入 LoopController 的规则式模型路由；路由和调用事件关联 `route_decision_id`，需要审批的路由会留下人工介入事件并拒绝调用，模型失败会结束对应 step。独立 `ModelCallStore` 可校验并持久化调用记录，但尚未接入实际调用；真实网络 transport/凭据解析、完整 prompt resolution、动态 fallback、审批恢复、takeover 和完整恢复闭环仍未完成
 - 历史查询支持 metadata-only `execution list/show/page`，分页是读取全量事件后的 detached snapshot，不是流式读取或 live cursor；CLI 生命周期输出仅在真实完成时报告 loop completed
+- 执行策略已有可验证的库 API 切片：按显式任务特征选择策略，记录选择/调整事件，将倍率分配限制在既有授权预算内，并在需审批时拒绝动作；调整不清零消耗或重复动作历史。验证频率与协作/专业领域策略目前只是需求元数据，不代表自动验证、多 agent 编排或专业操作已执行
 - 用户中途接入后台任务已有设计契约，但没有常驻后台 worker 或可连接它的交互控制面；见 [Human Steering Modes](./docs/HUMAN_STEERING_MODES.md) 与 [Control Plane Discussion](./docs/CONTROL_PLANE_DISCUSSION.md)
 
 最小验证命令：
@@ -99,6 +100,16 @@ cargo run -- execution page /temp/steerbox/demo-project/config.json loop-1 0 10
 当前 fixture loop 只使用本地结构化决策，不调用真实模型、不执行工具、不修改文件；它会记录 `model_call_started`、`model_call_completed`，以及 `complete_loop` 或 `request_human` 对应事件。运行数据固定写入 `/temp/steerbox/<project_ref>/.steerbox/`，不写入仓库工作区。
 
 `continue_observation` 和 `request_human` 都不表示 loop 已完成；后者已有人工介入事件，但当前 loop 状态仍为 Running，不应误报 Paused。路由入口目前是库 API，不是上述 fixture CLI 自动使用的入口。审计 schema 拒绝未知认证字段并校验标识/成本，不等于对任意字符串内容做凭据检测。
+
+策略同样显式启用：调用 `ReadOnlyLoopController::start_with_strategy(log, goal, loop_run_id, task_run_id, base_budget, authorized_budget, features)`，或在安全边界调用 `select_strategy(features, &base_budget)`。旧 `start()` 和当前 fixture CLI 不自动启用选择器。`features` 必须由调用者提供，当前不从自然语言猜测复杂度、风险或可逆性；实际风险不会低于 GoalContract。需审批的策略可完成选择并留下审计，后续动作入口返回 `StrategyApprovalRequired`；没有审批 resolver，重选及pause/resume不会解除该门禁。
+
+`base_budget` 是请求的基础分配，`authorized_budget` 是硬上限；同实例后续调整只会收紧当前上限，不重置tracker或action fingerprint。新建 start_with_strategy 不是跨实例恢复入口。策略路径已前置约束 step/model/tool 额度及进展/失败 guard，但 Attempt、GoalRevision 和自动验证失败统计的完整运行时接线仍未完成，不能称八维都已执行。自定义策略配置、模型协作和策略恢复也尚未实现。
+
+策略切片的可复现验证（构建产物不放源码目录）：
+
+```bash
+CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --test strategy_selector --test budget_calculator --test loop_strategy --test loop_strategy_controls --test strategy_audit_failure
+```
 
 ## 文档
 

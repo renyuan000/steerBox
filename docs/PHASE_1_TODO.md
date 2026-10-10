@@ -253,6 +253,17 @@ Memory 最小实现：
 - 每次调用能反查 provider、endpoint、model、prompt 版本、路由理由和验证结果
 - 仅保存 `auth_ref`；测试 fixture 不包含真实 API key 或 token
 
+### P12.1 执行策略选择器
+
+- [x] 定义九个策略标识、显式 TaskFeatures 和纯规则选择器；风险复用 domain RiskLevel，有限值/范围校验及倍率不足拒绝已有回归
+- [x] 实现安全预算分配：整数比值运算分配、既有授权/当前上限 clamp、消耗保留、进展/失败 guard 不放宽
+- [x] 接入 opt-in `start_with_strategy` / `select_strategy`，记录选择/调整及审批介入事件；GoalContract 风险下限、审批前零动作、step/model/tool 预算和调整不补额度已有测试
+- [x] pause/resume 不解除审批，不清零消耗或重复动作历史；PolicyGate forbidden/unregistered/allowed_tools 约束保持生效
+- [ ] 自定义策略配置注册与验证调度接线（当前只有固定配置和验证频率元数据，不撤销 goal 验证要求）
+- [ ] 策略状态/修订、预算和重复动作历史的完整恢复
+
+验收：`tests/strategy_selector.rs`、`tests/budget_calculator.rs`、`tests/loop_strategy.rs`、`tests/loop_strategy_controls.rs`、`tests/strategy_audit_failure.rs`；策略主审计写入失败保留旧策略、额度和revision，同实例恢复原日志路径后下一修订仍连续；补充审批事件写入失败暂无独立注入测试。审批 resolver 尚未实现。协作和专业领域策略仅是元数据，不代表多 agent 或专业领域 runtime。旧 start/fixture CLI 不自动选择策略；新 start_with_strategy 不是跨实例恢复入口。
+
 ### P13. Dev Agent Vertical Slice
 
 - [x] 输出只读 BoardProjection / JSON board fixture

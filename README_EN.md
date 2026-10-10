@@ -74,9 +74,10 @@ Notes:
 
 ## Current Status
 
-- the final codebase structure is intentionally not fixed yet
-- current candidate languages include `Rust`, `Python`, `C`, and `Go`, but the split is not final
-- the immediate focus is on documents, problem framing, and architecture direction before a phase-one prototype
+- Phase 1 uses Rust and Cargo. Local slices include EventLog/StateStore, trace/checkpoint/side-effect records, policy-gated read-only tools, fixture models, rule-based model routing and an approved Markdown edit-and-verify workflow.
+- The execution strategy selector is an opt-in library API: explicit task features select a policy, selection/adjustment is audited, allocation is capped by existing authorization, and required approval blocks actions. Changes preserve consumed counters and repeat-detection history; they do not grant permissions.
+- `ReadOnlyLoopController::start_with_strategy()` and `select_strategy()` enable this policy. Legacy `start()` and the fixture CLI do not select strategies automatically. Verification frequency, collaboration and specialized-domain labels are requirements metadata, not implemented verification scheduling, multi-agent execution or professional-domain runtimes.
+- Phase 1 is not complete: real HTTP providers, resolved prompts/actual model-call audit storage, fallback/Attempt lineage, a model-driven editing loop, a connected background control plane and complete recovery remain unfinished. See [README_CN.md](./README_CN.md) for current commands and precise boundaries.
 
 ## Documents
 

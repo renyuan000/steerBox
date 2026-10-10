@@ -73,6 +73,7 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V15 Task 状态迁移 | 已验证最小切片 | `tests/domain_contracts.rs`；TaskRun/Attempt 命令 lineage 仍待实现 |
 | V16 BoardProjection | 已验证最小切片 | `tests/board_projection.rs`、`tests/runtime_cli.rs`；依赖和完整 Attempt 投影仍待实现 |
 | V17 Command 幂等与版本冲突 | 已验证最小切片 | `tests/user_command_inbox.rs` 验证 command_id 幂等、冲突拒绝和状态去重；expected_object_version 冲突处理仍未实现 |
+| V20 Execution Strategy | 已验证最小库接线切片 | `tests/strategy_selector.rs`、`tests/budget_calculator.rs`、`tests/loop_strategy.rs`、`tests/loop_strategy_controls.rs`、`tests/strategy_audit_failure.rs`；纯选择/输入拒绝、审批前零动作、授权 clamp、同实例计数/重复历史保留、工具额度、pause/resume不解除审批及主审计失败不改变策略/预算/revision；补充审批事件写入失败尚无独立注入测试；验证频率仅需求元数据，自定义配置、审批解析、协作执行及策略恢复尚未实现 |
 
 状态更新规则：只有可复现命令、测试输出或运行日志支持时，才能把“未验证”改为“已验证”。
 
@@ -375,6 +376,27 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 - 相同 command_id 的重试返回第一次结果，不重复执行副作用
 - expected_object_version 不匹配时返回 conflict，不覆盖较新的状态
 - 查询命令不写 EventLog；暂停、恢复、取消、重试、审批和 reprioritize 都留下可审计事件
+
+### V20. Execution Strategy Selection
+
+步骤：
+
+1. 显式提供低风险、复杂/不确定、高风险、Production、不可逆和需审批的 TaskFeatures
+2. 使用策略启动接口，检查 GoalContract 风险下限和策略事件身份/理由/修订/预算
+3. 用有限授权的 fixture adapter 验证 research 倍率、策略调整及pause/resume
+4. 检查零/已耗尽工具预算在执行器前阻断，且策略不替代 PolicyGate
+5. 检查 NaN/Infinity、范围越界、未知字段、倍率不足、零额度和 u32 最大值
+6. 在测试自建临时目录内让主策略审计 append 失败，检查旧状态/日志不变，同实例恢复原日志路径后策略revision仍连续
+
+期望结果：
+
+- 选择规则、五个核心策略及两个已定义领域映射符合文档；没有给缺少判定输入的领域策略编造自动映射
+- 需审批时不分配动作或调用模型/工具；没有resolver，重选或resume不构成批准
+- 策略只能收紧当前预算上限，消耗计数及重复动作fingerprint保持；进展/失败 guard 不乘倍率
+- 验证要求只是元数据，不能把它当作已经运行验证或据此宣告任务成功
+- 旧 start/CLI 保持兼容；自定义配置、协作执行与策略恢复仍标未实现
+
+失败条件：策略授权扩容、调整清零、审批绕过、PolicyGate 被替代，或把策略验证元数据当作任务验证成功证据。
 
 ## 最小验收命令
 
