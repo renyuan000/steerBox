@@ -101,6 +101,46 @@ fn rebuild_rejects_conflicting_loop_identity() {
 }
 
 #[test]
+fn rebuilds_pause_resume_and_cancel_lifecycle() {
+    let events = vec![
+        event(
+            "loop-started",
+            "loop_started",
+            "loop_run",
+            "loop-1",
+            serde_json::json!({"goal_id": "goal-1", "task_run_id": "run-1"}),
+        ),
+        event(
+            "loop-paused",
+            "loop_paused",
+            "loop_run",
+            "loop-1",
+            serde_json::json!({}),
+        ),
+        event(
+            "loop-resumed",
+            "loop_resumed",
+            "loop_run",
+            "loop-1",
+            serde_json::json!({}),
+        ),
+        event(
+            "loop-cancelled",
+            "loop_cancelled",
+            "loop_run",
+            "loop-1",
+            serde_json::json!({}),
+        ),
+    ];
+
+    let state = StateStore::rebuild(&events).expect("lifecycle rebuilds");
+    assert_eq!(
+        state.loop_run("loop-1").expect("loop exists").status,
+        LoopStatus::Cancelled
+    );
+}
+
+#[test]
 fn state_store_persists_and_reopens_current_projection() {
     let events = vec![event(
         "loop-started",

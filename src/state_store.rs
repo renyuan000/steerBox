@@ -125,6 +125,7 @@ impl StateStore {
         match event.event_type.as_str() {
             "loop_started" => self.apply_loop_started(event),
             "loop_completed" | "loop_failed" => self.apply_loop_terminal(event),
+            "loop_paused" | "loop_resumed" | "loop_cancelled" => self.apply_loop_control(event),
             "step_started" => self.apply_step_started(event),
             "step_completed" | "step_failed" => self.apply_step_terminal(event),
             _ => Ok(()),
@@ -187,6 +188,46 @@ impl StateStore {
             LoopStatus::Failed
         };
         loop_state.finished_at = Some(event.occurred_at.clone());
+        loop_state.last_sequence_no = event.sequence_no.or(loop_state.last_sequence_no);
+        Ok(())
+    }
+
+    fn apply_loop_control(&mut self, event: &EventEnvelope) -> Result<(), StateStoreError> {
+        let loop_id = loop_id(event)?;
+        let Some(loop_state) = self.loops.get_mut(&loop_id) else {
+            return Err(StateStoreError::InvalidTransition {
+                event_id: event.event_id.clone(),
+                reason: "loop control event precedes loop_started".into(),
+            });
+        };
+        if let Some(goal_id) = optional_string(event, "goal_id", event.goal_id.as_deref())? {
+            check_identity(event, "goal_id", &loop_state.goal_id, &goal_id)?;
+        }
+        if let Some(task_run_id) =
+            optional_string(event, "task_run_id", event.task_run_id.as_deref())?
+        {
+            check_identity(event, "task_run_id", &loop_state.task_run_id, &task_run_id)?;
+        }
+        match event.event_type.as_str() {
+            "loop_paused" if loop_state.status == LoopStatus::Running => {
+                loop_state.status = LoopStatus::Paused;
+            }
+            "loop_resumed" if loop_state.status == LoopStatus::Paused => {
+                loop_state.status = LoopStatus::Running;
+            }
+            "loop_cancelled"
+                if matches!(loop_state.status, LoopStatus::Running | LoopStatus::Paused) =>
+            {
+                loop_state.status = LoopStatus::Cancelled;
+                loop_state.finished_at = Some(event.occurred_at.clone());
+            }
+            _ => {
+                return Err(StateStoreError::InvalidTransition {
+                    event_id: event.event_id.clone(),
+                    reason: "invalid loop control transition".into(),
+                });
+            }
+        }
         loop_state.last_sequence_no = event.sequence_no.or(loop_state.last_sequence_no);
         Ok(())
     }

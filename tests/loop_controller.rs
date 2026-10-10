@@ -9,6 +9,7 @@ use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
 use steerbox::policy_gate::{PolicyDecision, PolicyGate};
 use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallInput};
 use steerbox::tool_registry::ToolRegistry;
+use steerbox::user_command_inbox::{CommandKind, CommandStatus, UserCommand, UserCommandInbox};
 
 fn test_data_dir() -> PathBuf {
     let nonce = SystemTime::now()
@@ -16,6 +17,153 @@ fn test_data_dir() -> PathBuf {
         .expect("clock is after epoch")
         .as_nanos();
     PathBuf::from(format!("/temp/steerbox/test-loop-{nonce}"))
+}
+
+fn steering_command(
+    command_id: &str,
+    project_id: &str,
+    goal_id: &str,
+    task_run_id: &str,
+    loop_run_id: &str,
+    kind: CommandKind,
+) -> UserCommand {
+    UserCommand::new(
+        command_id,
+        "operator-1",
+        project_id,
+        goal_id,
+        task_run_id,
+        loop_run_id,
+        kind,
+        format!("corr-{command_id}"),
+        serde_json::json!({"reason": "operator request"}),
+    )
+    .expect("steering command is valid")
+}
+
+#[test]
+fn pause_command_is_applied_at_next_safe_boundary_and_resume_reopens_loop() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let events_path = directory.join("events.jsonl");
+    let inbox_path = directory.join("commands.jsonl");
+    let inbox = UserCommandInbox::open(&inbox_path);
+    inbox
+        .submit(steering_command(
+            "pause-1",
+            "project-steering",
+            "goal-steering",
+            "task-run-steering",
+            "loop-steering",
+            CommandKind::Pause,
+        ))
+        .expect("pause command submits");
+    let goal = GoalContract::new(
+        "goal-steering",
+        "project-steering",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["manual_review".into()],
+    );
+    let budget = LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1);
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&events_path).expect("event log opens"),
+        goal,
+        "loop-steering",
+        "task-run-steering",
+        budget,
+    )
+    .expect("loop starts")
+    .with_command_inbox(inbox.clone());
+
+    assert!(matches!(
+        controller.run_observation("step-paused", "not executed"),
+        Err(LoopControllerError::Paused)
+    ));
+    assert_eq!(controller.status(), LoopStatus::Paused);
+    assert_eq!(
+        inbox.latest("pause-1").expect("pause status exists").status,
+        CommandStatus::Applied
+    );
+
+    inbox
+        .submit(steering_command(
+            "resume-1",
+            "project-steering",
+            "goal-steering",
+            "task-run-steering",
+            "loop-steering",
+            CommandKind::Resume,
+        ))
+        .expect("resume command submits");
+    controller
+        .run_observation("step-resumed", "resumed safely")
+        .expect("resume command applies before step");
+    assert_eq!(controller.status(), LoopStatus::Running);
+
+    let events = EventLog::open(events_path)
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events.iter().any(|event| event.event_type == "loop_paused"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "loop_resumed"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "user_command_applied"));
+}
+
+#[test]
+fn cancel_command_stops_loop_at_safe_boundary_without_logging_payload() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let events_path = directory.join("events.jsonl");
+    let inbox = UserCommandInbox::open(directory.join("commands.jsonl"));
+    let mut command = steering_command(
+        "cancel-1",
+        "project-cancel",
+        "goal-cancel",
+        "task-run-cancel",
+        "loop-cancel",
+        CommandKind::Cancel,
+    );
+    command.payload = serde_json::json!({"reason": "stop", "note": "safe"});
+    inbox.submit(command).expect("cancel command submits");
+    let goal = GoalContract::new(
+        "goal-cancel",
+        "project-cancel",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["manual_review".into()],
+    );
+    let budget = LoopBudget::new(1, 0, 0, 1, 0, 1, 1, 1);
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&events_path).expect("event log opens"),
+        goal,
+        "loop-cancel",
+        "task-run-cancel",
+        budget,
+    )
+    .expect("loop starts")
+    .with_command_inbox(inbox.clone());
+
+    assert!(matches!(
+        controller.run_observation("step-cancelled", "not executed"),
+        Err(LoopControllerError::Terminal)
+    ));
+    assert_eq!(controller.status(), LoopStatus::Cancelled);
+    assert_eq!(
+        inbox
+            .latest("cancel-1")
+            .expect("cancel status exists")
+            .status,
+        CommandStatus::Applied
+    );
+    let encoded = fs::read_to_string(events_path).expect("events readable");
+    assert!(!encoded.contains("safe"));
 }
 
 #[test]

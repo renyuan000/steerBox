@@ -148,7 +148,7 @@ Memory 最小实现：
 - [ ] 支持 stop condition
 - [ ] 支持失败后 reflection summary
 - [x] 实现 LoopBudget 与 NoProgressTracker 的领域级停止规则
-- [x] 实现 `UserCommandInbox` 持久化、command_id 幂等和按 loop 的 pending 读取；LoopController 安全边界接线仍待完成
+- [x] 实现 `UserCommandInbox` 持久化、command_id 幂等和按 loop 的 pending 读取；LoopController 已在安全边界应用 `pause` / `resume` / `cancel`，`takeover` 和 side-effect 不确定分支仍待完成
 - [ ] 实现 `GoalRevision` / `PlanRevision` 与旧计划失效
 - [ ] 实现 `InterruptRequest` 的安全边界和 `side_effect_uncertain` 分支
 - [x] 实现 `LoopBudget` 与 `NoProgressObservation`，达到上限后停止自动重试（model loop 已接入重复动作检测）

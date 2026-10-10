@@ -64,7 +64,7 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V8 SideEffectLedger | 已验证切片 | `tests/loop_controller.rs`、`tests/dev_vertical_slice.rs` |
 | V9 GoalAlignmentCheck | 已验证切片 | `tests/drift_guard.rs`；结果写入完整 loop 仍待接线 |
 | V10 DriftGuard | 已验证切片 | `tests/drift_guard.rs` |
-| V11 Human Steering Mode | 已验证持久化切片 | `tests/user_command_inbox.rs`；LoopController 安全边界读取、pause/resume/takeover 应用仍未实现 |
+| V11 Human Steering Mode | 已验证最小运行时切片 | `tests/user_command_inbox.rs`、`tests/loop_controller.rs`、`tests/state_store.rs`；已覆盖 Inbox 幂等、pause/resume/cancel 安全边界和状态重建，takeover、后台 worker、控制面仍未实现 |
 | V12 Baseline Tool Recipes | 未验证闭环 | registry/recipe 边界已有，失败 LessonCandidate 和 recipe candidate 未实现 |
 | V13 Model Routing | 未验证闭环 | 多模型 registry/router、真实 adapter、prompt resolution 和 fallback 未实现 |
 | V14 Run Summary | 已验证最小切片 | `tests/audit_store.rs`、`tests/runtime_cli.rs`；完整 task/attempt/evidence 反查仍待实现 |

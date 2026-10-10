@@ -77,7 +77,7 @@
 - 第一阶段主语言和构建工具已确定为 `Rust` + `Cargo`
 - 当前已实现并验证领域契约、配置校验、append-only JSONL EventLog（含分页读取）、StateStore 重建/持久化、Trace/Checkpoint/SideEffect 记录、GoalAlignment/DriftGuard 最小报告和只读 BoardProjection fixture
 - 当前开发垂直切片可执行受审批的 Markdown 文件修改与链接验证，成功/失败均写入 run summary；验证失败会保留事件、状态和摘要并以非零退出
-- 当前仍不是可连接真实模型并自主执行开发任务的 Agent：已有 secret-free fixture model adapter 和本地 UserCommandInbox 持久化边界，但尚无真实 provider、多模型路由、LoopController 安全边界命令应用、pause/resume/takeover 控制面、通用工具执行器或完整恢复闭环
+- 当前仍不是可连接真实模型并自主执行开发任务的 Agent：已有 secret-free fixture model adapter、本地 UserCommandInbox 持久化边界，以及 LoopController 在安全边界应用 `pause`/`resume`/`cancel` 的最小切片，但尚无真实 provider、多模型路由、takeover 控制面、常驻后台 worker、通用工具执行器或完整恢复闭环
 - 用户中途接入后台任务已有设计契约，但没有常驻后台 worker 或可连接它的交互控制面；见 [Human Steering Modes](./docs/HUMAN_STEERING_MODES.md) 与 [Control Plane Discussion](./docs/CONTROL_PLANE_DISCUSSION.md)
 
 最小验证命令：

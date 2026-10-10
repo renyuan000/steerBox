@@ -12,6 +12,9 @@ use crate::tool_executor::{
     ReadOnlyToolExecutor, ToolCallInput, ToolCallOutput, ToolExecutionError,
 };
 use crate::tool_registry::ToolRegistry;
+use crate::user_command_inbox::{
+    CommandKind, CommandStatus, UserCommandInbox, UserCommandInboxError,
+};
 use serde_json::json;
 use thiserror::Error;
 
@@ -25,6 +28,8 @@ pub enum LoopControllerError {
     BudgetExhausted(BudgetKind),
     #[error("loop is already terminal")]
     Terminal,
+    #[error("loop is paused")]
+    Paused,
     #[error("model adapter failed: {0}")]
     ModelAdapter(#[from] ModelAdapterError),
     #[error("tool call denied by policy: {decision:?}: {reason}")]
@@ -38,6 +43,8 @@ pub enum LoopControllerError {
     ToolExecution(#[from] ToolExecutionError),
     #[error("audit store failed: {0}")]
     AuditStore(#[from] AuditStoreError),
+    #[error("user command inbox failed: {0}")]
+    UserCommandInbox(#[from] UserCommandInboxError),
 }
 
 /// Minimal sequential loop that records observations only.
@@ -51,6 +58,7 @@ pub struct ReadOnlyLoopController {
     no_progress: NoProgressTracker,
     trace_store: Option<TraceStore>,
     side_effect_ledger: Option<SideEffectLedger>,
+    command_inbox: Option<UserCommandInbox>,
 }
 
 impl ReadOnlyLoopController {
@@ -81,6 +89,7 @@ impl ReadOnlyLoopController {
             no_progress: NoProgressTracker::new(max_no_progress_steps, max_same_action_repetitions),
             trace_store: None,
             side_effect_ledger: None,
+            command_inbox: None,
         })
     }
 
@@ -94,14 +103,17 @@ impl ReadOnlyLoopController {
         self
     }
 
+    pub fn with_command_inbox(mut self, inbox: UserCommandInbox) -> Self {
+        self.command_inbox = Some(inbox);
+        self
+    }
+
     pub fn run_observation(
         &mut self,
         step_id: impl Into<String>,
         observation: impl Into<String>,
     ) -> Result<LoopStep, LoopControllerError> {
-        if self.loop_run.status != LoopStatus::Running {
-            return Err(LoopControllerError::Terminal);
-        }
+        self.prepare_action()?;
         if let Err(kind) = self.budget.consume_step() {
             append_loop_event(
                 &mut self.event_log,
@@ -144,9 +156,7 @@ impl ReadOnlyLoopController {
     }
 
     pub fn complete(&mut self) -> Result<LoopRun, LoopControllerError> {
-        if self.loop_run.status != LoopStatus::Running {
-            return Err(LoopControllerError::Terminal);
-        }
+        self.prepare_action()?;
         self.loop_run.complete();
         append_loop_event(
             &mut self.event_log,
@@ -166,9 +176,7 @@ impl ReadOnlyLoopController {
         step_id: impl Into<String>,
         observation: impl Into<String>,
     ) -> Result<ModelDecision, LoopControllerError> {
-        if self.loop_run.status != LoopStatus::Running {
-            return Err(LoopControllerError::Terminal);
-        }
+        self.prepare_action()?;
         if let Err(kind) = self.budget.consume_step() {
             self.append_model_event(
                 "loop_budget_exhausted",
@@ -289,9 +297,7 @@ impl ReadOnlyLoopController {
         tool_id: impl Into<String>,
         step_id: impl Into<String>,
     ) -> Result<(), LoopControllerError> {
-        if self.loop_run.status != LoopStatus::Running {
-            return Err(LoopControllerError::Terminal);
-        }
+        self.prepare_action()?;
         let tool_id = tool_id.into();
         let step_id = step_id.into();
         let request = PolicyRequest {
@@ -431,6 +437,96 @@ impl ReadOnlyLoopController {
 
     pub fn status(&self) -> LoopStatus {
         self.loop_run.status
+    }
+
+    fn prepare_action(&mut self) -> Result<(), LoopControllerError> {
+        self.apply_pending_commands()?;
+        match self.loop_run.status {
+            LoopStatus::Running => Ok(()),
+            LoopStatus::Paused => Err(LoopControllerError::Paused),
+            LoopStatus::Completed | LoopStatus::Cancelled | LoopStatus::Failed => {
+                Err(LoopControllerError::Terminal)
+            }
+        }
+    }
+
+    fn apply_pending_commands(&mut self) -> Result<(), LoopControllerError> {
+        let Some(inbox) = self.command_inbox.clone() else {
+            return Ok(());
+        };
+        let commands = inbox.pending_for_loop(&self.goal.project_id, &self.loop_run.loop_run_id)?;
+        for entry in commands {
+            let command = entry.command;
+            if command.goal_id != self.goal.goal_id
+                || command.task_run_id != self.loop_run.task_run_id
+            {
+                inbox.update_status(&command.command_id, CommandStatus::Rejected)?;
+                self.append_model_event(
+                    "user_command_rejected",
+                    &format!("{}:rejected", command.command_id),
+                    json!({
+                        "command_id": command.command_id,
+                        "reason": "runtime target mismatch",
+                    }),
+                )?;
+                continue;
+            }
+
+            let applied = match command.command_kind {
+                CommandKind::Pause => {
+                    self.loop_run.pause();
+                    self.append_model_event(
+                        "loop_paused",
+                        &format!("{}:paused", command.command_id),
+                        json!({"command_id": command.command_id}),
+                    )?;
+                    true
+                }
+                CommandKind::Resume => {
+                    self.loop_run.resume();
+                    self.append_model_event(
+                        "loop_resumed",
+                        &format!("{}:resumed", command.command_id),
+                        json!({"command_id": command.command_id}),
+                    )?;
+                    true
+                }
+                CommandKind::Cancel => {
+                    self.loop_run.cancel();
+                    self.append_model_event(
+                        "loop_cancelled",
+                        &format!("{}:cancelled", command.command_id),
+                        json!({"command_id": command.command_id}),
+                    )?;
+                    true
+                }
+                _ => false,
+            };
+
+            if applied {
+                inbox.update_status(&command.command_id, CommandStatus::Applied)?;
+                self.append_model_event(
+                    "user_command_applied",
+                    &format!("{}:applied", command.command_id),
+                    json!({
+                        "command_id": command.command_id,
+                        "command_kind": command.command_kind,
+                        "actor_ref": command.actor_ref,
+                    }),
+                )?;
+            } else {
+                inbox.update_status(&command.command_id, CommandStatus::Rejected)?;
+                self.append_model_event(
+                    "user_command_rejected",
+                    &format!("{}:rejected", command.command_id),
+                    json!({
+                        "command_id": command.command_id,
+                        "reason": "command kind is not implemented at this safe boundary",
+                    }),
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 

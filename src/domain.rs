@@ -240,7 +240,9 @@ fn scope_path(path: &str) -> Option<String> {
 #[serde(rename_all = "snake_case")]
 pub enum LoopStatus {
     Running,
+    Paused,
     Completed,
+    Cancelled,
     Failed,
 }
 
@@ -469,8 +471,33 @@ impl LoopRun {
         }
     }
 
+    pub fn pause(&mut self) {
+        if self.status == LoopStatus::Running {
+            self.status = LoopStatus::Paused;
+            self.object_version += 1;
+        }
+    }
+
+    pub fn resume(&mut self) {
+        if self.status == LoopStatus::Paused {
+            self.status = LoopStatus::Running;
+            self.object_version += 1;
+        }
+    }
+
+    pub fn cancel(&mut self) {
+        if !self.is_terminal() {
+            self.status = LoopStatus::Cancelled;
+            self.object_version += 1;
+            self.finished_at = Some(now());
+        }
+    }
+
     pub fn is_terminal(&self) -> bool {
-        matches!(self.status, LoopStatus::Completed | LoopStatus::Failed)
+        matches!(
+            self.status,
+            LoopStatus::Completed | LoopStatus::Cancelled | LoopStatus::Failed
+        )
     }
 }
 
