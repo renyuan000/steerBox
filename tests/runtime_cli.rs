@@ -117,6 +117,105 @@ fn readonly_cli_reopens_event_state_and_trace_artifacts() {
     assert!(execution_text.contains("loop_completed"));
     assert!(!execution_text.contains("repository inspected"));
 
+    let page = Command::new(binary)
+        .args([
+            "execution",
+            "page",
+            &config.config_path().display().to_string(),
+            "loop-cli",
+            "1",
+            "2",
+        ])
+        .output()
+        .expect("execution page starts");
+    assert!(
+        page.status.success(),
+        "page stderr: {}",
+        String::from_utf8_lossy(&page.stderr)
+    );
+    let page_json: serde_json::Value =
+        serde_json::from_slice(&page.stdout).expect("page output is JSON");
+    assert_eq!(page_json["loop_run_id"], "loop-cli");
+    assert_eq!(page_json["offset"], 1);
+    assert_eq!(page_json["limit"], 2);
+    assert_eq!(page_json["total"], 5);
+    assert_eq!(page_json["has_more"], true);
+    assert_eq!(
+        page_json["events"].as_array().expect("page events").len(),
+        2
+    );
+    assert!(!String::from_utf8_lossy(&page.stdout).contains("repository inspected"));
+    assert!(page_json["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|event| event.get("payload").is_none()));
+
+    // These offsets address one detached snapshot, not a live cursor or streaming read.
+    for (offset, limit, expected_len) in [("0", "0", 0), ("99", "2", 0), ("4", "2", 1)] {
+        let output = Command::new(binary)
+            .args([
+                "execution",
+                "page",
+                &config.config_path().display().to_string(),
+                "loop-cli",
+                offset,
+                limit,
+            ])
+            .output()
+            .expect("snapshot page starts");
+        assert!(output.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("page JSON");
+        assert_eq!(json["has_more"], false);
+        assert_eq!(json["total"], 5);
+        assert_eq!(json["events"].as_array().unwrap().len(), expected_len);
+        assert!(json["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event.get("payload").is_none()));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("repository inspected"));
+    }
+
+    for (offset, limit, error_field) in [
+        ("not-a-number", "2", "offset"),
+        ("-1", "2", "offset"),
+        ("0", "not-a-number", "limit"),
+        ("0", "-1", "limit"),
+    ] {
+        let output = Command::new(binary)
+            .args([
+                "execution",
+                "page",
+                &config.config_path().display().to_string(),
+                "loop-cli",
+                offset,
+                limit,
+            ])
+            .output()
+            .expect("invalid page starts");
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("invalid {error_field}")));
+    }
+
+    let missing_page = Command::new(binary)
+        .args([
+            "execution",
+            "page",
+            &config.config_path().display().to_string(),
+            "missing-loop",
+            "0",
+            "10",
+        ])
+        .output()
+        .expect("missing execution page starts");
+    assert!(!missing_page.status.success());
+    assert!(missing_page.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&missing_page.stderr).contains("execution not found: missing-loop")
+    );
+
     let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
 }
 
@@ -183,6 +282,118 @@ fn fixture_cli_persists_state_trace_and_checkpoint() {
     );
 
     let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
+}
+
+fn fixture_decision_output(
+    decision: &str,
+) -> (
+    String,
+    Vec<steerbox::domain::EventEnvelope>,
+    steerbox::domain::LoopStatus,
+) {
+    let project_ref = project_ref();
+    let config = RuntimeConfig::default_for_project(project_ref.clone()).expect("config builds");
+    let binary = env!("CARGO_BIN_EXE_steerbox");
+    let init = Command::new(binary)
+        .args(["runtime", "init", &project_ref])
+        .output()
+        .expect("runtime init starts");
+    assert!(init.status.success());
+    let run = Command::new(binary)
+        .args([
+            "loop",
+            "fixture",
+            &config.config_path().display().to_string(),
+            "project-fixture",
+            "goal-fixture",
+            "loop-fixture-decision",
+            "task-fixture",
+            "local-fixture",
+            decision,
+            "fake observation",
+            "fake summary",
+        ])
+        .output()
+        .expect("fixture starts");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let events = EventLog::open(config.events_path())
+        .expect("event log opens")
+        .read_all()
+        .expect("events read");
+    assert_eq!(
+        events
+            .iter()
+            .find(|event| event.event_type == "model_call_completed")
+            .expect("model completion event")
+            .payload["decision"],
+        decision,
+    );
+    let status = StateStore::load(config.state_path())
+        .expect("state loads")
+        .loop_run("loop-fixture-decision")
+        .expect("loop exists")
+        .status;
+    let stdout = String::from_utf8(run.stdout).expect("UTF-8 output");
+    assert!(stdout.contains("model local-fixture started"));
+    assert!(stdout.contains("model local-fixture completed"));
+    fs::remove_dir_all(&config.data_root).expect("fixture data removed");
+    (stdout, events, status)
+}
+
+#[test]
+fn fixture_cli_complete_reports_the_audited_terminal_state() {
+    let (stdout, events, status) = fixture_decision_output("complete_loop");
+    assert_eq!(status, steerbox::domain::LoopStatus::Completed);
+    assert_eq!(
+        stdout
+            .matches("loop loop-fixture-decision completed")
+            .count(),
+        1
+    );
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "loop_completed"));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "human_intervention_required"));
+}
+
+#[test]
+fn fixture_cli_continue_does_not_report_a_false_terminal_state() {
+    let (stdout, events, status) = fixture_decision_output("continue_observation");
+    assert_eq!(status, steerbox::domain::LoopStatus::Running);
+    assert!(!stdout.contains("loop loop-fixture-decision completed"));
+    assert!(stdout.contains("continue observation; loop remains running"));
+    assert!(stdout.contains("loop_status=Running"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_call_completed"));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "loop_completed"));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "human_intervention_required"));
+}
+
+#[test]
+fn fixture_cli_request_human_reports_intervention_without_claiming_pause_or_completion() {
+    let (stdout, events, status) = fixture_decision_output("request_human");
+    assert_eq!(status, steerbox::domain::LoopStatus::Running);
+    assert!(!stdout.contains("loop loop-fixture-decision completed"));
+    assert!(!stdout.contains("loop loop-fixture-decision paused"));
+    assert!(stdout.contains("human intervention required"));
+    assert!(stdout.contains("loop_status=Running"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "human_intervention_required"));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "loop_completed" || event.event_type == "loop_paused"));
 }
 
 #[test]

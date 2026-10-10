@@ -119,6 +119,28 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 .ok_or_else(|| format!("execution not found: {loop_run_id}"))?;
             println!("{}", serde_json::to_string_pretty(&snapshot)?);
         }
+        (Some("execution"), Some("page")) => {
+            let path = args.next().ok_or("missing config path")?;
+            let loop_run_id = args.next().ok_or("missing loop_run_id")?;
+            let offset = args
+                .next()
+                .ok_or("missing offset")?
+                .parse::<usize>()
+                .map_err(|error| format!("invalid offset: {error}"))?;
+            let limit = args
+                .next()
+                .ok_or("missing limit")?
+                .parse::<usize>()
+                .map_err(|error| format!("invalid limit: {error}"))?;
+            // Pagination addresses this detached observation, not a live cursor or stream.
+            let config = RuntimeConfig::load(path)?;
+            let log = EventLog::open(config.events_path())?;
+            let query = ExecutionQuery::from_event_log(&log)?;
+            let page = query
+                .events_page(&loop_run_id, offset, limit)
+                .ok_or_else(|| format!("execution not found: {loop_run_id}"))?;
+            println!("{}", serde_json::to_string_pretty(&page)?);
+        }
         (Some("board"), Some("list")) => {
             let config_path = args.next().ok_or("missing config path")?;
             let config = RuntimeConfig::load(config_path)?;
@@ -257,14 +279,22 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
             let mut controller =
                 ReadOnlyLoopController::start(log, goal, loop_run_id, task_run_id, budget)?;
             let adapter = LocalFixtureModelAdapter::new(decision, summary);
-            let actual = controller.run_model_step(&adapter, model_id, "step-1", observation)?;
+            let actual =
+                controller.run_model_step(&adapter, model_id.clone(), "step-1", observation)?;
+            let progress_summary = match actual {
+                ModelDecision::CompleteLoop => "fixture decision: complete loop",
+                ModelDecision::ContinueObservation => "continue observation; loop remains running",
+                ModelDecision::RequestHuman => "human intervention required; loop remains running",
+            };
             reporter.completed(
                 ProgressSubject::Model,
-                "step-1",
-                Some("fixture decision"),
+                &model_id,
+                Some(progress_summary),
                 Some((1, 1)),
             )?;
-            reporter.completed(ProgressSubject::Loop, &trace_loop_run_id, None, None)?;
+            if actual == ModelDecision::CompleteLoop {
+                reporter.completed(ProgressSubject::Loop, &trace_loop_run_id, None, None)?;
+            }
             let events = EventLog::open(config.events_path())?.read_all()?;
             let state = StateStore::rebuild(&events)?;
             state.persist(config.state_path())?;
@@ -577,6 +607,7 @@ fn print_usage() {
     eprintln!("  steerbox event append <config.json> <event_type> <aggregate_type> <aggregate_id> <event_id> <correlation_id> [payload_json]");
     eprintln!("  steerbox execution list <config.json>");
     eprintln!("  steerbox execution show <config.json> <loop_run_id>");
+    eprintln!("  steerbox execution page <config.json> <loop_run_id> <offset> <limit>");
     eprintln!("  steerbox board list <config.json>");
     eprintln!("  steerbox loop readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <objective> <observation>");
     eprintln!("  steerbox loop fixture <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> [continue_observation|complete_loop|request_human] <observation> [summary]");
