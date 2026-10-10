@@ -52,6 +52,9 @@ fn readonly_cli_reopens_event_state_and_trace_artifacts() {
         "loop stderr: {}",
         String::from_utf8_lossy(&loop_run.stderr)
     );
+    let loop_stdout = String::from_utf8_lossy(&loop_run.stdout);
+    assert!(loop_stdout.contains("loop loop-cli started"));
+    assert!(loop_stdout.contains("loop loop-cli completed"));
 
     let events = EventLog::open(config.events_path())
         .expect("event log opens")
@@ -77,6 +80,42 @@ fn readonly_cli_reopens_event_state_and_trace_artifacts() {
         .expect("checkpoints read");
     assert_eq!(checkpoints.len(), 1);
     assert_eq!(checkpoints[0].loop_run_id, "loop-cli");
+
+    let history = Command::new(binary)
+        .args([
+            "execution",
+            "list",
+            &config.config_path().display().to_string(),
+        ])
+        .output()
+        .expect("execution list starts");
+    assert!(
+        history.status.success(),
+        "history stderr: {}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    let history_text = String::from_utf8_lossy(&history.stdout);
+    assert!(history_text.contains("loop-cli"));
+    assert!(history_text.contains("completed"));
+
+    let execution = Command::new(binary)
+        .args([
+            "execution",
+            "show",
+            &config.config_path().display().to_string(),
+            "loop-cli",
+        ])
+        .output()
+        .expect("execution show starts");
+    assert!(
+        execution.status.success(),
+        "execution stderr: {}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    let execution_text = String::from_utf8_lossy(&execution.stdout);
+    assert!(execution_text.contains("loop_started"));
+    assert!(execution_text.contains("loop_completed"));
+    assert!(!execution_text.contains("repository inspected"));
 
     let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
 }

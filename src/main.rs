@@ -11,11 +11,13 @@ use steerbox::domain::{
     EventEnvelope, GoalContract, HumanSteeringMode, LoopBudget, LoopStatus, RiskLevel,
 };
 use steerbox::event_log::EventLog;
+use steerbox::execution_query::ExecutionQuery;
 use steerbox::loop_controller::ReadOnlyLoopController;
 use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
 use steerbox::policy_gate::{PolicyDecision, PolicyGate, PolicyRequest};
 use steerbox::runtime_config::RuntimeConfig;
 use steerbox::state_store::StateStore;
+use steerbox::stream_reporter::{ProgressSubject, StreamReporter};
 use steerbox::tool_registry::{SideEffectClass, ToolProfile, ToolRegistry};
 use steerbox::workspace_edit::{edit_markdown, verify_markdown_links};
 
@@ -99,6 +101,24 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
             let sequence = log.append(event)?;
             println!("appended sequence={sequence}");
         }
+        (Some("execution"), Some("list")) => {
+            let path = args.next().ok_or("missing config path")?;
+            let config = RuntimeConfig::load(path)?;
+            let log = EventLog::open(config.events_path())?;
+            let query = ExecutionQuery::from_event_log(&log)?;
+            println!("{}", serde_json::to_string_pretty(&query.list())?);
+        }
+        (Some("execution"), Some("show")) => {
+            let path = args.next().ok_or("missing config path")?;
+            let loop_run_id = args.next().ok_or("missing loop_run_id")?;
+            let config = RuntimeConfig::load(path)?;
+            let log = EventLog::open(config.events_path())?;
+            let query = ExecutionQuery::from_event_log(&log)?;
+            let snapshot = query
+                .surface_snapshot(&loop_run_id)
+                .ok_or_else(|| format!("execution not found: {loop_run_id}"))?;
+            println!("{}", serde_json::to_string_pretty(&snapshot)?);
+        }
         (Some("board"), Some("list")) => {
             let config_path = args.next().ok_or("missing config path")?;
             let config = RuntimeConfig::load(config_path)?;
@@ -127,10 +147,20 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 vec!["manual_review".into()],
             );
             let budget = LoopBudget::new(1, 0, 0, 1, 0, 1, 1, 1);
+            let mut reporter = StreamReporter::new(std::io::stdout());
+            reporter.started(ProgressSubject::Loop, &loop_run_id, None, None)?;
+            reporter.started(ProgressSubject::Step, &step_id, None, Some((1, 1)))?;
             let mut controller =
                 ReadOnlyLoopController::start(log, goal, loop_run_id, task_run_id, budget)?;
             let step = controller.run_observation(step_id, observation)?;
             let run = controller.complete()?;
+            reporter.completed(
+                ProgressSubject::Step,
+                &step.step_id,
+                step.summary.as_deref(),
+                Some((1, 1)),
+            )?;
+            reporter.completed(ProgressSubject::Loop, &run.loop_run_id, None, None)?;
             let events = EventLog::open(config.events_path())?.read_all()?;
             let state = StateStore::rebuild(&events)?;
             state.persist(config.state_path())?;
@@ -221,10 +251,20 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 vec!["manual_review".into()],
             );
             let budget = LoopBudget::new(1, 0, 1, 1, 0, 1, 1, 1);
+            let mut reporter = StreamReporter::new(std::io::stdout());
+            reporter.started(ProgressSubject::Loop, &loop_run_id, None, None)?;
+            reporter.started(ProgressSubject::Model, &model_id, None, Some((1, 1)))?;
             let mut controller =
                 ReadOnlyLoopController::start(log, goal, loop_run_id, task_run_id, budget)?;
             let adapter = LocalFixtureModelAdapter::new(decision, summary);
             let actual = controller.run_model_step(&adapter, model_id, "step-1", observation)?;
+            reporter.completed(
+                ProgressSubject::Model,
+                "step-1",
+                Some("fixture decision"),
+                Some((1, 1)),
+            )?;
+            reporter.completed(ProgressSubject::Loop, &trace_loop_run_id, None, None)?;
             let events = EventLog::open(config.events_path())?.read_all()?;
             let state = StateStore::rebuild(&events)?;
             state.persist(config.state_path())?;
@@ -535,6 +575,8 @@ fn print_usage() {
     eprintln!("  steerbox config validate <config.json>");
     eprintln!("  steerbox event list <config.json>");
     eprintln!("  steerbox event append <config.json> <event_type> <aggregate_type> <aggregate_id> <event_id> <correlation_id> [payload_json]");
+    eprintln!("  steerbox execution list <config.json>");
+    eprintln!("  steerbox execution show <config.json> <loop_run_id>");
     eprintln!("  steerbox board list <config.json>");
     eprintln!("  steerbox loop readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <objective> <observation>");
     eprintln!("  steerbox loop fixture <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> [continue_observation|complete_loop|request_human] <observation> [summary]");

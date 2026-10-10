@@ -233,10 +233,12 @@ Memory 最小实现：
 ### P12. Model Registry、Prompt Resolution 与规则路由
 
 - [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（registry、关联校验、prompt 版本/role/task 查询已有测试；尚未接入 LoopController）
-- [ ] 接入至少一个真实 model adapter
+- [x] 建立 provider-neutral OpenAI-compatible adapter、fake transport 和严格错误分类（真实网络 transport、凭据解析和 LoopController 接线仍待实现）
+- [x] 建立 provider-to-`ModelAdapter` bridge（仅接受严格 `decision`/`summary` JSON envelope；自然语言不猜测）
+- [ ] 接入至少一个真实网络 model provider
 - [x] 接入 secret-free `LocalFixtureModelAdapter`，并记录结构化 model decision 事件
 - [ ] 配置 cheap/fast、strong/slow、specialized、evaluator 或 local profile fixture
-- [ ] 按 task type、agent role、能力、风险、成本和延迟执行规则式路由
+- [x] 实现按 task type、agent role、能力、风险、成本和延迟过滤与排序的规则式路由边界（尚未接入 LoopController）
 - [x] 定义并序列化 `RouteDecision`（实际规则路由和持久化仍待接线）
 - [x] 按 provider、model、role、task 定义最小 prompt binding 查询（完整 `ResolvedPromptPack` 解析仍待实现）
 - [x] 定义并序列化 `ModelCallRecord`、prompt 版本和验证状态（实际调用记录接线仍待实现）
@@ -280,6 +282,7 @@ Memory 最小实现：
 - [x] 记录已实现能力和占位能力
 - [x] 记录已知限制
 - [x] 明确运行数据写入 `/temp/steerbox/<project_ref>/.steerbox/`
+- [x] 增加 metadata-only execution history/query 投影、`execution list/show` CLI 和 detached snapshot 分页（底层仍使用 `read_all()`，不是 live cursor）
 - [x] 明确用户插话、计划失效和死循环停止契约
 
 验收：

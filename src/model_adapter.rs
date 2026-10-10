@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::provider_adapter::ProviderErrorClass;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRequest {
     pub model_id: String,
@@ -31,6 +33,10 @@ pub enum ModelAdapterError {
     EmptyModelId,
     #[error("model request objective must not be empty")]
     EmptyObjective,
+    #[error("provider response text did not contain a supported decision envelope")]
+    ProviderTextUnmappable,
+    #[error("provider call failed: {class:?}")]
+    Provider { class: ProviderErrorClass },
 }
 
 pub trait ModelAdapter {

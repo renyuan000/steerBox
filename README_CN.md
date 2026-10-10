@@ -77,7 +77,7 @@
 - 第一阶段主语言和构建工具已确定为 `Rust` + `Cargo`
 - 当前已实现并验证领域契约、配置校验、append-only JSONL EventLog（含分页读取）、StateStore 重建/持久化、Trace/Checkpoint/SideEffect 记录、GoalAlignment/DriftGuard 最小报告和只读 BoardProjection fixture
 - 当前开发垂直切片可执行受审批的 Markdown 文件修改与链接验证，成功/失败均写入 run summary；验证失败会保留事件、状态和摘要并以非零退出
-- 当前仍不是可连接真实模型并自主执行开发任务的 Agent：已有 secret-free fixture model adapter、本地 UserCommandInbox 持久化边界，以及 LoopController 在安全边界应用 `pause`/`resume`/`cancel` 的最小切片，但尚无真实 provider、多模型路由、takeover 控制面、常驻后台 worker、通用工具执行器或完整恢复闭环
+- 当前仍不是可连接真实网络模型并自主执行开发任务的 Agent：已有 secret-free fixture model adapter、provider-neutral OpenAI-compatible adapter/fake transport、严格 provider-to-ModelAdapter bridge、规则式多模型路由边界、metadata-only execution history/query 与 CLI 流式生命周期输出；但尚无真实网络 transport/凭据解析、LoopController 内部模型路由接线、动态 fallback 重试、takeover 控制面、常驻后台 worker 或完整恢复闭环
 - 用户中途接入后台任务已有设计契约，但没有常驻后台 worker 或可连接它的交互控制面；见 [Human Steering Modes](./docs/HUMAN_STEERING_MODES.md) 与 [Control Plane Discussion](./docs/CONTROL_PLANE_DISCUSSION.md)
 
 最小验证命令：
@@ -90,6 +90,8 @@ cargo run -- event list /temp/steerbox/demo-project/config.json
 cargo run -- event append /temp/steerbox/demo-project/config.json note_added note note-1 event-1 corr-1 '{"summary":"fixture"}'
 cargo run -- loop readonly /temp/steerbox/demo-project/config.json demo-project goal-1 loop-1 task-run-1 step-1 'inspect repository' 'repository inspected'
 cargo run -- loop fixture /temp/steerbox/demo-project/config.json demo-project goal-1 loop-2 task-run-2 local-fixture complete_loop 'repository inspected' 'fixture complete'
+cargo run -- execution list /temp/steerbox/demo-project/config.json
+cargo run -- execution show /temp/steerbox/demo-project/config.json loop-1
 ```
 
 当前 fixture loop 只使用本地结构化决策，不调用真实模型、不执行工具、不修改文件；它会记录 `model_call_started`、`model_call_completed`，以及 `complete_loop` 或 `request_human` 对应事件。运行数据固定写入 `/temp/steerbox/<project_ref>/.steerbox/`，不写入仓库工作区。
