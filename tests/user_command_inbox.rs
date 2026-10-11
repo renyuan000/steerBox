@@ -1,8 +1,16 @@
 use std::collections::VecDeque;
 use std::fs;
+use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use steerbox::user_command_inbox::UnixCommandReader;
 use steerbox::user_command_inbox::{
     CommandKind, CommandPollResult, CommandPoller, CommandRead, CommandStatus,
-    NonBlockingCommandReader, UserCommand, UserCommandInbox, UserCommandInboxError,
+    NonBlockingCommandReader, ReadCommandReader, UserCommand, UserCommandInbox,
+    UserCommandInboxError,
 };
 
 fn command(command_id: &str, payload: serde_json::Value) -> UserCommand {
@@ -40,6 +48,71 @@ impl NonBlockingCommandReader for ScriptedReader {
             })
         })
     }
+}
+
+struct ScriptedRead {
+    events: VecDeque<io::Result<Vec<u8>>>,
+}
+
+impl Read for ScriptedRead {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self.events.pop_front().expect("scripted read event") {
+            Ok(bytes) => {
+                buffer[..bytes.len()].copy_from_slice(&bytes);
+                Ok(bytes.len())
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+#[test]
+fn read_command_reader_maps_would_block_data_eof_and_io_error() {
+    let mut reader = ReadCommandReader::new(ScriptedRead {
+        events: VecDeque::from([
+            Err(io::Error::from(io::ErrorKind::WouldBlock)),
+            Ok(b"data".to_vec()),
+            Ok(Vec::new()),
+            Err(io::Error::from(io::ErrorKind::Interrupted)),
+        ]),
+    });
+
+    assert_eq!(
+        reader.read_available().expect("would block maps"),
+        CommandRead::NoInput
+    );
+    assert_eq!(
+        reader.read_available().expect("data maps"),
+        CommandRead::Data(b"data".to_vec())
+    );
+    assert_eq!(reader.read_available().expect("eof maps"), CommandRead::Eof);
+    assert!(matches!(
+        reader.read_available(),
+        Err(UserCommandInboxError::Io { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_command_reader_does_not_wait_for_pipe_input_and_detects_eof() {
+    let (mut writer, reader_side) = UnixStream::pair().expect("pipe pair creates");
+    let mut reader = UnixCommandReader::from_fd(reader_side.as_raw_fd()).expect("fd duplicates");
+    drop(reader_side);
+
+    assert_eq!(
+        reader.read_available().expect("empty pipe does not block"),
+        CommandRead::NoInput
+    );
+    writer.write_all(b"pipe-data").expect("pipe write succeeds");
+    assert_eq!(
+        reader.read_available().expect("pipe data reads"),
+        CommandRead::Data(b"pipe-data".to_vec())
+    );
+    drop(writer);
+    assert_eq!(
+        reader.read_available().expect("closed pipe reads eof"),
+        CommandRead::Eof
+    );
 }
 
 #[test]

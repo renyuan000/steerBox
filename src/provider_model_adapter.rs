@@ -1,7 +1,8 @@
 use crate::model_adapter::{
     ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest, ModelResponse,
-    DECISION_SYSTEM_PROMPT,
+    ModelResponseWithAction, DECISION_SYSTEM_PROMPT,
 };
+use crate::model_contracts::ModelActionEnvelope;
 use crate::provider_adapter::{
     OpenAiCompatibleAdapter, ProviderMessage, ProviderRequest, ProviderResponse, ProviderTransport,
 };
@@ -15,6 +16,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 struct DecisionEnvelope {
     decision: ModelDecision,
     summary: String,
+    action: Option<ModelActionEnvelope>,
 }
 
 /// Resolved completion evidence, not a persisted ModelCallRecord. The caller
@@ -136,6 +138,45 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
             input_context_hash,
         })
     }
+
+    /// Parse the strict decision envelope and retain an optional validated
+    /// action proposal. The legacy `complete` method remains source-compatible
+    /// for callers that only consume decision and summary.
+    pub fn complete_with_action(
+        &self,
+        request: ModelRequest,
+    ) -> Result<ModelResponseWithAction, ModelAdapterError> {
+        if request.model_id.trim().is_empty() {
+            return Err(ModelAdapterError::EmptyModelId);
+        }
+        if request.objective.trim().is_empty() {
+            return Err(ModelAdapterError::EmptyObjective);
+        }
+
+        let response = self
+            .provider
+            .complete(ProviderRequest {
+                model: request.model_id,
+                messages: vec![
+                    ProviderMessage::system(DECISION_SYSTEM_PROMPT),
+                    ProviderMessage::user(
+                        serde_json::json!({
+                            "objective": request.objective,
+                            "observation": request.observation,
+                        })
+                        .to_string(),
+                    ),
+                ],
+                auth_ref: self.auth_ref.clone(),
+                timeout_ms: self.timeout_ms,
+                stream: false,
+            })
+            .map_err(|error| ModelAdapterError::Provider {
+                class: error.class(),
+            })?;
+
+        parse_decision_with_action(&response.text)
+    }
 }
 
 impl<T: ProviderTransport> ModelAdapter for ProviderModelAdapter<T> {
@@ -171,16 +212,33 @@ impl<T: ProviderTransport> ModelAdapter for ProviderModelAdapter<T> {
 
         parse_decision(&response.text)
     }
+
+    fn complete_with_action(
+        &self,
+        request: ModelRequest,
+    ) -> Result<ModelResponseWithAction, ModelAdapterError> {
+        ProviderModelAdapter::complete_with_action(self, request)
+    }
 }
 
 fn parse_decision(text: &str) -> Result<ModelResponse, ModelAdapterError> {
+    parse_decision_with_action(text).map(ModelResponseWithAction::into_legacy)
+}
+
+fn parse_decision_with_action(text: &str) -> Result<ModelResponseWithAction, ModelAdapterError> {
     let envelope = serde_json::from_str::<DecisionEnvelope>(text)
         .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?;
     if envelope.summary.trim().is_empty() {
         return Err(ModelAdapterError::ProviderTextUnmappable);
     }
-    Ok(ModelResponse {
+    if let Some(action) = &envelope.action {
+        action
+            .validate()
+            .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?;
+    }
+    Ok(ModelResponseWithAction {
         decision: envelope.decision,
         summary: envelope.summary,
+        action: envelope.action,
     })
 }

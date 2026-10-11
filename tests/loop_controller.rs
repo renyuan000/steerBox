@@ -8,8 +8,11 @@ use steerbox::domain::{
     AttemptStatus, BudgetKind, GoalContract, LoopBudget, LoopStatus, TaskRunStatus,
 };
 use steerbox::event_log::EventLog;
-use steerbox::loop_controller::{LoopControllerError, ReadOnlyLoopController};
-use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
+use steerbox::loop_controller::{LoopControllerError, ModelActionRuntime, ReadOnlyLoopController};
+use steerbox::model_adapter::{
+    LocalFixtureModelAdapter, ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest,
+    ModelResponse, ModelResponseWithAction,
+};
 use steerbox::model_contracts::{ActionPathScope, ModelActionEnvelope, VerificationContract};
 use steerbox::policy_gate::{PolicyDecision, PolicyGate};
 use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
@@ -34,6 +37,30 @@ impl ProgressSink for RecordingSink {
     fn report(&mut self, event: ProgressEvent) -> std::io::Result<()> {
         self.0.lock().expect("recording sink lock").push(event);
         Ok(())
+    }
+}
+
+struct ActionFixtureAdapter {
+    action: ModelActionEnvelope,
+}
+
+impl ModelAdapter for ActionFixtureAdapter {
+    fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelAdapterError> {
+        Ok(ModelResponse {
+            decision: ModelDecision::ContinueObservation,
+            summary: "fixture action proposed".into(),
+        })
+    }
+
+    fn complete_with_action(
+        &self,
+        _request: ModelRequest,
+    ) -> Result<ModelResponseWithAction, ModelAdapterError> {
+        Ok(ModelResponseWithAction {
+            decision: ModelDecision::ContinueObservation,
+            summary: "fixture action proposed".into(),
+            action: Some(self.action.clone()),
+        })
     }
 }
 
@@ -146,6 +173,79 @@ fn controller_executes_model_action_through_policy_and_verification() {
     assert!(events
         .iter()
         .any(|event| event.event_type == "model_action_verified"));
+}
+
+#[test]
+fn model_step_routes_provider_action_through_policy_and_verification() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let action = ModelActionEnvelope {
+        schema_version: steerbox::model_contracts::MODEL_ACTION_SCHEMA_VERSION,
+        action_id: "action-model-step".into(),
+        tool_id: "git_status".into(),
+        parameters: serde_json::json!({"scope": "workspace"}),
+        path_scope: ActionPathScope {
+            root: workspace.display().to_string(),
+            allowed_paths: vec!["README.md".into()],
+        },
+        verification: VerificationContract {
+            verifier_tool_id: "markdown_link_check".into(),
+            parameters: serde_json::json!({"path": "README.md"}),
+        },
+    };
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-model-action",
+            "project-model-action",
+            "inspect repository",
+            vec!["git_status".into(), "markdown_link_check".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-model-action",
+        "task-run-model-action",
+        LoopBudget::new(2, 0, 1, 1, 0, 4, 1, 1),
+    )
+    .expect("loop starts");
+    let adapter = ActionFixtureAdapter { action };
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let action_runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+
+    let decision = controller
+        .run_model_step_with_action(
+            &adapter,
+            &action_runtime,
+            "fixture-action-model",
+            "step-model-action",
+            "repository observed",
+        )
+        .expect("model action step executes");
+    assert_eq!(decision, ModelDecision::ContinueObservation);
+
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_started"));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "tool_call_completed")
+            .count(),
+        2
+    );
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_verified"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "step_completed"));
 }
 
 #[test]

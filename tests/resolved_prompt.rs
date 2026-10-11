@@ -206,7 +206,7 @@ fn fixed_decision_output_contract_has_pinned_manifest_identity_and_version() {
     assert_eq!(metadata["output_contract"]["version"], 1);
     assert!(pack.messages()[0]
         .content
-        .contains("only decision and summary fields"));
+        .contains("decision and summary fields and an optional action field"));
 }
 
 #[test]

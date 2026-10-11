@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -153,6 +153,79 @@ pub enum CommandRead {
 /// A source that never waits for more command input.
 pub trait NonBlockingCommandReader {
     fn read_available(&mut self) -> Result<CommandRead, UserCommandInboxError>;
+}
+
+/// Adapts an injected [`Read`] implementation to the non-blocking command
+/// reader contract. The caller must provide a reader that is already
+/// configured not to block; this type only maps the read result.
+pub struct ReadCommandReader<R> {
+    reader: R,
+}
+
+impl<R> ReadCommandReader<R> {
+    pub fn new(reader: R) -> Self {
+        Self { reader }
+    }
+}
+
+impl<R: Read> NonBlockingCommandReader for ReadCommandReader<R> {
+    fn read_available(&mut self) -> Result<CommandRead, UserCommandInboxError> {
+        let mut bytes = [0_u8; 8192];
+        match self.reader.read(&mut bytes) {
+            Ok(0) => Ok(CommandRead::Eof),
+            Ok(count) => Ok(CommandRead::Data(bytes[..count].to_vec())),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Ok(CommandRead::NoInput)
+            }
+            Err(error) => Err(io_error(error)),
+        }
+    }
+}
+
+/// Unix file-descriptor adapter for stdin, pipes, and other byte streams.
+///
+/// The duplicated descriptor is configured with `O_NONBLOCK` and owns its
+/// duplicate independently of the caller's Rust handle. Windows has no
+/// implementation here yet; use [`ReadCommandReader`] with a platform-owned
+/// non-blocking `Read` implementation there.
+#[cfg(unix)]
+pub struct UnixCommandReader {
+    file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl UnixCommandReader {
+    pub fn from_fd(fd: std::os::fd::RawFd) -> Result<Self, UserCommandInboxError> {
+        use std::os::fd::FromRawFd;
+
+        let duplicated_fd = unsafe { libc::dup(fd) };
+        if duplicated_fd < 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+
+        let file = unsafe { std::fs::File::from_raw_fd(duplicated_fd) };
+        let flags = unsafe { libc::fcntl(duplicated_fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        if unsafe { libc::fcntl(duplicated_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(io_error(std::io::Error::last_os_error()));
+        }
+        Ok(Self { file })
+    }
+
+    pub fn stdin() -> Result<Self, UserCommandInboxError> {
+        use std::os::fd::AsRawFd;
+
+        Self::from_fd(std::io::stdin().as_raw_fd())
+    }
+}
+
+#[cfg(unix)]
+impl NonBlockingCommandReader for UnixCommandReader {
+    fn read_available(&mut self) -> Result<CommandRead, UserCommandInboxError> {
+        ReadCommandReader::new(&mut self.file).read_available()
+    }
 }
 
 #[allow(clippy::large_enum_variant)]

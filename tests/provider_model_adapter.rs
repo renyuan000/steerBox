@@ -57,6 +57,20 @@ fn request() -> ModelRequest {
     }
 }
 
+fn adapter_for_content(content: &str) -> ProviderModelAdapter<FakeTransport> {
+    ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new(
+            "provider-a",
+            "https://example.test/v1",
+            FakeTransport::response(&format!(
+                r#"{{"id":"chatcmpl-action","model":"provider-model","choices":[{{"message":{{"role":"assistant","content":{}}},"finish_reason":"stop"}}]}}"#,
+                serde_json::to_string(content).expect("content JSON")
+            )),
+        ),
+        None,
+    )
+}
+
 #[test]
 fn strict_provider_decision_envelope_maps_to_existing_model_response() {
     let transport = FakeTransport::response(
@@ -71,6 +85,40 @@ fn strict_provider_decision_envelope_maps_to_existing_model_response() {
 
     assert_eq!(response.decision, ModelDecision::CompleteLoop);
     assert_eq!(response.summary, "done");
+}
+
+#[test]
+fn structured_provider_response_retains_validated_action_without_breaking_legacy_response() {
+    let content = r#"{"decision":"continue_observation","summary":"inspect workspace","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"workspace"},"path_scope":{"root":"/tmp/workspace","allowed_paths":["workspace"]},"verification":{"verifier_tool_id":"git_status_verify","parameters":{"path":"workspace"}}}}"#;
+    let adapter = adapter_for_content(content);
+
+    let structured = adapter
+        .complete_with_action(request())
+        .expect("structured action response");
+    assert_eq!(structured.decision, ModelDecision::ContinueObservation);
+    assert_eq!(structured.summary, "inspect workspace");
+    assert!(structured.action.is_some());
+
+    let legacy = adapter.complete(request()).expect("legacy response");
+    assert_eq!(legacy.decision, ModelDecision::ContinueObservation);
+    assert_eq!(legacy.summary, "inspect workspace");
+}
+
+#[test]
+fn structured_provider_response_rejects_unknown_shell_and_out_of_scope_action_fields() {
+    let cases = [
+        r#"{"decision":"continue_observation","summary":"bad","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"workspace"},"path_scope":{"root":"/tmp/workspace","allowed_paths":["workspace"]},"verification":{"verifier_tool_id":"verify","parameters":{"path":"workspace"}},"extra":"reject"}}"#,
+        r#"{"decision":"continue_observation","summary":"bad","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"shell":"git status"},"path_scope":{"root":"/tmp/workspace","allowed_paths":["workspace"]},"verification":{"verifier_tool_id":"verify","parameters":{"path":"workspace"}}}}"#,
+        r#"{"decision":"continue_observation","summary":"bad","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"../outside"},"path_scope":{"root":"/tmp/workspace","allowed_paths":["workspace"]},"verification":{"verifier_tool_id":"verify","parameters":{"path":"workspace"}}}}"#,
+        r#"{"decision":"continue_observation","summary":"bad","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"token":"[REDACTED]"},"path_scope":{"root":"/tmp/workspace","allowed_paths":["workspace"]},"verification":{"verifier_tool_id":"verify","parameters":{"path":"workspace"}}}}"#,
+    ];
+
+    for content in cases {
+        let error = adapter_for_content(content)
+            .complete_with_action(request())
+            .expect_err("invalid action must fail closed");
+        assert_eq!(error, ModelAdapterError::ProviderTextUnmappable);
+    }
 }
 
 #[test]

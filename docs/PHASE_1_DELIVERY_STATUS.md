@@ -6,7 +6,7 @@
 
 本文是剩余验收的归并视图，不替代 [PHASE_1_CONTRACTS.md](PHASE_1_CONTRACTS.md)、[PHASE_1_IMPLEMENTATION_SCOPE.md](PHASE_1_IMPLEMENTATION_SCOPE.md)、[PHASE_1_TODO.md](PHASE_1_TODO.md) 或 [PHASE_1_VALIDATION_PLAN.md](PHASE_1_VALIDATION_PLAN.md)。对象、身份、授权、事件及恢复语义以 Contracts 为准，范围以 Scope 为准，逐项状态和验收用例分别回查 TODO 与 Validation。
 
-上一批全量 **188 项测试通过** 是历史证据。2026-10-11 master 最新复跑确认：Anthropic profile/binding **5 项**、Anthropic HTTP fixture **2 项**、ToolExecutor **9 项**、loop controller **24 项** focused 测试通过；随后 `cargo test --locked --all-targets --all-features --quiet`、全仓 clippy、全目标 build、fmt 和 diff 门禁均通过。这些是当前代码切片的回归证据，不代表下述六包或完整 Phase 1 已完成；本轮没有真实网络调用或真实凭据检查。
+上一批全量 **188 项测试通过** 是历史证据；其中的全目标 test、clippy、build、fmt 结果不能直接覆盖当前工作树。2026-10-11 master 本轮新复跑的 focused 结果见本文末尾；工作树中另有未审核的 acceptance/benchmark 产物，因此当前不把 `--all-targets` 全量状态标为通过。本轮没有真实网络调用或真实凭据检查。
 
 当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的 Markdown 修改／链接验证切片，不是模型自行提出任意文件修改。当前不能交付给用户作为任意 coding Agent，也不能声明完整 Phase 1 已完成。
 
@@ -71,14 +71,15 @@
 
 已有：
 
-- [model_adapter.rs](../src/model_adapter.rs) 的既有响应仍只有 continue_observation／complete_loop／request_human 与摘要；[model_contracts.rs](../src/model_contracts.rs) 新增了独立的版本化 `ModelActionEnvelope`，但尚未接入模型响应解析或执行链。
+- [model_adapter.rs](../src/model_adapter.rs) 保留旧的 continue_observation／complete_loop／request_human 与摘要兼容接口，并新增可选的 `ModelResponseWithAction`；[provider_model_adapter.rs](../src/provider_model_adapter.rs) 对 action 做严格 JSON、路径、shell 和敏感字段校验。
+- [loop_controller.rs](../src/loop_controller.rs) 新增 `run_model_step_with_action`：模型响应中的有限只读 action 会经过 `PolicyGate → ReadOnlyToolExecutor → verification`，并记录 `model_action_started`／`model_action_failed`／`model_action_verified` 事件；旧 `run_model_step` 不执行 action，保持兼容。
 - [loop_controller.rs](../src/loop_controller.rs) 已有模型步骤、policy 检查、固定 argv 的只读 `git_status` 执行，以及事件／trace／side-effect 记录。
 - [workspace_edit.rs](../src/workspace_edit.rs)、[main.rs](../src/main.rs) 已有受审批的 Markdown 精确修改、链接验证、checkpoint metadata 和成功／失败 RunSummary；[drift_guard.rs](../src/drift_guard.rs) 已有静态对齐／偏离检查。
 
 剩余：
 
-- 形成结构化、可校验的有限动作提案，将模型输出与执行授权分离；未知工具、非法参数、越界路径及未经审批的动作必须在副作用发生前阻断。
-- 把经 PolicyGate 允许的有限工具／修改、checkpoint／side-effect boundary、验证结果和失败原因连回下一模型步；模型说 complete 不得替代真实验证。
+- 将同一 action 接线扩展到 `run_resolved_model_step` 的真实 prompt／ModelCallStore 路径，并把 tool_call_count、verification_status 和输出引用写入模型调用审计。
+- 扩展文件读／写／edit、Bash 等副作用工具；每项都必须有 PolicyGate、checkpoint／side-effect ledger、写后验证和失败恢复边界。模型说 complete 不得替代真实验证。
 - 将 goal alignment／drift 检查及 ToolCallRecord／VerificationResult 的适用关联接入实际链；限制模型、工具、步骤、重试和无进展，不允许无限自循环。
 
 可复现验收证据：现有入口为 `cargo test --test loop_controller --test tool_policy --test tool_executor --test workspace_edit --test dev_vertical_slice --test drift_guard`。新增受控闭环验收须让模型提出一次限定文件修改，验证器检查实际产物后将结果回传，最终 summary 可反查各步骤、policy、工具、diff boundary、验证及副作用。另覆盖越界／未注册／未审批的零副作用路径、验证失败后不伪报成功和预算耗尽停止。现有手工指定 Markdown 替换输入不能作为模型提出动作的证据。
@@ -91,7 +92,7 @@
 
 - [main.rs](../src/main.rs) 提供 runtime init、config validate、event、execution list/show/page、board、loop readonly/fixture 和 dev markdown；没有已交付的真实模型开发任务入口。
 - [stream_reporter.rs](../src/stream_reporter.rs) 已接入 readonly／fixture CLI 的生命周期反馈；[execution_query.rs](../src/execution_query.rs) 是 metadata-only detached 历史投影，不是后台 live worker。
-- inbox/controller 已支持 pause／resume／cancel 安全边界应用；新增的注入式 `CommandPoller` 可在下一安全边界前提交完整命令，但真实 OS stdin、同步模型调用期间轮询和 CLI 尚未提供可连接运行任务的控制入口。
+- inbox/controller 已支持 pause／resume／cancel 安全边界应用；`ReadCommandReader` 和 Unix `UnixCommandReader` 已把非阻塞 `Read`／stdin/pipe 接到 `CommandPoller` 的 reader 边界，并保留注入式测试路径，但尚未接到常驻后台 loop、同步模型调用期间轮询或 CLI live control。
 
 剩余：
 
@@ -142,7 +143,7 @@
 
 ## 验收记录与范围保护
 
-2026-10-11 master 复跑记录：focused provider-binding／provider-model／resolved-provider 测试合计 17 项通过；全量 test、clippy、build、fmt 和 diff 门禁均退出 0；构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
+2026-10-11 master 复跑记录：`user_command_inbox` 13 项、`provider_model_adapter` 7 项、`state_store` 6 项、`loop_controller` 25 项 focused 测试通过；本轮新增的模型 action 接线回归覆盖模型响应→PolicyGate→两次只读工具执行→verification。构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。工作树中另有未审核的 `tests/acceptance/` 与 `tests/benchmarks/` 产物，不能据此声称当前 `--all-targets` 全量通过；真实 provider、真实任务、resolved action、文件写入／Bash、跨进程恢复仍未验收。
 
 每包交接记录应给出代码基线、实际执行命令、结果／退出码、产物位置与证据引用、已验证范围及未通过项。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
 

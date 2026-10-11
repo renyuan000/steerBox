@@ -10,6 +10,7 @@ use crate::domain::{
 use crate::event_log::{EventLog, EventLogError};
 use crate::model_adapter::{
     ModelAdapter, ModelAdapterError, ModelAdapterRegistry, ModelDecision, ModelRequest,
+    ModelResponseWithAction,
 };
 use crate::model_call_store::{ModelCallStore, ModelCallStoreError};
 use crate::model_contracts::{
@@ -123,6 +124,29 @@ pub struct ModelActionExecution {
     pub action_id: String,
     pub action_output: ToolCallOutput,
     pub verification_output: ToolCallOutput,
+}
+
+pub struct ModelActionRuntime<'a> {
+    pub registry: &'a ToolRegistry,
+    pub gate: &'a PolicyGate,
+    pub executor: &'a ReadOnlyToolExecutor,
+    pub workspace: &'a std::path::Path,
+}
+
+impl<'a> ModelActionRuntime<'a> {
+    pub fn new(
+        registry: &'a ToolRegistry,
+        gate: &'a PolicyGate,
+        executor: &'a ReadOnlyToolExecutor,
+        workspace: &'a std::path::Path,
+    ) -> Self {
+        Self {
+            registry,
+            gate,
+            executor,
+            workspace,
+        }
+    }
 }
 
 impl ReadOnlyLoopController {
@@ -538,6 +562,24 @@ impl ReadOnlyLoopController {
         self.run_model_step_with_route(adapter, model_id, step_id, observation, None)
     }
 
+    pub fn run_model_step_with_action<A: ModelAdapter + ?Sized>(
+        &mut self,
+        adapter: &A,
+        runtime: &ModelActionRuntime<'_>,
+        model_id: impl Into<String>,
+        step_id: impl Into<String>,
+        observation: impl Into<String>,
+    ) -> Result<ModelDecision, LoopControllerError> {
+        self.run_model_step_with_route_and_action(
+            model_id,
+            step_id,
+            observation,
+            None,
+            Some(runtime),
+            |request| adapter.complete_with_action(request),
+        )
+    }
+
     /// Execute a resolved provider call and persist its audit record before
     /// publishing completion events. This path is intentionally separate from
     /// the legacy fixture adapter path, which has no resolved prompt or wire hash.
@@ -819,6 +861,36 @@ impl ReadOnlyLoopController {
         observation: impl Into<String>,
         route_decision_id: Option<&str>,
     ) -> Result<ModelDecision, LoopControllerError> {
+        self.run_model_step_with_route_and_action(
+            model_id,
+            step_id,
+            observation,
+            route_decision_id,
+            None,
+            |request| {
+                adapter
+                    .complete(request)
+                    .map(|response| ModelResponseWithAction {
+                        decision: response.decision,
+                        summary: response.summary,
+                        action: None,
+                    })
+            },
+        )
+    }
+
+    fn run_model_step_with_route_and_action<F>(
+        &mut self,
+        model_id: impl Into<String>,
+        step_id: impl Into<String>,
+        observation: impl Into<String>,
+        route_decision_id: Option<&str>,
+        action_context: Option<&ModelActionRuntime<'_>>,
+        complete: F,
+    ) -> Result<ModelDecision, LoopControllerError>
+    where
+        F: FnOnce(ModelRequest) -> Result<ModelResponseWithAction, ModelAdapterError>,
+    {
         self.prepare_step_action()?;
         if let Err(kind) = self.budget.consume_step() {
             self.append_model_event(
@@ -914,7 +986,7 @@ impl ReadOnlyLoopController {
             Some("model call started"),
             None,
         )?;
-        let response = match adapter.complete(request) {
+        let response = match complete(request) {
             Ok(response) => response,
             Err(error) => {
                 self.append_model_event(
@@ -967,6 +1039,44 @@ impl ReadOnlyLoopController {
             Some(model_decision_progress_summary(decision)),
             None,
         )?;
+        if let (Some(context), Some(action)) = (action_context, response.action.as_ref()) {
+            if let Err(error) = self.execute_model_action(
+                context.registry,
+                context.gate,
+                context.executor,
+                context.workspace,
+                action,
+                step_id.clone(),
+            ) {
+                self.append_model_event(
+                    "model_action_failed",
+                    &format!("{step_id}:action_failed"),
+                    json!({
+                        "action_id": action.action_id,
+                        "tool_id": action.tool_id,
+                        "error": error.to_string(),
+                    }),
+                )?;
+                append_step_event(
+                    &mut self.event_log,
+                    &self.goal,
+                    &self.loop_run,
+                    &step,
+                    "step_failed",
+                    &format!("{step_id}:action_failed"),
+                    json!({"summary": error.to_string()}),
+                    self.task_run.current_attempt_id.clone(),
+                )?;
+                self.report_progress(
+                    ProgressSubject::Step,
+                    step.step_id.clone(),
+                    ProgressStatus::Failed,
+                    Some("action execution failed"),
+                    None,
+                )?;
+                return Err(error);
+            }
+        }
         if decision == ModelDecision::RequestHuman {
             self.append_model_event(
                 "human_intervention_required",

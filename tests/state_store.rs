@@ -158,6 +158,41 @@ fn state_store_persists_and_reopens_current_projection() {
 }
 
 #[test]
+fn state_store_persists_and_reopens_paused_loop_status() {
+    let events = vec![
+        event(
+            "loop-started-paused",
+            "loop_started",
+            "loop_run",
+            "loop-paused-reopen",
+            serde_json::json!({
+                "goal_id": "goal-paused-reopen",
+                "task_run_id": "run-paused-reopen"
+            }),
+        ),
+        event(
+            "loop-paused-reopen-event",
+            "loop_paused",
+            "loop_run",
+            "loop-paused-reopen",
+            serde_json::json!({}),
+        ),
+    ];
+    let state = StateStore::rebuild(&events).expect("paused state rebuilds");
+    let path = temp_path("paused-reopen");
+    state.persist(&path).expect("paused state persists");
+
+    let reopened = StateStore::load(&path).expect("paused state reopens");
+    let loop_state = reopened
+        .loop_run("loop-paused-reopen")
+        .expect("paused loop projection exists");
+    assert_eq!(loop_state.status, LoopStatus::Paused);
+    assert_eq!(loop_state.goal_id, "goal-paused-reopen");
+    assert_eq!(loop_state.task_run_id, "run-paused-reopen");
+    fs::remove_file(path).expect("temporary paused state removes");
+}
+
+#[test]
 fn concurrent_state_persists_do_not_share_a_temporary_file() {
     let path = temp_path("concurrent");
     let state = StateStore::default();
