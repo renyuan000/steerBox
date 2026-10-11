@@ -85,6 +85,68 @@ fn append_and_read_all_preserve_append_only_order() {
 }
 
 #[test]
+fn read_page_returns_a_bounded_slice_of_non_blank_records() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let store = ModelCallStore::open(&file).expect("store opens");
+
+    for id in ["call-1", "call-2", "call-3", "call-4"] {
+        store.append(&record(id)).expect("record appends");
+    }
+
+    assert_eq!(
+        store.read_page(1, 2).expect("page reads"),
+        [record("call-2"), record("call-3")]
+    );
+}
+
+#[test]
+fn read_page_counts_blank_lines_out_of_the_offset() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let first = serde_json::to_string(&record("call-1")).expect("record encodes");
+    let second = serde_json::to_string(&record("call-2")).expect("record encodes");
+    let third = serde_json::to_string(&record("call-3")).expect("record encodes");
+    fs::write(&file, format!("{first}\n\n \t\n{second}\n{third}\n")).expect("fixture writes");
+    let store = ModelCallStore::open(&file).expect("store opens");
+
+    assert_eq!(
+        store.read_page(1, 1).expect("page reads"),
+        [record("call-2")]
+    );
+}
+
+#[test]
+fn read_page_handles_empty_and_out_of_range_requests() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let store = ModelCallStore::open(&file).expect("store opens");
+    store.append(&record("call-1")).expect("record appends");
+
+    assert!(store.read_page(0, 0).expect("empty page reads").is_empty());
+    assert!(store
+        .read_page(10, 2)
+        .expect("out-of-range page reads")
+        .is_empty());
+}
+
+#[test]
+fn read_page_reports_invalid_records_before_the_requested_page() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let first = serde_json::to_string(&record("call-1")).expect("record encodes");
+    fs::write(&file, format!("{first}\n\nnot-json\n")).expect("fixture writes");
+    let store = ModelCallStore::open(&file).expect("store opens");
+
+    assert!(matches!(
+        store
+            .read_page(1, 1)
+            .expect_err("invalid history must fail"),
+        ModelCallStoreError::InvalidJson { line: 3, .. }
+    ));
+}
+
+#[test]
 fn missing_model_call_log_reads_as_empty() {
     let directory = TestDirectory::new();
     let file = directory.file();

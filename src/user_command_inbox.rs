@@ -140,6 +140,8 @@ pub enum UserCommandInboxError {
     CommandNotFound { command_id: String },
     #[error("user command input ended with an incomplete line")]
     PartialLineAtEof,
+    #[error("user command line exceeds maximum size of {max_bytes} bytes")]
+    InputLineTooLong { max_bytes: usize },
 }
 
 /// The result of one non-blocking read from an injected command source.
@@ -236,6 +238,9 @@ pub enum CommandPollResult {
     Eof,
 }
 
+/// Maximum command line size used by [`CommandPoller::new`].
+pub const DEFAULT_MAX_COMMAND_LINE_BYTES: usize = 1024 * 1024;
+
 /// Incrementally extracts complete JSONL commands without treating partial bytes
 /// as a command. The reader is injected so platform-specific descriptors remain
 /// outside this domain module and the state machine is deterministic in tests.
@@ -243,15 +248,21 @@ pub struct CommandPoller<R: NonBlockingCommandReader> {
     reader: R,
     buffer: Vec<u8>,
     line_number: usize,
+    max_line_bytes: usize,
     eof: bool,
 }
 
 impl<R: NonBlockingCommandReader> CommandPoller<R> {
     pub fn new(reader: R) -> Self {
+        Self::new_with_max_line_bytes(reader, DEFAULT_MAX_COMMAND_LINE_BYTES)
+    }
+
+    pub fn new_with_max_line_bytes(reader: R, max_line_bytes: usize) -> Self {
         Self {
             reader,
             buffer: Vec::new(),
             line_number: 0,
+            max_line_bytes,
             eof: false,
         }
     }
@@ -271,6 +282,7 @@ impl<R: NonBlockingCommandReader> CommandPoller<R> {
                 command.validate()?;
                 return Ok(CommandPollResult::Command(command));
             }
+            self.ensure_partial_line_within_limit()?;
             if self.eof {
                 return if self.buffer.is_empty() {
                     Ok(CommandPollResult::Eof)
@@ -293,6 +305,11 @@ impl<R: NonBlockingCommandReader> CommandPoller<R> {
         let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') else {
             return Ok(None);
         };
+        if newline > self.max_line_bytes {
+            return Err(UserCommandInboxError::InputLineTooLong {
+                max_bytes: self.max_line_bytes,
+            });
+        }
         let line_bytes: Vec<u8> = self.buffer.drain(..=newline).collect();
         self.line_number += 1;
         let line_bytes = line_bytes.strip_suffix(b"\n").unwrap_or(&line_bytes);
@@ -304,6 +321,15 @@ impl<R: NonBlockingCommandReader> CommandPoller<R> {
             }
         })?;
         Ok(Some(line))
+    }
+
+    fn ensure_partial_line_within_limit(&self) -> Result<(), UserCommandInboxError> {
+        if !self.buffer.contains(&b'\n') && self.buffer.len() > self.max_line_bytes {
+            return Err(UserCommandInboxError::InputLineTooLong {
+                max_bytes: self.max_line_bytes,
+            });
+        }
+        Ok(())
     }
 }
 

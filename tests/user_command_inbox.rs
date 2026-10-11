@@ -255,6 +255,37 @@ fn poll_keeps_partial_json_until_a_complete_line_arrives() {
 }
 
 #[test]
+fn poll_rejects_unterminated_line_over_configured_limit_before_reading_again() {
+    let mut poller = CommandPoller::new_with_max_line_bytes(
+        ScriptedReader::new([
+            Ok(CommandRead::Data(b"12345".to_vec())),
+            Err(UserCommandInboxError::Io {
+                message: "reader must not be called after limit breach".into(),
+            }),
+        ]),
+        4,
+    );
+
+    assert!(matches!(
+        poller.poll(),
+        Err(UserCommandInboxError::InputLineTooLong { max_bytes: 4 })
+    ));
+}
+
+#[test]
+fn poll_rejects_complete_line_over_configured_limit() {
+    let mut poller = CommandPoller::new_with_max_line_bytes(
+        ScriptedReader::new([Ok(CommandRead::Data(b"12345\n".to_vec()))]),
+        4,
+    );
+
+    assert!(matches!(
+        poller.poll(),
+        Err(UserCommandInboxError::InputLineTooLong { max_bytes: 4 })
+    ));
+}
+
+#[test]
 fn poll_returns_one_command_per_complete_line() {
     let first = command("line-1", serde_json::json!({"reason": "first"}));
     let second = command("line-2", serde_json::json!({"reason": "second"}));

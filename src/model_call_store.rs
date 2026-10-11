@@ -79,4 +79,48 @@ impl ModelCallStore {
             })
             .collect()
     }
+
+    /// Read a bounded page of non-blank JSONL records without loading the full log.
+    pub fn read_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
+        let mut records = Vec::new();
+        if limit == 0 || !self.path.exists() {
+            return Ok(records);
+        }
+
+        let reader = BufReader::new(File::open(&self.path)?);
+        let mut record_index = 0usize;
+        for (line_index, line) in reader.lines().enumerate() {
+            let line = line.map_err(ModelCallStoreError::Io)?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let record = serde_json::from_str::<ModelCallRecord>(&line).map_err(|source| {
+                ModelCallStoreError::InvalidJson {
+                    line: line_index + 1,
+                    source,
+                }
+            })?;
+            record
+                .validate()
+                .map_err(|source| ModelCallStoreError::InvalidContractAtLine {
+                    line: line_index + 1,
+                    source,
+                })?;
+
+            if record_index >= offset {
+                records.push(record);
+                if records.len() >= limit {
+                    break;
+                }
+            }
+            record_index += 1;
+        }
+
+        Ok(records)
+    }
 }
