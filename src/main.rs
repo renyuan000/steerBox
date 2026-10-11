@@ -20,6 +20,7 @@ use steerbox::runtime_config::RuntimeConfig;
 use steerbox::state_store::StateStore;
 use steerbox::stream_reporter::StreamReporter;
 use steerbox::tool_registry::{SideEffectClass, ToolProfile, ToolRegistry};
+use steerbox::user_command_inbox::{UserCommand, UserCommandEntry, UserCommandInbox};
 use steerbox::workspace_edit::{edit_markdown, verify_markdown_links};
 
 fn main() {
@@ -165,6 +166,30 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                     "count": model_calls.len(),
                     "model_calls": model_calls,
                 }))?
+            );
+        }
+        (Some("command"), Some("submit")) => {
+            let path = args.next().ok_or("missing config path")?;
+            let command_json = args.next().ok_or("missing command JSON")?;
+            let config = RuntimeConfig::load(path)?;
+            let command = serde_json::from_str::<UserCommand>(&command_json)
+                .map_err(|error| format!("invalid command JSON: {error}"))?;
+            let inbox = UserCommandInbox::open(config.commands_path());
+            let entry = inbox.submit(command)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&command_metadata(&entry))?
+            );
+        }
+        (Some("command"), Some("show")) => {
+            let path = args.next().ok_or("missing config path")?;
+            let command_id = args.next().ok_or("missing command_id")?;
+            let config = RuntimeConfig::load(path)?;
+            let inbox = UserCommandInbox::open(config.commands_path());
+            let entry = inbox.latest(&command_id)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&command_metadata(&entry))?
             );
         }
         (Some("board"), Some("list")) => {
@@ -620,6 +645,8 @@ fn print_usage() {
     eprintln!("  steerbox execution show <config.json> <loop_run_id>");
     eprintln!("  steerbox execution page <config.json> <loop_run_id> <offset> <limit>");
     eprintln!("  steerbox model-call page <config.json> <offset> <limit>");
+    eprintln!("  steerbox command submit <config.json> <command-json>");
+    eprintln!("  steerbox command show <config.json> <command_id>");
     eprintln!("  steerbox board list <config.json>");
     eprintln!("  steerbox loop readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <objective> <observation>");
     eprintln!("  steerbox loop fixture <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> [continue_observation|complete_loop|request_human] <observation> [summary]");
@@ -651,6 +678,25 @@ fn append_runtime_event(
     event.loop_run_id = Some(loop_run_id.into());
     event.step_id = step_id.map(str::to_owned);
     Ok(log.append(event)?)
+}
+
+fn command_metadata(entry: &UserCommandEntry) -> Value {
+    let command = &entry.command;
+    serde_json::json!({
+        "command_id": command.command_id,
+        "actor_ref": command.actor_ref,
+        "project_id": command.project_id,
+        "goal_id": command.goal_id,
+        "task_run_id": command.task_run_id,
+        "loop_run_id": command.loop_run_id,
+        "command_kind": command.command_kind,
+        "correlation_id": command.correlation_id,
+        "expected_object_version": command.expected_object_version,
+        "requested_at": command.requested_at,
+        "status": entry.status,
+        "updated_at": entry.updated_at,
+        "payload_omitted": true,
+    })
 }
 
 fn parse_model_decision(value: &str) -> Result<ModelDecision, Box<dyn Error>> {

@@ -98,6 +98,10 @@ impl RuntimeConfig {
         self.data_root.join(".steerbox").join("model-calls.jsonl")
     }
 
+    pub fn commands_path(&self) -> PathBuf {
+        self.data_root.join(".steerbox").join("commands.jsonl")
+    }
+
     pub fn state_path(&self) -> PathBuf {
         self.data_root.join(".steerbox").join("state.json")
     }

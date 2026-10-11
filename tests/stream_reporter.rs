@@ -1,8 +1,10 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
+use steerbox::provider_adapter::ProviderStreamEvent;
 use steerbox::stream_reporter::{
-    ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject, StreamReporter,
+    report_provider_stream, ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject,
+    StreamReporter,
 };
 
 #[test]
@@ -194,6 +196,118 @@ fn rejects_invalid_progress_and_flushes_each_visible_event() {
 }
 
 #[test]
+fn bridges_provider_stream_in_order_without_emitting_delta_payloads() {
+    let events = [
+        ProviderStreamEvent::delta("request-1", "provider-model", "hel"),
+        ProviderStreamEvent::delta("request-1", "provider-model", "lo"),
+        ProviderStreamEvent::completed("request-1", "provider-model", "stop"),
+    ];
+    let mut output = Vec::new();
+    let mut reporter = StreamReporter::new(&mut output);
+
+    report_provider_stream(&mut reporter, "provider-model", &events).unwrap();
+
+    let text = String::from_utf8(output).unwrap();
+    let lines = text.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 4);
+    assert_eq!(
+        lines[0],
+        "model provider-model started - model stream started"
+    );
+    assert_eq!(
+        lines[1],
+        "model provider-model progress - model stream received 3 characters"
+    );
+    assert_eq!(
+        lines[2],
+        "model provider-model progress - model stream received 5 characters"
+    );
+    assert_eq!(
+        lines[3],
+        "model provider-model completed - model stream completed (5 characters)"
+    );
+    assert!(!text.contains("hel"));
+    assert!(!text.contains("lo"));
+    assert!(!text.contains("token"));
+}
+
+#[test]
+fn provider_stream_bridge_rejects_empty_incomplete_and_delta_free_sequences() {
+    let cases: &[(&[ProviderStreamEvent], &str)] = &[
+        (&[], "provider stream contains no events"),
+        (
+            &[ProviderStreamEvent::completed(
+                "request-2",
+                "provider-model",
+                "stop",
+            )],
+            "provider stream has no delta before completed event",
+        ),
+        (
+            &[ProviderStreamEvent::delta(
+                "request-3",
+                "provider-model",
+                "text",
+            )],
+            "provider stream has no completed event",
+        ),
+    ];
+
+    for (events, message) in cases {
+        let mut output = Vec::new();
+        let mut reporter = StreamReporter::new(&mut output);
+        let error = report_provider_stream(&mut reporter, "provider-model", events)
+            .expect_err("invalid provider stream must fail closed");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), *message);
+        assert!(output.is_empty());
+    }
+}
+
+#[test]
+fn provider_stream_bridge_rejects_mixed_request_or_model_identity() {
+    let cases = [
+        [
+            ProviderStreamEvent::delta("request-1", "provider-model", "text"),
+            ProviderStreamEvent::completed("request-2", "provider-model", "stop"),
+        ],
+        [
+            ProviderStreamEvent::delta("request-1", "provider-model", "text"),
+            ProviderStreamEvent::completed("request-1", "other-model", "stop"),
+        ],
+    ];
+
+    for events in cases {
+        let mut output = Vec::new();
+        let mut reporter = StreamReporter::new(&mut output);
+        let error = report_provider_stream(&mut reporter, "provider-model", &events)
+            .expect_err("provider identity mismatch must fail closed");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(output.is_empty());
+    }
+}
+
+#[test]
+fn provider_stream_bridge_propagates_sink_errors() {
+    struct FailingSink;
+
+    impl ProgressSink for FailingSink {
+        fn report(&mut self, _event: ProgressEvent) -> io::Result<()> {
+            Err(io::Error::other("sink failed"))
+        }
+    }
+
+    let events = [
+        ProviderStreamEvent::delta("request-4", "provider-model", "text"),
+        ProviderStreamEvent::completed("request-4", "provider-model", "stop"),
+    ];
+    let error = report_provider_stream(&mut FailingSink, "provider-model", &events)
+        .expect_err("sink failure must propagate");
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(error.to_string(), "sink failed");
+}
+
+#[test]
 fn redacts_sensitive_values_and_does_not_emit_reasoning() {
     let mut output = Vec::new();
     let mut reporter = StreamReporter::new(&mut output);
@@ -214,6 +328,33 @@ fn redacts_sensitive_values_and_does_not_emit_reasoning() {
     assert!(!text.contains("hunter2"));
     assert!(!text.contains("chain-of-thought"));
     assert!(!text.contains("hidden"));
+}
+
+#[test]
+fn redacts_underscore_spaced_and_authorization_sensitive_values() {
+    let cases = [
+        ("access_token=secret", "secret"),
+        ("bearer_token=secret", "secret"),
+        ("password = hunter2", "hunter2"),
+        ("authorization: Bearer secret", "secret"),
+    ];
+
+    for (summary, secret) in cases {
+        let mut output = Vec::new();
+        let mut reporter = StreamReporter::new(&mut output);
+        reporter
+            .failed(ProgressSubject::Model, "model-3", Some(summary), None)
+            .unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(
+            !text.contains(secret),
+            "secret leaked in {summary:?}: {text}"
+        );
+        assert!(
+            text.contains("[REDACTED]"),
+            "value was not redacted: {text}"
+        );
+    }
 }
 
 #[test]

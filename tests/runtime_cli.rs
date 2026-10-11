@@ -9,6 +9,7 @@ use steerbox::model_call_store::ModelCallStore;
 use steerbox::model_contracts::ModelCallRecord;
 use steerbox::runtime_config::RuntimeConfig;
 use steerbox::state_store::StateStore;
+use steerbox::user_command_inbox::{CommandKind, CommandStatus, UserCommandInbox};
 
 fn project_ref() -> String {
     let nonce = SystemTime::now()
@@ -44,6 +45,110 @@ fn model_call_record(id: &str) -> ModelCallRecord {
         completed_at: Some("2026-10-11T00:00:01Z".into()),
         created_at: "2026-10-11T00:00:01Z".into(),
     }
+}
+
+#[test]
+fn command_cli_submits_and_shows_metadata_without_payload() {
+    let project_ref = project_ref();
+    let config = RuntimeConfig::default_for_project(project_ref.clone()).expect("config builds");
+    let _ = fs::remove_dir_all(&config.data_root);
+    let binary = env!("CARGO_BIN_EXE_steerbox");
+
+    let init = Command::new(binary)
+        .args(["runtime", "init", &project_ref])
+        .output()
+        .expect("runtime init starts");
+    assert!(
+        init.status.success(),
+        "init stderr: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let command_json = r#"{"command_id":"command-cli-1","actor_ref":"user-cli","project_id":"project-cli","goal_id":"goal-cli","task_run_id":"task-run-cli","loop_run_id":"loop-cli","command_kind":"steer","correlation_id":"corr-cli-1","expected_object_version":null,"requested_at":"2026-10-11T00:00:00Z","payload":{"instruction":"pause after current safe boundary"}}"#;
+    let submit = Command::new(binary)
+        .args([
+            "command",
+            "submit",
+            &config.config_path().display().to_string(),
+            command_json,
+        ])
+        .output()
+        .expect("command submit starts");
+    assert!(
+        submit.status.success(),
+        "submit stderr: {}",
+        String::from_utf8_lossy(&submit.stderr)
+    );
+    let submit_json: serde_json::Value =
+        serde_json::from_slice(&submit.stdout).expect("submit metadata is JSON");
+    assert_eq!(submit_json["command_id"], "command-cli-1");
+    assert_eq!(submit_json["status"], "pending");
+    assert_eq!(submit_json["payload_omitted"], true);
+    assert!(submit_json.get("payload").is_none());
+    assert!(!String::from_utf8_lossy(&submit.stdout).contains("pause after current safe boundary"));
+
+    let show = Command::new(binary)
+        .args([
+            "command",
+            "show",
+            &config.config_path().display().to_string(),
+            "command-cli-1",
+        ])
+        .output()
+        .expect("command show starts");
+    assert!(
+        show.status.success(),
+        "show stderr: {}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+    let show_json: serde_json::Value =
+        serde_json::from_slice(&show.stdout).expect("show metadata is JSON");
+    assert_eq!(show_json["command_id"], "command-cli-1");
+    assert_eq!(show_json["status"], "pending");
+    assert!(show_json.get("payload").is_none());
+
+    let entries = UserCommandInbox::open(config.commands_path())
+        .read_all()
+        .expect("command inbox reopens");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].status, CommandStatus::Pending);
+    assert_eq!(entries[0].command.command_kind, CommandKind::Steer);
+    assert_eq!(
+        entries[0].command.payload["instruction"],
+        "pause after current safe boundary"
+    );
+
+    let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
+}
+
+#[test]
+fn command_cli_rejects_unknown_command_fields() {
+    let project_ref = project_ref();
+    let config = RuntimeConfig::default_for_project(project_ref.clone()).expect("config builds");
+    let _ = fs::remove_dir_all(&config.data_root);
+    let binary = env!("CARGO_BIN_EXE_steerbox");
+
+    let init = Command::new(binary)
+        .args(["runtime", "init", &project_ref])
+        .output()
+        .expect("runtime init starts");
+    assert!(init.status.success());
+
+    let command_json = r#"{"command_id":"command-cli-unknown","actor_ref":"user-cli","project_id":"project-cli","goal_id":"goal-cli","task_run_id":"task-run-cli","loop_run_id":"loop-cli","command_kind":"steer","correlation_id":"corr-cli-unknown","requested_at":"2026-10-11T00:00:00Z","payload":{},"unexpected":"reject me"}"#;
+    let submit = Command::new(binary)
+        .args([
+            "command",
+            "submit",
+            &config.config_path().display().to_string(),
+            command_json,
+        ])
+        .output()
+        .expect("command submit starts");
+    assert!(!submit.status.success());
+    assert!(String::from_utf8_lossy(&submit.stderr).contains("unknown field"));
+    assert!(!config.commands_path().exists());
+
+    let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
 }
 
 #[test]

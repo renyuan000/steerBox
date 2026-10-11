@@ -2,13 +2,13 @@
 
 ## 定位与证据边界
 
-状态核对日期：2026-10-11。已提交代码基线为 `8bd0860`，当前工作树还包含未提交的 Anthropic profile binding、只读工具执行、模型动作闭环、bounded runtime tick、StreamReporter 进度刷新和 model-call 分页 CLI 切片；未提交代码仍须以本文末尾的实际验证命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
+状态核对日期：2026-10-11。已提交代码基线为 `b73daa4`，当前工作树还包含待精确提交的 command submit/show CLI、provider stream 到安全进度事件 bridge，以及此前的 Anthropic profile binding、只读工具执行、模型动作闭环、bounded runtime tick、StreamReporter 进度刷新和 model-call 分页 CLI 切片；未提交代码仍须以本文末尾的实际验证命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
 
 本文是剩余验收的归并视图，不替代 [PHASE_1_CONTRACTS.md](PHASE_1_CONTRACTS.md)、[PHASE_1_IMPLEMENTATION_SCOPE.md](PHASE_1_IMPLEMENTATION_SCOPE.md)、[PHASE_1_TODO.md](PHASE_1_TODO.md) 或 [PHASE_1_VALIDATION_PLAN.md](PHASE_1_VALIDATION_PLAN.md)。对象、身份、授权、事件及恢复语义以 Contracts 为准，范围以 Scope 为准，逐项状态和验收用例分别回查 TODO 与 Validation。
 
 上一批全量 **188 项测试通过** 是历史证据；其中的全目标 test、clippy、build、fmt 结果不能直接覆盖当前工作树。2026-10-11 master 本轮新复跑的 focused 结果见本文末尾；工作树中另有未审核的 acceptance/benchmark 产物，因此当前不把 `--all-targets` 全量状态标为通过。本轮没有真实网络调用或真实凭据检查。
 
-当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、bounded `read_file`、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 已支持 action/progress、非法进度拒绝和逐事件 flush；model-call 审计已有独立分页 CLI。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的 Markdown 修改／链接验证切片，不是模型自行提出任意文件修改。当前不能交付给用户作为任意 coding Agent，也不能声明完整 Phase 1 已完成。
+当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、bounded `read_file`、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 已支持 action/progress、非法进度拒绝、逐事件 flush，并可把已验证 provider delta 序列转换为不暴露正文的 model lifecycle 进度；command submit/show CLI 只返回 metadata 并把 command 持久化到 inbox。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的 Markdown 修改／链接验证切片，不是模型自行提出任意文件修改。当前不能交付给用户作为任意 coding Agent，也不能声明完整 Phase 1 已完成。
 
 ## 六个交付包
 
@@ -144,7 +144,7 @@
 
 ## 验收记录与范围保护
 
-2026-10-11 master 复跑记录：前一批 focused 命令中 `loop_controller` 28 项、`user_command_inbox` 22 项、`stream_reporter` 7 项、`tool_executor` 9 项、`runtime_cli` 9 项通过，共 75 项；本轮新增 `provider_model_adapter` 9 项、`model_router` 10 项、`tool_executor` 11 项、`tool_policy` 7 项通过，共 37 项，累计记录 112 项（其中 `tool_executor` 的 9 项是前一批子集，不重复计数时为 103 项独立测试结果）。本轮覆盖 provider stream 边界、纯 fallback 选择、显式审批的 Markdown edit、PolicyGate 门禁，以及既有 RuntimeTick/controller safe-boundary、model-call 分页 CLI、StreamReporter action/progress/flush、bounded `read_file` 和 raw tool output 脱敏。随后同范围 clippy `-D warnings`、rustfmt 和 `git diff --check` 均通过。构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。工作树中另有未审核的 `tests/acceptance/` 与 `tests/benchmarks/` 产物，不能据此声称当前 `--all-targets` 全量通过；真实 provider、真实任务、文件写入／Bash、常驻后台 worker、跨进程恢复仍未验收。
+2026-10-11 master 复跑记录：此前已记录 `loop_controller` 28 项、`user_command_inbox` 22 项、`provider_model_adapter` 9 项、`model_router` 10 项、`tool_executor` 11 项、`tool_policy` 7 项等 focused 结果；本轮重新执行 `runtime_cli` 10 项与 `stream_reporter` 10 项，均通过。新增覆盖 command submit/show 的 metadata-only 输出与 inbox 持久化，以及 provider stream 的非空、delta-before-completed、身份一致性、sink 错误和正文不外泄边界。对应 clippy `-D warnings`、rustfmt 和 `git diff --check` 均通过。构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。工作树中另有未审核的 `tests/acceptance/` 与 `tests/benchmarks/` 产物，不能据此声称当前 `--all-targets` 全量通过；真实 provider、真实任务、文件写入／Bash、常驻后台 worker、跨进程恢复仍未验收。
 
 每包交接记录应给出代码基线、实际执行命令、结果／退出码、产物位置与证据引用、已验证范围及未通过项。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
 

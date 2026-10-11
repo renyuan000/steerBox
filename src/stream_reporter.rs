@@ -1,5 +1,7 @@
 use std::io::{self, Write};
 
+use crate::provider_adapter::ProviderStreamEvent;
+
 /// The runtime object whose progress is being reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressSubject {
@@ -62,6 +64,119 @@ pub struct ProgressEvent {
 /// Output boundary used by the runtime and replaceable by a CLI, TUI, API, or test sink.
 pub trait ProgressSink {
     fn report(&mut self, event: ProgressEvent) -> io::Result<()>;
+}
+
+/// Bridge a validated provider stream into safe, user-visible lifecycle
+/// events. Delta payloads are intentionally reduced to cumulative character
+/// counts; the provider text and token counts never enter the progress sink.
+pub fn report_provider_stream<S: ProgressSink + ?Sized>(
+    sink: &mut S,
+    model_id: &str,
+    events: &[ProviderStreamEvent],
+) -> io::Result<()> {
+    validate_provider_stream(events)?;
+    if model_id.trim().is_empty() {
+        return Err(stream_contract_error("provider stream model id is empty"));
+    }
+
+    sink.report(ProgressEvent {
+        subject: ProgressSubject::Model,
+        subject_id: model_id.to_owned(),
+        status: ProgressStatus::Started,
+        summary: Some("model stream started".into()),
+        progress: None,
+    })?;
+
+    let mut cumulative_chars = 0u32;
+    for event in events {
+        let ProviderStreamEvent::Delta { text, .. } = event else {
+            continue;
+        };
+        cumulative_chars = cumulative_chars
+            .checked_add(text.chars().count().try_into().map_err(|_| {
+                stream_contract_error("provider stream delta character count overflow")
+            })?)
+            .ok_or_else(|| stream_contract_error("provider stream character count overflow"))?;
+        sink.report(ProgressEvent {
+            subject: ProgressSubject::Model,
+            subject_id: model_id.to_owned(),
+            status: ProgressStatus::Progress,
+            summary: Some(format!(
+                "model stream received {cumulative_chars} characters"
+            )),
+            progress: None,
+        })?;
+    }
+
+    sink.report(ProgressEvent {
+        subject: ProgressSubject::Model,
+        subject_id: model_id.to_owned(),
+        status: ProgressStatus::Completed,
+        summary: Some(format!(
+            "model stream completed ({cumulative_chars} characters)"
+        )),
+        progress: None,
+    })
+}
+
+fn validate_provider_stream(events: &[ProviderStreamEvent]) -> io::Result<()> {
+    if events.is_empty() {
+        return Err(stream_contract_error("provider stream contains no events"));
+    }
+    let Some(completed_index) = events
+        .iter()
+        .position(|event| matches!(event, ProviderStreamEvent::Completed { .. }))
+    else {
+        return Err(stream_contract_error(
+            "provider stream has no completed event",
+        ));
+    };
+    if completed_index != events.len() - 1 {
+        return Err(stream_contract_error(
+            "provider stream completed event must be last",
+        ));
+    }
+    if !events[..completed_index]
+        .iter()
+        .any(|event| matches!(event, ProviderStreamEvent::Delta { .. }))
+    {
+        return Err(stream_contract_error(
+            "provider stream has no delta before completed event",
+        ));
+    }
+    let (expected_request_id, expected_model) = match &events[0] {
+        ProviderStreamEvent::Delta {
+            request_id, model, ..
+        }
+        | ProviderStreamEvent::Completed {
+            request_id, model, ..
+        } => (request_id, model),
+    };
+    if expected_request_id.trim().is_empty() || expected_model.trim().is_empty() {
+        return Err(stream_contract_error(
+            "provider stream event identity fields must be non-empty",
+        ));
+    }
+    for event in events {
+        let (request_id, model) = match event {
+            ProviderStreamEvent::Delta {
+                request_id, model, ..
+            }
+            | ProviderStreamEvent::Completed {
+                request_id, model, ..
+            } => (request_id, model),
+        };
+        if request_id != expected_request_id || model != expected_model {
+            return Err(stream_contract_error(
+                "provider stream event identity does not match",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn stream_contract_error(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
 /// A deliberately small, synchronous reporter. It does not own a global stdout/stderr handle
@@ -288,20 +403,32 @@ fn sanitize_summary(summary: &str) -> Option<String> {
         if !redacted.is_empty() {
             redacted.push(' ');
         }
-        redacted.push_str(&redact_token(token));
-        if sensitive_key(token).is_some() && token.ends_with(['=', ':']) {
-            index += 1;
+        if let Some(key) = sensitive_key(token) {
+            redacted.push_str(&format!("{key}=[REDACTED]"));
+            if token.ends_with(['=', ':']) {
+                index += if key.eq_ignore_ascii_case("authorization")
+                    && tokens
+                        .get(index + 1)
+                        .is_some_and(|value| value.eq_ignore_ascii_case("bearer"))
+                {
+                    2
+                } else {
+                    1
+                };
+            }
+        } else if index + 2 < tokens.len()
+            && tokens[index + 1].len() == 1
+            && tokens[index + 1].starts_with(['=', ':'])
+            && sensitive_key(&format!("{}=", token)).is_some()
+        {
+            redacted.push_str(&format!("{}=[REDACTED]", token));
+            index += 2;
+        } else {
+            redacted.push_str(token);
         }
         index += 1;
     }
     Some(truncate(&redacted, 240))
-}
-
-fn redact_token(token: &str) -> String {
-    let Some(key) = sensitive_key(token) else {
-        return token.to_owned();
-    };
-    format!("{key}=[REDACTED]")
 }
 
 fn sensitive_key(token: &str) -> Option<&str> {
@@ -309,11 +436,12 @@ fn sensitive_key(token: &str) -> Option<&str> {
     let key = &token[..separator];
     let normalized_key = key
         .chars()
-        .filter(|character| character.is_ascii_alphanumeric() || *character == '_')
+        .filter(|character| character.is_ascii_alphanumeric())
         .collect::<String>()
         .to_ascii_lowercase();
     if [
         "token",
+        "bearertoken",
         "accesstoken",
         "refreshtoken",
         "sessiontoken",

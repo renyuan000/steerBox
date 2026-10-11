@@ -32,6 +32,7 @@ pub enum CommandStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct UserCommand {
     pub command_id: String,
     pub actor_ref: String,
