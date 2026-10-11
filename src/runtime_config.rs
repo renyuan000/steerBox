@@ -1,4 +1,5 @@
-use crate::http_transport::{CredentialResolver, HttpProviderTransport};
+use crate::anthropic_adapter::{AnthropicAdapter, AnthropicTransport};
+use crate::http_transport::{CredentialResolver, HttpAnthropicTransport, HttpProviderTransport};
 use crate::provider_model_adapter::ProviderModelAdapter;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -27,6 +28,10 @@ pub enum ConfigError {
     ModelProfileNotFound { model_id: String },
     #[error("HTTP provider transport could not be constructed")]
     HttpTransportBuild,
+    #[error("Anthropic adapter requires provider `anthropic`, got `{provider}`")]
+    UnsupportedAnthropicProvider { provider: String },
+    #[error("Anthropic adapter requires capability `{capability}`")]
+    UnsupportedAnthropicCapability { capability: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -137,6 +142,52 @@ impl RuntimeConfig {
             transport,
         );
         Ok(ProviderModelAdapter::new(provider, profile.auth_ref.clone()).with_model_id(model_id))
+    }
+
+    pub fn build_anthropic_adapter<T: AnthropicTransport>(
+        &self,
+        model_id: &str,
+        transport: T,
+    ) -> Result<AnthropicAdapter<T>, ConfigError> {
+        let profile = self
+            .model_profiles
+            .iter()
+            .find(|profile| profile.model_id == model_id)
+            .ok_or_else(|| ConfigError::ModelProfileNotFound {
+                model_id: model_id.to_owned(),
+            })?;
+        if profile.provider != "anthropic" {
+            return Err(ConfigError::UnsupportedAnthropicProvider {
+                provider: profile.provider.clone(),
+            });
+        }
+        if !profile
+            .capabilities
+            .iter()
+            .any(|capability| capability == "text")
+        {
+            return Err(ConfigError::UnsupportedAnthropicCapability {
+                capability: "text".to_owned(),
+            });
+        }
+
+        Ok(AnthropicAdapter::new(
+            profile.provider.clone(),
+            profile.endpoint.clone(),
+            transport,
+            profile.auth_ref.clone(),
+        )
+        .with_model_id(model_id))
+    }
+
+    pub fn build_http_anthropic_adapter<R: CredentialResolver>(
+        &self,
+        model_id: &str,
+        resolver: R,
+    ) -> Result<AnthropicAdapter<HttpAnthropicTransport<R>>, ConfigError> {
+        let transport =
+            HttpAnthropicTransport::new(resolver).map_err(|_| ConfigError::HttpTransportBuild)?;
+        self.build_anthropic_adapter(model_id, transport)
     }
 
     pub fn write_json(&self, path: impl AsRef<Path>) -> Result<(), ConfigError> {

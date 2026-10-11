@@ -12,7 +12,9 @@ use crate::model_adapter::{
     ModelAdapter, ModelAdapterError, ModelAdapterRegistry, ModelDecision, ModelRequest,
 };
 use crate::model_call_store::{ModelCallStore, ModelCallStoreError};
-use crate::model_contracts::{ModelCallRecord, ModelContractError, RouteDecision};
+use crate::model_contracts::{
+    ModelActionEnvelope, ModelCallRecord, ModelContractError, RouteDecision, VerificationContract,
+};
 use crate::model_router::{ModelRouter, ModelRouterError, RouteRequest};
 use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequest};
 use crate::provider_adapter::ProviderTransport;
@@ -114,6 +116,13 @@ pub struct ReadOnlyLoopController {
     command_inbox: Option<UserCommandInbox>,
     strategy: Option<StrategyDecision>,
     strategy_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelActionExecution {
+    pub action_id: String,
+    pub action_output: ToolCallOutput,
+    pub verification_output: ToolCallOutput,
 }
 
 impl ReadOnlyLoopController {
@@ -1163,6 +1172,77 @@ impl ReadOnlyLoopController {
         Ok(output)
     }
 
+    /// Execute one validated model action through policy, a fixed read-only
+    /// executor, and its declared verification tool. No free-form shell input
+    /// is accepted by this path.
+    pub fn execute_model_action(
+        &mut self,
+        registry: &ToolRegistry,
+        gate: &PolicyGate,
+        executor: &ReadOnlyToolExecutor,
+        workspace: &std::path::Path,
+        action: &ModelActionEnvelope,
+        step_id: impl Into<String>,
+    ) -> Result<ModelActionExecution, LoopControllerError> {
+        action.validate()?;
+        executor.map_action(registry, workspace, action)?;
+        let step_id = step_id.into();
+        self.append_model_event(
+            "model_action_started",
+            &format!("{step_id}:action_started"),
+            json!({"action_id": action.action_id, "tool_id": action.tool_id}),
+        )?;
+        let action_output = self.execute_read_only_tool(
+            registry,
+            gate,
+            executor,
+            workspace,
+            ToolCallInput {
+                tool_id: action.tool_id.clone(),
+                arguments: action.parameters.clone(),
+            },
+            step_id.clone(),
+        )?;
+
+        let verification_action = ModelActionEnvelope {
+            schema_version: action.schema_version,
+            action_id: action.action_id.clone(),
+            tool_id: action.verification.verifier_tool_id.clone(),
+            parameters: action.verification.parameters.clone(),
+            path_scope: action.path_scope.clone(),
+            verification: VerificationContract {
+                verifier_tool_id: action.verification.verifier_tool_id.clone(),
+                parameters: action.verification.parameters.clone(),
+            },
+        };
+        executor.map_action(registry, workspace, &verification_action)?;
+        let verification_output = self.execute_read_only_tool(
+            registry,
+            gate,
+            executor,
+            workspace,
+            ToolCallInput {
+                tool_id: verification_action.tool_id.clone(),
+                arguments: verification_action.parameters.clone(),
+            },
+            format!("{step_id}:verification"),
+        )?;
+        self.append_model_event(
+            "model_action_verified",
+            &format!("{step_id}:action_verified"),
+            json!({
+                "action_id": action.action_id,
+                "tool_id": action.tool_id,
+                "verifier_tool_id": action.verification.verifier_tool_id,
+            }),
+        )?;
+        Ok(ModelActionExecution {
+            action_id: action.action_id.clone(),
+            action_output,
+            verification_output,
+        })
+    }
+
     fn record_tool_audit(
         &self,
         registry: &ToolRegistry,
@@ -1461,6 +1541,7 @@ fn tool_failure_payload(
         ToolExecutionError::InvalidWorkspace(_) | ToolExecutionError::OutsideWorkspace(_) => {
             FailureCategory::Permission
         }
+        ToolExecutionError::UnsafeToolProfile(_) => FailureCategory::Permission,
         ToolExecutionError::NotRegistered(_)
         | ToolExecutionError::NotImplemented(_)
         | ToolExecutionError::InvalidArguments

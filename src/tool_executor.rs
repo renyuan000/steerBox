@@ -1,8 +1,11 @@
-use crate::tool_registry::ToolRegistry;
+use crate::domain::RiskLevel;
+use crate::model_contracts::ModelActionEnvelope;
+use crate::tool_registry::{SideEffectClass, ToolRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fs;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,6 +26,13 @@ pub struct ToolCallOutput {
     pub result: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructuredToolAction {
+    GitStatus,
+    RgFixed { query: String, path: String },
+    MarkdownLinkCheck { path: String },
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ToolExecutionError {
     #[error("tool is not registered: {0}")]
@@ -31,6 +41,8 @@ pub enum ToolExecutionError {
     NotImplemented(String),
     #[error("tool arguments must be an object")]
     InvalidArguments,
+    #[error("tool profile is not a safe read-only profile: {0}")]
+    UnsafeToolProfile(String),
     #[error("workspace does not exist or is not a directory: {0}")]
     InvalidWorkspace(String),
     #[error("tool path is outside workspace: {0}")]
@@ -49,6 +61,54 @@ pub enum ToolExecutionError {
 pub struct ReadOnlyToolExecutor;
 
 impl ReadOnlyToolExecutor {
+    /// Map a validated model action to one of the fixed read-only tool shapes.
+    /// This performs no process execution and never accepts a shell command.
+    pub fn map_action(
+        &self,
+        registry: &ToolRegistry,
+        workspace: &Path,
+        action: &ModelActionEnvelope,
+    ) -> Result<StructuredToolAction, ToolExecutionError> {
+        action
+            .validate()
+            .map_err(|_| ToolExecutionError::InvalidArguments)?;
+        if !workspace.is_dir() {
+            return Err(ToolExecutionError::InvalidWorkspace(
+                workspace.display().to_string(),
+            ));
+        }
+        if action.path_scope.root != workspace.display().to_string() {
+            return Err(ToolExecutionError::OutsideWorkspace(
+                action.path_scope.root.clone(),
+            ));
+        }
+        let profile = registry
+            .get(&action.tool_id)
+            .ok_or_else(|| ToolExecutionError::NotRegistered(action.tool_id.clone()))?;
+        ensure_read_only_profile(profile)?;
+        match profile.recipe_ref.as_deref() {
+            Some("git-status-readonly") => {
+                require_exact_keys(&action.parameters, &["scope"])?;
+                if action.parameters["scope"] != "workspace" {
+                    return Err(ToolExecutionError::InvalidArguments);
+                }
+                Ok(StructuredToolAction::GitStatus)
+            }
+            Some("rg-fixed-search") => {
+                require_exact_keys(&action.parameters, &["path", "query"])?;
+                let path = required_string(&action.parameters, "path")?;
+                let query = required_string(&action.parameters, "query")?;
+                Ok(StructuredToolAction::RgFixed { query, path })
+            }
+            Some("markdown-link-check") => {
+                require_exact_keys(&action.parameters, &["path"])?;
+                let path = required_string(&action.parameters, "path")?;
+                Ok(StructuredToolAction::MarkdownLinkCheck { path })
+            }
+            _ => Err(ToolExecutionError::NotImplemented(action.tool_id.clone())),
+        }
+    }
+
     pub fn execute(
         &self,
         registry: &ToolRegistry,
@@ -58,6 +118,7 @@ impl ReadOnlyToolExecutor {
         let profile = registry
             .get(&input.tool_id)
             .ok_or_else(|| ToolExecutionError::NotRegistered(input.tool_id.clone()))?;
+        ensure_read_only_profile(profile)?;
         if !input.arguments.is_object() {
             return Err(ToolExecutionError::InvalidArguments);
         }
@@ -89,8 +150,189 @@ impl ReadOnlyToolExecutor {
                 }),
             });
         }
+        if profile.recipe_ref.as_deref() == Some("rg-fixed-search") {
+            require_exact_keys(&input.arguments, &["path", "query"])?;
+            let path = required_string(&input.arguments, "path")?;
+            let query = required_string(&input.arguments, "query")?;
+            let path = resolve_workspace_path(workspace, &path)?;
+            let mut command = Command::new("rg");
+            command
+                .args([
+                    "--fixed-strings",
+                    "--line-number",
+                    "--no-heading",
+                    "--color",
+                    "never",
+                    "--",
+                ])
+                .arg(&query)
+                .arg(&path)
+                .current_dir(workspace)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let output = run_bounded_command(command)?;
+            let summary = output.stdout.text.clone();
+            return Ok(ToolCallOutput {
+                summary: summary.clone(),
+                result: serde_json::json!({
+                    "tool_id": input.tool_id,
+                    "workspace": workspace,
+                    "path": path,
+                    "query": query,
+                    "executed": true,
+                    "exit_code": output.status.code(),
+                    "stdout": summary,
+                    "stdout_truncated": output.stdout.truncated,
+                    "stderr": output.stderr.text,
+                    "stderr_truncated": output.stderr.truncated,
+                }),
+            });
+        }
+        if profile.recipe_ref.as_deref() == Some("markdown-link-check") {
+            require_exact_keys(&input.arguments, &["path"])?;
+            let relative_path = required_string(&input.arguments, "path")?;
+            let path = resolve_workspace_path(workspace, &relative_path)?;
+            let content = read_bounded_file(&path)?;
+            let missing = markdown_missing_links(workspace, &relative_path, &content);
+            let summary = if missing.is_empty() {
+                format!("checked {relative_path}: no missing local links")
+            } else {
+                format!(
+                    "checked {relative_path}: {} missing local link(s)",
+                    missing.len()
+                )
+            };
+            return Ok(ToolCallOutput {
+                summary,
+                result: serde_json::json!({
+                    "tool_id": input.tool_id,
+                    "workspace": workspace,
+                    "path": relative_path,
+                    "executed": true,
+                    "missing_local_links": missing,
+                }),
+            });
+        }
         Err(ToolExecutionError::NotImplemented(input.tool_id))
     }
+}
+
+fn ensure_read_only_profile(
+    profile: &crate::tool_registry::ToolProfile,
+) -> Result<(), ToolExecutionError> {
+    if profile.side_effect_class != SideEffectClass::None || profile.risk_level != RiskLevel::Low {
+        return Err(ToolExecutionError::UnsafeToolProfile(
+            profile.tool_id.clone(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_exact_keys(value: &Value, expected: &[&str]) -> Result<(), ToolExecutionError> {
+    let object = value
+        .as_object()
+        .ok_or(ToolExecutionError::InvalidArguments)?;
+    if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
+        return Err(ToolExecutionError::InvalidArguments);
+    }
+    Ok(())
+}
+
+fn required_string(value: &Value, key: &'static str) -> Result<String, ToolExecutionError> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or(ToolExecutionError::InvalidArguments)
+}
+
+fn resolve_workspace_path(workspace: &Path, relative: &str) -> Result<PathBuf, ToolExecutionError> {
+    if relative.trim().is_empty()
+        || relative.starts_with('/')
+        || relative.contains('\\')
+        || relative.chars().any(char::is_control)
+    {
+        return Err(ToolExecutionError::OutsideWorkspace(relative.to_owned()));
+    }
+    let relative_path = Path::new(relative);
+    if relative_path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(ToolExecutionError::OutsideWorkspace(relative.to_owned()));
+    }
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|_| ToolExecutionError::InvalidWorkspace(workspace.display().to_string()))?;
+    let candidate = workspace.join(relative_path);
+    if candidate.exists() {
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|_| ToolExecutionError::OutsideWorkspace(relative.to_owned()))?;
+        if !canonical.starts_with(&workspace) {
+            return Err(ToolExecutionError::OutsideWorkspace(relative.to_owned()));
+        }
+        Ok(canonical)
+    } else {
+        Ok(candidate)
+    }
+}
+
+fn read_bounded_file(path: &Path) -> Result<String, ToolExecutionError> {
+    let file = fs::File::open(path).map_err(|_| ToolExecutionError::OutputCollectionFailed)?;
+    let mut bytes = Vec::new();
+    file.take((MAX_OUTPUT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ToolExecutionError::OutputCollectionFailed)?;
+    let truncated = bytes.len() > MAX_OUTPUT_BYTES;
+    bytes.truncate(MAX_OUTPUT_BYTES);
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+    while text.len() > MAX_OUTPUT_BYTES {
+        text.pop();
+    }
+    if truncated {
+        text.push_str("\n[truncated]");
+    }
+    Ok(text)
+}
+
+fn markdown_missing_links(workspace: &Path, markdown_path: &str, content: &str) -> Vec<String> {
+    let base = Path::new(markdown_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let mut missing = Vec::new();
+    let mut remaining = content;
+    while let Some(start) = remaining.find("](") {
+        let target_start = start + 2;
+        let Some(end) = remaining[target_start..].find(')') else {
+            break;
+        };
+        let target = remaining[target_start..target_start + end].trim();
+        let target = target.split_whitespace().next().unwrap_or_default();
+        if !target.is_empty()
+            && !target.starts_with('#')
+            && !target.contains("://")
+            && !target.starts_with("mailto:")
+        {
+            let target_path = target.split('#').next().unwrap_or_default();
+            if !target_path.is_empty() {
+                let candidate = base.join(target_path);
+                let candidate_text = candidate.to_string_lossy();
+                if resolve_workspace_path(workspace, &candidate_text).is_err()
+                    || !workspace.join(&candidate).exists()
+                {
+                    missing.push(target_path.to_owned());
+                }
+            }
+        }
+        remaining = &remaining[target_start + end + 1..];
+    }
+    missing.sort();
+    missing.dedup();
+    missing
 }
 
 struct CapturedOutput {

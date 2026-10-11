@@ -10,6 +10,7 @@ use steerbox::domain::{
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{LoopControllerError, ReadOnlyLoopController};
 use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
+use steerbox::model_contracts::{ActionPathScope, ModelActionEnvelope, VerificationContract};
 use steerbox::policy_gate::{PolicyDecision, PolicyGate};
 use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
 use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallInput};
@@ -78,6 +79,121 @@ fn controller_reports_safe_lifecycle_metadata_without_payloads() {
     assert!(events
         .iter()
         .all(|event| { event.summary.as_deref() != Some("secret observation must not stream") }));
+}
+
+#[test]
+fn controller_executes_model_action_through_policy_and_verification() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let root = workspace.display().to_string();
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-action",
+            "project-action",
+            "inspect repository",
+            vec!["git_status".into(), "markdown_link_check".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-action",
+        "task-run-action",
+        LoopBudget::new(2, 0, 0, 1, 0, 4, 1, 1),
+    )
+    .expect("loop starts");
+
+    let action = ModelActionEnvelope {
+        schema_version: steerbox::model_contracts::MODEL_ACTION_SCHEMA_VERSION,
+        action_id: "action-read-status".into(),
+        tool_id: "git_status".into(),
+        parameters: serde_json::json!({"scope": "workspace"}),
+        path_scope: ActionPathScope {
+            root,
+            allowed_paths: vec!["README.md".into()],
+        },
+        verification: VerificationContract {
+            verifier_tool_id: "markdown_link_check".into(),
+            parameters: serde_json::json!({"path": "README.md"}),
+        },
+    };
+
+    let execution = controller
+        .execute_model_action(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &PolicyGate::new(),
+            &ReadOnlyToolExecutor,
+            &workspace,
+            &action,
+            "step-action",
+        )
+        .expect("model action executes and verifies");
+    assert_eq!(execution.action_id, "action-read-status");
+    assert!(execution.action_output.result["executed"]
+        .as_bool()
+        .unwrap());
+    assert!(execution.verification_output.result["executed"]
+        .as_bool()
+        .unwrap());
+
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_started"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_verified"));
+}
+
+#[test]
+fn controller_rejects_free_shell_model_action_before_policy_or_execution() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let action = ModelActionEnvelope {
+        schema_version: steerbox::model_contracts::MODEL_ACTION_SCHEMA_VERSION,
+        action_id: "action-shell".into(),
+        tool_id: "rg_fixed".into(),
+        parameters: serde_json::json!({"command": "git status", "path": "README.md"}),
+        path_scope: ActionPathScope {
+            root: workspace.display().to_string(),
+            allowed_paths: vec!["README.md".into()],
+        },
+        verification: VerificationContract {
+            verifier_tool_id: "markdown_link_check".into(),
+            parameters: serde_json::json!({"path": "README.md"}),
+        },
+    };
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-shell",
+            "project-shell",
+            "inspect repository",
+            vec!["rg_fixed".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-shell",
+        "task-run-shell",
+        LoopBudget::new(2, 0, 0, 1, 0, 2, 1, 1),
+    )
+    .expect("loop starts");
+
+    assert!(matches!(
+        controller.execute_model_action(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &PolicyGate::new(),
+            &ReadOnlyToolExecutor,
+            &workspace,
+            &action,
+            "step-shell",
+        ),
+        Err(LoopControllerError::ModelContract(_))
+    ));
 }
 
 #[test]

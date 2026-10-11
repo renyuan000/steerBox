@@ -2,13 +2,13 @@
 
 ## 定位与证据边界
 
-状态核对日期：2026-10-11。代码基线为 `38a974b`，当前工作树包含未提交的 provider、审计、交互报告和命令轮询切片；未提交代码仍须以本文末尾的实际验证命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
+状态核对日期：2026-10-11。已提交代码基线为 `8bd0860`，当前工作树还包含未提交的 Anthropic profile binding、只读工具执行和模型动作闭环切片；未提交代码仍须以本文末尾的实际验证命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
 
 本文是剩余验收的归并视图，不替代 [PHASE_1_CONTRACTS.md](PHASE_1_CONTRACTS.md)、[PHASE_1_IMPLEMENTATION_SCOPE.md](PHASE_1_IMPLEMENTATION_SCOPE.md)、[PHASE_1_TODO.md](PHASE_1_TODO.md) 或 [PHASE_1_VALIDATION_PLAN.md](PHASE_1_VALIDATION_PLAN.md)。对象、身份、授权、事件及恢复语义以 Contracts 为准，范围以 Scope 为准，逐项状态和验收用例分别回查 TODO 与 Validation。
 
-上一批全量 **188 项测试通过** 是历史证据。2026-10-11 master 最新复跑确认：provider profile binding **3 项**、provider/model/resolved adapter **17 项**、StreamReporter/controller **22 项**（17+5）、UserCommandInbox **11 项** focused 测试通过；随后全量 test、clippy、build、fmt 和 diff 门禁均通过。这些是当前代码切片的回归证据，不代表下述六包或完整 Phase 1 已完成；本轮没有真实网络调用或真实凭据检查。
+上一批全量 **188 项测试通过** 是历史证据。2026-10-11 master 最新复跑确认：Anthropic profile/binding **5 项**、Anthropic HTTP fixture **2 项**、ToolExecutor **9 项**、loop controller **24 项** focused 测试通过；随后 `cargo test --locked --all-targets --all-features --quiet`、全仓 clippy、全目标 build、fmt 和 diff 门禁均通过。这些是当前代码切片的回归证据，不代表下述六包或完整 Phase 1 已完成；本轮没有真实网络调用或真实凭据检查。
 
-当前可运行的是只读 observation、secret-free fixture 决策，以及调用者预先指定路径、原文、替换内容和审批标记的 Markdown 修改／链接验证切片。`dev markdown` 确实修改文件并产出验证与审计记录，但不是模型自行提出修改。当前不能交付给用户作为任意 coding Agent，也不能声明完整 Phase 1 已完成。
+当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的 Markdown 修改／链接验证切片，不是模型自行提出任意文件修改。当前不能交付给用户作为任意 coding Agent，也不能声明完整 Phase 1 已完成。
 
 ## 六个交付包
 
@@ -16,9 +16,9 @@
 
 | 包 | 交付结果 | 验收层级 | 当前边界 |
 |---|---|---|---|
-| 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | non-stream OpenAI-compatible HTTP transport、注入式 credential resolver、secret-free provider profile binding 和 localhost 安全集成测试已通过；live 凭据与 live 调用仍未交付 |
+| 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | non-stream OpenAI-compatible/Anthropic HTTP transport、注入式 credential resolver、secret-free provider profile binding、Anthropic profile binding 和 localhost 安全集成测试已通过；live 凭据与 live 调用仍未交付 |
 | 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | resolved bridge 已接入 LoopController，并以 ModelCallStore、route/prompt/wire hash/output ref 做 fail-closed 审计；真实 provider、fallback 和完整恢复绑定仍未交付 |
-| 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 已有版本化、结构化、fail-closed 的动作 envelope；决策步、只读工具和预定义 Markdown 修改仍尚未连成模型动作闭环 |
+| 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 只读动作已连成 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的 controller 闭环并有 focused 覆盖；尚未从真实模型响应解析动作，也没有文件写入/Bash/副作用验证闭环 |
 | 4 | 用户入口、preflight、状态／取消及真实开发任务 E2E | 首个受限可用版本门槛 | fixture CLI、注入式安全进度报告和可测试的完整行命令轮询已有；真实 OS stdin、常驻 Agent 入口、live 控制及 E2E 未交付 |
 | 5 | TaskRun／Attempt、目标／计划修订与 controller 恢复 | 完整 Phase 1 补齐项；fallback lineage／总预算是包 2 前置门禁 | TaskRun／Attempt 领域 schema、父关系、跨 Attempt 总预算校验以及初始 Attempt 到 controller 完成的最小绑定已通过；尚未接入 EventLog/StateStore 恢复、目标/计划修订或跨进程 resume |
 | 6 | 项目范围 recipe／memory／wiki 候选与验证回链 | 完整 Phase 1 补齐项 | LessonCandidate 失败来源回链已有，其余候选链未交付 |

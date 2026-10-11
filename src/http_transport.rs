@@ -4,6 +4,7 @@
 //! schema validation remain in `provider_adapter`; credentials are resolved by an
 //! injected resolver and are never serialized or included in transport errors.
 
+use crate::anthropic_adapter::{AnthropicHeaders, AnthropicTransport, AnthropicTransportError};
 use crate::provider_adapter::{ProviderTransport, TransportError, TransportResponse};
 use reqwest::blocking::{Client, Response};
 use reqwest::redirect::Policy;
@@ -185,6 +186,141 @@ impl<R: CredentialResolver> ProviderTransport for HttpProviderTransport<R> {
         let status_code = response.status().as_u16();
         if (300..400).contains(&status_code) {
             return Err(TransportError::Redirect);
+        }
+        let body = self.read_bounded_body(response)?;
+        Ok(TransportResponse::body(status_code, body))
+    }
+}
+
+/// A bounded, non-streaming HTTP transport for Anthropic's x-api-key protocol.
+/// Credential lookup remains injected and the resolved secret never enters a
+/// public error, debug, or audit value.
+pub struct HttpAnthropicTransport<R: CredentialResolver> {
+    client: Client,
+    resolver: Arc<R>,
+    max_response_bytes: usize,
+    allow_loopback_http: bool,
+}
+
+impl<R: CredentialResolver> fmt::Debug for HttpAnthropicTransport<R> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpAnthropicTransport")
+            .field("max_response_bytes", &self.max_response_bytes)
+            .field("allow_loopback_http", &self.allow_loopback_http)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R: CredentialResolver> HttpAnthropicTransport<R> {
+    pub fn new(resolver: R) -> Result<Self, HttpTransportBuildError> {
+        let client = Client::builder()
+            .redirect(Policy::none())
+            .retry(reqwest::retry::never())
+            .referer(false)
+            .no_proxy()
+            .build()
+            .map_err(|_| HttpTransportBuildError::Client)?;
+        Ok(Self {
+            client,
+            resolver: Arc::new(resolver),
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+            allow_loopback_http: false,
+        })
+    }
+
+    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.max_response_bytes = max_response_bytes.max(1);
+        self
+    }
+
+    pub fn allow_loopback_http_for_tests(mut self) -> Self {
+        self.allow_loopback_http = true;
+        self
+    }
+
+    fn validate_endpoint(&self, endpoint: &str) -> Result<reqwest::Url, AnthropicTransportError> {
+        let url =
+            reqwest::Url::parse(endpoint).map_err(|_| AnthropicTransportError::InvalidEndpoint)?;
+        if url.username() != "" || url.password().is_some() || url.fragment().is_some() {
+            return Err(AnthropicTransportError::InvalidEndpoint);
+        }
+        match url.scheme() {
+            "https" => Ok(url),
+            "http" if self.allow_loopback_http && is_loopback_host(url.host_str()) => Ok(url),
+            _ => Err(AnthropicTransportError::InvalidEndpoint),
+        }
+    }
+
+    fn read_bounded_body(&self, response: Response) -> Result<String, AnthropicTransportError> {
+        if response
+            .content_length()
+            .is_some_and(|length| length > self.max_response_bytes as u64)
+        {
+            return Err(AnthropicTransportError::ResponseTooLarge);
+        }
+        let mut bytes = Vec::with_capacity(self.max_response_bytes.min(64 * 1024));
+        let mut limited = response.take(self.max_response_bytes as u64 + 1);
+        limited
+            .read_to_end(&mut bytes)
+            .map_err(|_| AnthropicTransportError::Network)?;
+        if bytes.len() > self.max_response_bytes {
+            return Err(AnthropicTransportError::ResponseTooLarge);
+        }
+        String::from_utf8(bytes).map_err(|_| AnthropicTransportError::InvalidResponse)
+    }
+}
+
+impl<R: CredentialResolver> AnthropicTransport for HttpAnthropicTransport<R> {
+    fn send(
+        &self,
+        endpoint: &str,
+        headers: &AnthropicHeaders,
+        request_body: &str,
+        timeout: Duration,
+        streaming: bool,
+    ) -> Result<TransportResponse, AnthropicTransportError> {
+        if streaming {
+            return Err(AnthropicTransportError::UnsupportedStreaming);
+        }
+        if timeout.is_zero() {
+            return Err(AnthropicTransportError::Timeout);
+        }
+        let endpoint = self.validate_endpoint(endpoint)?;
+        let credential = headers
+            .api_key_ref
+            .as_deref()
+            .ok_or(AnthropicTransportError::Credential)
+            .and_then(|auth_ref| {
+                self.resolver
+                    .resolve(auth_ref)
+                    .map_err(|_| AnthropicTransportError::Credential)
+            })?;
+        let request = self
+            .client
+            .post(endpoint)
+            .timeout(timeout)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(
+                reqwest::header::HeaderName::from_static("x-api-key"),
+                credential.0,
+            )
+            .header(
+                reqwest::header::HeaderName::from_static("anthropic-version"),
+                headers.anthropic_version.as_str(),
+            )
+            .body(request_body.to_owned());
+        let response = request.send().map_err(|error| {
+            if error.is_timeout() {
+                AnthropicTransportError::Timeout
+            } else {
+                AnthropicTransportError::Network
+            }
+        })?;
+        let status_code = response.status().as_u16();
+        if (300..400).contains(&status_code) {
+            return Err(AnthropicTransportError::Redirect);
         }
         let body = self.read_bounded_body(response)?;
         Ok(TransportResponse::body(status_code, body))
