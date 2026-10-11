@@ -27,6 +27,13 @@ pub struct ResolvedModelResponse {
     pub input_context_hash: String,
 }
 
+/// Resolved completion evidence that preserves a validated model action.
+pub struct ResolvedModelResponseWithAction {
+    pub response: ModelResponseWithAction,
+    pub provider_response: ProviderResponse,
+    pub input_context_hash: String,
+}
+
 impl fmt::Debug for ResolvedModelResponse {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -84,6 +91,22 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
         request: ModelRequest,
         pack: &ResolvedPromptPack,
     ) -> Result<ResolvedModelResponse, ModelAdapterError> {
+        let resolved = self.complete_resolved_with_action(request, pack)?;
+        if resolved.response.action.is_some() {
+            return Err(ModelAdapterError::ProviderTextUnmappable);
+        }
+        Ok(ResolvedModelResponse {
+            response: resolved.response.into_legacy(),
+            provider_response: resolved.provider_response,
+            input_context_hash: resolved.input_context_hash,
+        })
+    }
+
+    pub fn complete_resolved_with_action(
+        &self,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+    ) -> Result<ResolvedModelResponseWithAction, ModelAdapterError> {
         if !matches!(pack.endpoint_protocol(), "openai" | "openai-compatible") {
             return Err(ModelAdapterError::ResolvedBindingMismatch {
                 field: "endpoint_protocol",
@@ -131,8 +154,8 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
             .map_err(|error| ModelAdapterError::Provider {
                 class: error.class(),
             })?;
-        let response = parse_decision(&provider_response.text)?;
-        Ok(ResolvedModelResponse {
+        let response = parse_decision_with_action(&provider_response.text)?;
+        Ok(ResolvedModelResponseWithAction {
             response,
             provider_response,
             input_context_hash,

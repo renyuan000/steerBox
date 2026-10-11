@@ -246,11 +246,11 @@ Memory 最小实现：
 - [x] 实现按 prompt ID/version、role/task 的最小 prompt binding 查询
 - [x] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成可冻结的 `ResolvedPromptPack` 并由 opt-in resolved bridge 使用（fake/localhost 请求已验证模板实际进入最终 messages、logical model 与 wire model 分离、wire body hash 一致；resolved controller 审计路径已接线）
 - [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore`（resolved controller 成功、provider 失败、审计写入失败和 binding/approval fail-closed 已有回归；真实 provider、fallback 和完整验证结果仍待完成）
-- [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；尚未接入模型输出、PolicyGate、ToolExecutor 或验证回传闭环
+- [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
 - [ ] 实现能力兼容、非静默的 fallback 事件
 - [ ] 验证 registry、prompt、trace、event log 和 checkpoint 不保存认证明文
 
-最新验证记录（2026-10-11）：`anthropic_adapter` 5 项、`model_contracts` 11 项、`model_action_contracts` 6 项、`config_provider_binding` 3 项、`provider_model_adapter` 5 项、`resolved_provider_model_adapter` 9 项、`loop_controller` 22 项、`stream_reporter` 5 项、`user_command_inbox` 11 项 focused 测试通过；随后全量 test、clippy、build、fmt 和 diff 门禁由 master 复跑通过。该记录不等于 live provider、fallback、OS stdin 接入、模型动作执行闭环、恢复或完整 Phase 1 验收通过。
+最新验证记录（2026-10-11）：`loop_controller` 25 项、`provider_model_adapter` 7 项、`resolved_provider_model_adapter` 11 项、`model_call_controller_audit` 6 项 focused 测试通过；本轮 focused clippy 通过，构建产物写入 `/tmp/steerbox-phase1-target`。工作树中未审核的 acceptance/benchmark 变更仍阻断当前 `--all-targets` 的全量 fmt/clippy 门禁；该记录不等于 live provider、fallback、常驻 stdin/runtime、文件写入／Bash、跨进程恢复或完整 Phase 1 验收通过。
 
 验收：
 

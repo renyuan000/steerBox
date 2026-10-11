@@ -78,7 +78,7 @@
 
 剩余：
 
-- 将同一 action 接线扩展到 `run_resolved_model_step` 的真实 prompt／ModelCallStore 路径，并把 tool_call_count、verification_status 和输出引用写入模型调用审计。
+- resolved provider 的 opt-in 路径已接入 `run_resolved_model_step_with_action`：fake provider 响应经 `PolicyGate → ReadOnlyToolExecutor → verification`，最终 `ModelCallRecord` 写入实际 `tool_call_count`、`verification_status` 和错误分类；旧 resolved 入口遇到 action 会 fail-closed。真实 provider、文件写入／Bash、完整 artifact 持久化和跨进程恢复仍待完成。
 - 扩展文件读／写／edit、Bash 等副作用工具；每项都必须有 PolicyGate、checkpoint／side-effect ledger、写后验证和失败恢复边界。模型说 complete 不得替代真实验证。
 - 将 goal alignment／drift 检查及 ToolCallRecord／VerificationResult 的适用关联接入实际链；限制模型、工具、步骤、重试和无进展，不允许无限自循环。
 
@@ -143,7 +143,7 @@
 
 ## 验收记录与范围保护
 
-2026-10-11 master 复跑记录：`user_command_inbox` 13 项、`provider_model_adapter` 7 项、`state_store` 6 项、`loop_controller` 25 项 focused 测试通过；本轮新增的模型 action 接线回归覆盖模型响应→PolicyGate→两次只读工具执行→verification。构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。工作树中另有未审核的 `tests/acceptance/` 与 `tests/benchmarks/` 产物，不能据此声称当前 `--all-targets` 全量通过；真实 provider、真实任务、resolved action、文件写入／Bash、跨进程恢复仍未验收。
+2026-10-11 master 复跑记录：`loop_controller` 25 项、`provider_model_adapter` 7 项、`resolved_provider_model_adapter` 11 项、`model_call_controller_audit` 6 项 focused 测试通过；本轮新增回归覆盖 resolved provider 模型响应→PolicyGate→两次只读工具执行→verification、成功审计字段及 verification 失败审计，旧 resolved 入口遇到 action 的 fail-closed 行为也已验证。构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。工作树中另有未审核的 `tests/acceptance/` 与 `tests/benchmarks/` 产物，不能据此声称当前 `--all-targets` 全量通过；真实 provider、真实任务、文件写入／Bash、跨进程恢复仍未验收。
 
 每包交接记录应给出代码基线、实际执行命令、结果／退出码、产物位置与证据引用、已验证范围及未通过项。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
 

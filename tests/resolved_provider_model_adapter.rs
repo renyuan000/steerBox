@@ -192,6 +192,28 @@ fn adapter(transport: FakeTransport) -> ProviderModelAdapter<FakeTransport> {
     )
 }
 
+fn valid_action_response() -> String {
+    json!({
+        "decision": "continue_observation",
+        "summary": "fixture action",
+        "action": {
+            "schema_version": 1,
+            "action_id": "action-resolved-adapter",
+            "tool_id": "git_status",
+            "parameters": {"scope": "workspace"},
+            "path_scope": {
+                "root": "/workspace",
+                "allowed_paths": ["README.md"]
+            },
+            "verification": {
+                "verifier_tool_id": "markdown_link_check",
+                "parameters": {"path": "README.md"}
+            }
+        }
+    })
+    .to_string()
+}
+
 #[test]
 fn resolved_bridge_sends_wire_name_and_exact_resolved_messages() {
     let pack = resolved_pack();
@@ -228,6 +250,36 @@ fn resolved_bridge_sends_wire_name_and_exact_resolved_messages() {
     assert_eq!(body["stream"], false);
     assert_eq!(sends[0].endpoint, format!("{BASE_URL}/chat/completions"));
     assert!(!sends[0].streaming);
+}
+
+#[test]
+fn resolved_action_bridge_retains_validated_action() {
+    let pack = resolved_pack();
+    let result = adapter(FakeTransport::response(
+        &valid_action_response(),
+        None,
+        Some("stop"),
+    ))
+    .complete_resolved_with_action(request_for(&pack), &pack)
+    .expect("resolved action response");
+
+    let action = result.response.action.expect("resolved action is retained");
+    assert_eq!(action.action_id, "action-resolved-adapter");
+    assert_eq!(action.tool_id, "git_status");
+    assert_eq!(result.response.summary, "fixture action");
+}
+
+#[test]
+fn legacy_resolved_bridge_rejects_action_instead_of_dropping_it() {
+    let pack = resolved_pack();
+    let error = adapter(FakeTransport::response(
+        &valid_action_response(),
+        None,
+        Some("stop"),
+    ))
+    .complete_resolved(request_for(&pack), &pack)
+    .expect_err("legacy resolved bridge must fail closed on action");
+    assert_eq!(error, ModelAdapterError::ProviderTextUnmappable);
 }
 
 #[test]

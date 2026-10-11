@@ -6,11 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use steerbox::domain::{GoalContract, LoopBudget};
 use steerbox::event_log::EventLog;
-use steerbox::loop_controller::ReadOnlyLoopController;
+use steerbox::loop_controller::{ModelActionRuntime, ReadOnlyLoopController};
 use steerbox::model_adapter::ModelRequest;
 use steerbox::model_call_store::ModelCallStore;
 use steerbox::model_contracts::RouteDecision;
 use steerbox::model_registry::{EndpointProfile, ModelProfile, ModelRegistry, ProviderProfile};
+use steerbox::policy_gate::PolicyGate;
 use steerbox::prompt_registry::{PromptProfile, PromptRegistry};
 use steerbox::provider_adapter::{
     OpenAiCompatibleAdapter, ProviderTransport, TransportError, TransportResponse,
@@ -20,6 +21,8 @@ use steerbox::resolved_prompt::{
     resolve_prompt, AgentRolePrompt, ModelPromptFragment, ProviderPromptFragment,
     ResolvePromptInput, ResolvedPromptPack, TaskPromptPack, VersionedPromptFragment,
 };
+use steerbox::tool_executor::ReadOnlyToolExecutor;
+use steerbox::tool_registry::ToolRegistry;
 
 const BASE_URL: &str = "https://fixture.example.test/v1";
 
@@ -43,6 +46,24 @@ impl FakeTransport {
     fn failing() -> Self {
         Self {
             result: Err(TransportError::Network),
+            sends: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn with_decision_content(content: String) -> Self {
+        Self {
+            result: Ok(TransportResponse::body(
+                200,
+                serde_json::json!({
+                    "id": "fixture-response",
+                    "model": "wire-model",
+                    "choices": [{
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop"
+                    }]
+                })
+                .to_string(),
+            )),
             sends: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -195,11 +216,18 @@ impl Drop for TestDirectory {
 }
 
 fn controller(directory: &TestDirectory) -> ReadOnlyLoopController {
+    controller_with_allowed_tools(directory, vec![".".into()])
+}
+
+fn controller_with_allowed_tools(
+    directory: &TestDirectory,
+    allowed_tools: Vec<String>,
+) -> ReadOnlyLoopController {
     let goal = GoalContract::new(
         "goal-model-audit",
         "project-model-audit",
         "inspect the repository",
-        vec![".".into()],
+        allowed_tools,
         Vec::new(),
         vec!["model_result_recorded".into()],
     );
@@ -430,4 +458,178 @@ fn completed_audit_input_hash_must_be_the_actual_resolved_wire_hash() {
         .expect("completed event must contain the actual wire hash");
     assert!(hash.starts_with("sha256:"));
     assert_ne!(hash, "sha256:fixture");
+}
+
+#[test]
+fn resolved_action_executes_verification_and_persists_final_audit_fields() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let action = json!({
+        "schema_version": 1,
+        "action_id": "action-resolved-audit",
+        "tool_id": "git_status",
+        "parameters": {"scope": "workspace"},
+        "path_scope": {
+            "root": workspace.display().to_string(),
+            "allowed_paths": ["README.md"]
+        },
+        "verification": {
+            "verifier_tool_id": "markdown_link_check",
+            "parameters": {"path": "README.md"}
+        }
+    });
+    let content = json!({
+        "decision": "continue_observation",
+        "summary": "fixture action observed",
+        "action": action
+    })
+    .to_string();
+    let transport = FakeTransport::with_decision_content(content);
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+
+    controller
+        .run_resolved_model_step_with_action(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-resolved-action".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            "step-resolved-action",
+        )
+        .expect("resolved action step succeeds");
+
+    let record = ModelCallStore::open(directory.model_calls())
+        .expect("model call store reopens")
+        .read_all()
+        .expect("model call records read")
+        .pop()
+        .expect("resolved action record exists");
+    assert_eq!(record.tool_call_count, 2);
+    assert_eq!(record.verification_status, "passed");
+    assert_eq!(record.error_class, None);
+
+    let events = EventLog::open(directory.events())
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_verified"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_call_completed"));
+    assert!(!events.iter().any(|event| {
+        event.event_type == "step_failed"
+            && event.step_id.as_deref() == Some("step-resolved-action")
+    }));
+}
+
+#[test]
+fn resolved_action_verification_failure_is_recorded_before_step_failure() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let content = json!({
+        "decision": "continue_observation",
+        "summary": "fixture verification failure",
+        "action": {
+            "schema_version": 1,
+            "action_id": "action-resolved-verification-failure",
+            "tool_id": "git_status",
+            "parameters": {"scope": "workspace"},
+            "path_scope": {
+                "root": workspace.display().to_string(),
+                "allowed_paths": ["README.md", "missing-verification.md"]
+            },
+            "verification": {
+                "verifier_tool_id": "markdown_link_check",
+                "parameters": {"path": "missing-verification.md"}
+            }
+        }
+    })
+    .to_string();
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new(
+            "fixture-provider",
+            BASE_URL,
+            FakeTransport::with_decision_content(content),
+        ),
+        None,
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+
+    assert!(controller
+        .run_resolved_model_step_with_action(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-resolved-verification-failure".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            "step-resolved-verification-failure",
+        )
+        .is_err());
+
+    let record = ModelCallStore::open(directory.model_calls())
+        .expect("model call store reopens")
+        .read_all()
+        .expect("model call records read")
+        .pop()
+        .expect("failed action record exists");
+    assert_eq!(record.tool_call_count, 2);
+    assert_eq!(record.verification_status, "failed");
+    assert_eq!(record.error_class.as_deref(), Some("verification_failed"));
+
+    let events = EventLog::open(directory.events())
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_failed"));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "model_call_completed"));
+    assert!(!events.iter().any(|event| {
+        event.event_type == "step_completed"
+            && event.step_id.as_deref() == Some("step-resolved-verification-failure")
+    }));
 }

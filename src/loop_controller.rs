@@ -126,6 +126,12 @@ pub struct ModelActionExecution {
     pub verification_output: ToolCallOutput,
 }
 
+struct ModelActionFailure {
+    error: LoopControllerError,
+    attempted_tool_calls: u32,
+    verification_started: bool,
+}
+
 pub struct ModelActionRuntime<'a> {
     pub registry: &'a ToolRegistry,
     pub gate: &'a PolicyGate,
@@ -591,6 +597,30 @@ impl ReadOnlyLoopController {
         route: &RouteDecision,
         step_id: impl Into<String>,
     ) -> Result<ModelDecision, LoopControllerError> {
+        self.run_resolved_model_step_internal(adapter, request, pack, route, step_id, None)
+    }
+
+    pub fn run_resolved_model_step_with_action<T: ProviderTransport>(
+        &mut self,
+        adapter: &ProviderModelAdapter<T>,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+        route: &RouteDecision,
+        runtime: &ModelActionRuntime<'_>,
+        step_id: impl Into<String>,
+    ) -> Result<ModelDecision, LoopControllerError> {
+        self.run_resolved_model_step_internal(adapter, request, pack, route, step_id, Some(runtime))
+    }
+
+    fn run_resolved_model_step_internal<T: ProviderTransport>(
+        &mut self,
+        adapter: &ProviderModelAdapter<T>,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+        route: &RouteDecision,
+        step_id: impl Into<String>,
+        action_runtime: Option<&ModelActionRuntime<'_>>,
+    ) -> Result<ModelDecision, LoopControllerError> {
         let store = self
             .model_call_store
             .clone()
@@ -693,7 +723,7 @@ impl ReadOnlyLoopController {
         )?;
 
         let started_at = chrono::Utc::now().to_rfc3339();
-        let resolved = match adapter.complete_resolved(request, pack) {
+        let resolved = match adapter.complete_resolved_with_action(request, pack) {
             Ok(response) => response,
             Err(error) => {
                 self.append_model_event(
@@ -728,6 +758,48 @@ impl ReadOnlyLoopController {
                 return Err(LoopControllerError::ModelAdapter(error));
             }
         };
+        let mut action_failure = None;
+        let mut tool_call_count = 0;
+        let mut verification_status = "not_run".to_owned();
+        let mut error_class = None;
+        if let Some(action) = resolved.response.action.as_ref() {
+            let failure = match action_runtime {
+                Some(runtime) => self
+                    .execute_model_action_with_audit(
+                        runtime.registry,
+                        runtime.gate,
+                        runtime.executor,
+                        runtime.workspace,
+                        action,
+                        step_id.clone(),
+                    )
+                    .err(),
+                None => Some(ModelActionFailure {
+                    error: LoopControllerError::ModelAdapter(
+                        ModelAdapterError::ProviderTextUnmappable,
+                    ),
+                    attempted_tool_calls: 0,
+                    verification_started: false,
+                }),
+            };
+            if let Some(failure) = failure {
+                tool_call_count = failure.attempted_tool_calls;
+                verification_status = if failure.verification_started {
+                    "failed".into()
+                } else {
+                    "not_run".into()
+                };
+                error_class = Some(if failure.verification_started {
+                    "verification_failed".into()
+                } else {
+                    model_action_error_class(&failure.error)
+                });
+                action_failure = Some(failure.error);
+            } else {
+                tool_call_count = 2;
+                verification_status = "passed".into();
+            }
+        }
         let completed_at = chrono::Utc::now().to_rfc3339();
         let model_call_id = format!("call-{}-{step_id}", self.loop_run.loop_run_id);
         let output_artifact_ref = format!("trace://{model_call_id}/output");
@@ -761,9 +833,9 @@ impl ReadOnlyLoopController {
                 .finish_reason
                 .clone()
                 .unwrap_or_else(|| "unknown".into()),
-            tool_call_count: 0,
-            verification_status: "not_run".into(),
-            error_class: None,
+            tool_call_count,
+            verification_status,
+            error_class,
             started_at,
             completed_at: Some(completed_at),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -804,6 +876,42 @@ impl ReadOnlyLoopController {
                 None,
             )?;
             return Err(LoopControllerError::ModelCallStore(error));
+        }
+        if let Some(error) = action_failure {
+            self.append_model_event(
+                "model_action_failed",
+                &format!("{step_id}:action_failed"),
+                json!({
+                    "action_id": resolved.response.action.as_ref().map(|action| &action.action_id),
+                    "error": error.to_string(),
+                    "verification_status": record.verification_status,
+                }),
+            )?;
+            append_step_event(
+                &mut self.event_log,
+                &self.goal,
+                &self.loop_run,
+                &step,
+                "step_failed",
+                &format!("{step_id}:action_failed"),
+                json!({"summary": error.to_string()}),
+                self.task_run.current_attempt_id.clone(),
+            )?;
+            self.report_progress(
+                ProgressSubject::Model,
+                model_progress_id,
+                ProgressStatus::Failed,
+                Some("model action failed"),
+                None,
+            )?;
+            self.report_progress(
+                ProgressSubject::Step,
+                step.step_id.clone(),
+                ProgressStatus::Failed,
+                Some("action execution failed"),
+                None,
+            )?;
+            return Err(error);
         }
         let decision = resolved.response.decision;
         self.append_model_event(
@@ -1294,15 +1402,46 @@ impl ReadOnlyLoopController {
         action: &ModelActionEnvelope,
         step_id: impl Into<String>,
     ) -> Result<ModelActionExecution, LoopControllerError> {
-        action.validate()?;
-        executor.map_action(registry, workspace, action)?;
+        self.execute_model_action_with_audit(registry, gate, executor, workspace, action, step_id)
+            .map_err(|failure| failure.error)
+    }
+
+    fn execute_model_action_with_audit(
+        &mut self,
+        registry: &ToolRegistry,
+        gate: &PolicyGate,
+        executor: &ReadOnlyToolExecutor,
+        workspace: &std::path::Path,
+        action: &ModelActionEnvelope,
+        step_id: impl Into<String>,
+    ) -> Result<ModelActionExecution, ModelActionFailure> {
+        if let Err(error) = action.validate() {
+            return Err(ModelActionFailure {
+                error: error.into(),
+                attempted_tool_calls: 0,
+                verification_started: false,
+            });
+        }
+        if let Err(error) = executor.map_action(registry, workspace, action) {
+            return Err(ModelActionFailure {
+                error: error.into(),
+                attempted_tool_calls: 0,
+                verification_started: false,
+            });
+        }
         let step_id = step_id.into();
-        self.append_model_event(
+        if let Err(error) = self.append_model_event(
             "model_action_started",
             &format!("{step_id}:action_started"),
             json!({"action_id": action.action_id, "tool_id": action.tool_id}),
-        )?;
-        let action_output = self.execute_read_only_tool(
+        ) {
+            return Err(ModelActionFailure {
+                error,
+                attempted_tool_calls: 0,
+                verification_started: false,
+            });
+        }
+        let action_output = match self.execute_read_only_tool(
             registry,
             gate,
             executor,
@@ -1312,7 +1451,16 @@ impl ReadOnlyLoopController {
                 arguments: action.parameters.clone(),
             },
             step_id.clone(),
-        )?;
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                return Err(ModelActionFailure {
+                    error,
+                    attempted_tool_calls: 1,
+                    verification_started: false,
+                })
+            }
+        };
 
         let verification_action = ModelActionEnvelope {
             schema_version: action.schema_version,
@@ -1325,8 +1473,14 @@ impl ReadOnlyLoopController {
                 parameters: action.verification.parameters.clone(),
             },
         };
-        executor.map_action(registry, workspace, &verification_action)?;
-        let verification_output = self.execute_read_only_tool(
+        if let Err(error) = executor.map_action(registry, workspace, &verification_action) {
+            return Err(ModelActionFailure {
+                error: error.into(),
+                attempted_tool_calls: 1,
+                verification_started: true,
+            });
+        }
+        let verification_output = match self.execute_read_only_tool(
             registry,
             gate,
             executor,
@@ -1336,8 +1490,17 @@ impl ReadOnlyLoopController {
                 arguments: verification_action.parameters.clone(),
             },
             format!("{step_id}:verification"),
-        )?;
-        self.append_model_event(
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                return Err(ModelActionFailure {
+                    error,
+                    attempted_tool_calls: 2,
+                    verification_started: true,
+                })
+            }
+        };
+        if let Err(error) = self.append_model_event(
             "model_action_verified",
             &format!("{step_id}:action_verified"),
             json!({
@@ -1345,7 +1508,13 @@ impl ReadOnlyLoopController {
                 "tool_id": action.tool_id,
                 "verifier_tool_id": action.verification.verifier_tool_id,
             }),
-        )?;
+        ) {
+            return Err(ModelActionFailure {
+                error,
+                attempted_tool_calls: 2,
+                verification_started: true,
+            });
+        }
         Ok(ModelActionExecution {
             action_id: action.action_id.clone(),
             action_output,
@@ -1706,6 +1875,17 @@ fn model_decision_progress_summary(decision: ModelDecision) -> &'static str {
         ModelDecision::CompleteLoop => "fixture decision: complete loop",
         ModelDecision::ContinueObservation => "continue observation; loop remains running",
         ModelDecision::RequestHuman => "human intervention required; loop remains running",
+    }
+}
+
+fn model_action_error_class(error: &LoopControllerError) -> String {
+    match error {
+        LoopControllerError::PolicyDenied { .. } => "policy_denied".into(),
+        LoopControllerError::ToolExecution(_) => "tool_execution".into(),
+        LoopControllerError::ModelContract(_) => "model_contract".into(),
+        LoopControllerError::PolicyGate(_) => "policy_gate".into(),
+        LoopControllerError::ModelAdapter(_) => "model_adapter".into(),
+        _ => "action_execution".into(),
     }
 }
 
