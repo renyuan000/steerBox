@@ -17,7 +17,7 @@ use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
 use steerbox::policy_gate::{PolicyDecision, PolicyGate, PolicyRequest};
 use steerbox::runtime_config::RuntimeConfig;
 use steerbox::state_store::StateStore;
-use steerbox::stream_reporter::{ProgressSubject, StreamReporter};
+use steerbox::stream_reporter::StreamReporter;
 use steerbox::tool_registry::{SideEffectClass, ToolProfile, ToolRegistry};
 use steerbox::workspace_edit::{edit_markdown, verify_markdown_links};
 
@@ -169,20 +169,16 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 vec!["manual_review".into()],
             );
             let budget = LoopBudget::new(1, 0, 0, 1, 0, 1, 1, 1);
-            let mut reporter = StreamReporter::new(std::io::stdout());
-            reporter.started(ProgressSubject::Loop, &loop_run_id, None, None)?;
-            reporter.started(ProgressSubject::Step, &step_id, None, Some((1, 1)))?;
-            let mut controller =
-                ReadOnlyLoopController::start(log, goal, loop_run_id, task_run_id, budget)?;
+            let mut controller = ReadOnlyLoopController::start_with_progress_sink(
+                log,
+                goal,
+                loop_run_id,
+                task_run_id,
+                budget,
+                StreamReporter::new(std::io::stdout()),
+            )?;
             let step = controller.run_observation(step_id, observation)?;
             let run = controller.complete()?;
-            reporter.completed(
-                ProgressSubject::Step,
-                &step.step_id,
-                step.summary.as_deref(),
-                Some((1, 1)),
-            )?;
-            reporter.completed(ProgressSubject::Loop, &run.loop_run_id, None, None)?;
             let events = EventLog::open(config.events_path())?.read_all()?;
             let state = StateStore::rebuild(&events)?;
             state.persist(config.state_path())?;
@@ -273,28 +269,17 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 vec!["manual_review".into()],
             );
             let budget = LoopBudget::new(1, 0, 1, 1, 0, 1, 1, 1);
-            let mut reporter = StreamReporter::new(std::io::stdout());
-            reporter.started(ProgressSubject::Loop, &loop_run_id, None, None)?;
-            reporter.started(ProgressSubject::Model, &model_id, None, Some((1, 1)))?;
-            let mut controller =
-                ReadOnlyLoopController::start(log, goal, loop_run_id, task_run_id, budget)?;
+            let mut controller = ReadOnlyLoopController::start_with_progress_sink(
+                log,
+                goal,
+                loop_run_id,
+                task_run_id,
+                budget,
+                StreamReporter::new(std::io::stdout()),
+            )?;
             let adapter = LocalFixtureModelAdapter::new(decision, summary);
             let actual =
                 controller.run_model_step(&adapter, model_id.clone(), "step-1", observation)?;
-            let progress_summary = match actual {
-                ModelDecision::CompleteLoop => "fixture decision: complete loop",
-                ModelDecision::ContinueObservation => "continue observation; loop remains running",
-                ModelDecision::RequestHuman => "human intervention required; loop remains running",
-            };
-            reporter.completed(
-                ProgressSubject::Model,
-                &model_id,
-                Some(progress_summary),
-                Some((1, 1)),
-            )?;
-            if actual == ModelDecision::CompleteLoop {
-                reporter.completed(ProgressSubject::Loop, &trace_loop_run_id, None, None)?;
-            }
             let events = EventLog::open(config.events_path())?.read_all()?;
             let state = StateStore::rebuild(&events)?;
             state.persist(config.state_path())?;

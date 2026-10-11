@@ -1,3 +1,5 @@
+use crate::http_transport::{CredentialResolver, HttpProviderTransport};
+use crate::provider_model_adapter::ProviderModelAdapter;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,6 +23,10 @@ pub enum ConfigError {
     InvalidDataRoot,
     #[error("model profile auth_ref cannot be empty")]
     EmptyAuthRef,
+    #[error("model profile not found: {model_id}")]
+    ModelProfileNotFound { model_id: String },
+    #[error("HTTP provider transport could not be constructed")]
+    HttpTransportBuild,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +115,28 @@ impl RuntimeConfig {
 
     pub fn config_path(&self) -> PathBuf {
         self.data_root.join("config.json")
+    }
+
+    pub fn build_http_provider_adapter<R: CredentialResolver>(
+        &self,
+        model_id: &str,
+        resolver: R,
+    ) -> Result<ProviderModelAdapter<HttpProviderTransport<R>>, ConfigError> {
+        let profile = self
+            .model_profiles
+            .iter()
+            .find(|profile| profile.model_id == model_id)
+            .ok_or_else(|| ConfigError::ModelProfileNotFound {
+                model_id: model_id.to_owned(),
+            })?;
+        let transport =
+            HttpProviderTransport::new(resolver).map_err(|_| ConfigError::HttpTransportBuild)?;
+        let provider = crate::provider_adapter::OpenAiCompatibleAdapter::new(
+            profile.provider.clone(),
+            profile.endpoint.clone(),
+            transport,
+        );
+        Ok(ProviderModelAdapter::new(provider, profile.auth_ref.clone()).with_model_id(model_id))
     }
 
     pub fn write_json(&self, path: impl AsRef<Path>) -> Result<(), ConfigError> {

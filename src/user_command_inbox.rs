@@ -66,23 +66,7 @@ impl UserCommand {
         let task_run_id = task_run_id.into();
         let loop_run_id = loop_run_id.into();
         let correlation_id = correlation_id.into();
-        for (field, value) in [
-            ("command_id", &command_id),
-            ("actor_ref", &actor_ref),
-            ("project_id", &project_id),
-            ("goal_id", &goal_id),
-            ("task_run_id", &task_run_id),
-            ("loop_run_id", &loop_run_id),
-            ("correlation_id", &correlation_id),
-        ] {
-            if value.trim().is_empty() {
-                return Err(UserCommandInboxError::MissingField { field });
-            }
-        }
-        if let Some(field) = sensitive_payload_field(&payload) {
-            return Err(UserCommandInboxError::SensitivePayload { field });
-        }
-        Ok(Self {
+        let command = Self {
             command_id,
             actor_ref,
             project_id,
@@ -94,7 +78,29 @@ impl UserCommand {
             expected_object_version: None,
             requested_at: Utc::now().to_rfc3339(),
             payload,
-        })
+        };
+        command.validate()?;
+        Ok(command)
+    }
+
+    fn validate(&self) -> Result<(), UserCommandInboxError> {
+        for (field, value) in [
+            ("command_id", &self.command_id),
+            ("actor_ref", &self.actor_ref),
+            ("project_id", &self.project_id),
+            ("goal_id", &self.goal_id),
+            ("task_run_id", &self.task_run_id),
+            ("loop_run_id", &self.loop_run_id),
+            ("correlation_id", &self.correlation_id),
+        ] {
+            if value.trim().is_empty() {
+                return Err(UserCommandInboxError::MissingField { field });
+            }
+        }
+        if let Some(field) = sensitive_payload_field(&self.payload) {
+            return Err(UserCommandInboxError::SensitivePayload { field });
+        }
+        Ok(())
     }
 
     fn same_intent(&self, other: &Self) -> bool {
@@ -132,6 +138,100 @@ pub enum UserCommandInboxError {
     CommandIdConflict { command_id: String },
     #[error("command_id was not found: {command_id}")]
     CommandNotFound { command_id: String },
+    #[error("user command input ended with an incomplete line")]
+    PartialLineAtEof,
+}
+
+/// The result of one non-blocking read from an injected command source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandRead {
+    Data(Vec<u8>),
+    NoInput,
+    Eof,
+}
+
+/// A source that never waits for more command input.
+pub trait NonBlockingCommandReader {
+    fn read_available(&mut self) -> Result<CommandRead, UserCommandInboxError>;
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandPollResult {
+    NoInput,
+    Command(UserCommand),
+    Eof,
+}
+
+/// Incrementally extracts complete JSONL commands without treating partial bytes
+/// as a command. The reader is injected so platform-specific descriptors remain
+/// outside this domain module and the state machine is deterministic in tests.
+pub struct CommandPoller<R: NonBlockingCommandReader> {
+    reader: R,
+    buffer: Vec<u8>,
+    line_number: usize,
+    eof: bool,
+}
+
+impl<R: NonBlockingCommandReader> CommandPoller<R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buffer: Vec::new(),
+            line_number: 0,
+            eof: false,
+        }
+    }
+
+    pub fn poll(&mut self) -> Result<CommandPollResult, UserCommandInboxError> {
+        loop {
+            if let Some(line) = self.take_complete_line()? {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let command = serde_json::from_str::<UserCommand>(&line).map_err(|error| {
+                    UserCommandInboxError::InvalidJson {
+                        line: self.line_number,
+                        message: error.to_string(),
+                    }
+                })?;
+                command.validate()?;
+                return Ok(CommandPollResult::Command(command));
+            }
+            if self.eof {
+                return if self.buffer.is_empty() {
+                    Ok(CommandPollResult::Eof)
+                } else {
+                    Err(UserCommandInboxError::PartialLineAtEof)
+                };
+            }
+            match self.reader.read_available()? {
+                CommandRead::Data(bytes) if bytes.is_empty() => {
+                    return Ok(CommandPollResult::NoInput);
+                }
+                CommandRead::Data(bytes) => self.buffer.extend(bytes),
+                CommandRead::NoInput => return Ok(CommandPollResult::NoInput),
+                CommandRead::Eof => self.eof = true,
+            }
+        }
+    }
+
+    fn take_complete_line(&mut self) -> Result<Option<String>, UserCommandInboxError> {
+        let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') else {
+            return Ok(None);
+        };
+        let line_bytes: Vec<u8> = self.buffer.drain(..=newline).collect();
+        self.line_number += 1;
+        let line_bytes = line_bytes.strip_suffix(b"\n").unwrap_or(&line_bytes);
+        let line_bytes = line_bytes.strip_suffix(b"\r").unwrap_or(line_bytes);
+        let line = String::from_utf8(line_bytes.to_vec()).map_err(|error| {
+            UserCommandInboxError::InvalidJson {
+                line: self.line_number,
+                message: format!("input is not valid UTF-8: {error}"),
+            }
+        })?;
+        Ok(Some(line))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -145,9 +245,7 @@ impl UserCommandInbox {
     }
 
     pub fn submit(&self, command: UserCommand) -> Result<UserCommandEntry, UserCommandInboxError> {
-        if let Some(field) = sensitive_payload_field(&command.payload) {
-            return Err(UserCommandInboxError::SensitivePayload { field });
-        }
+        command.validate()?;
         let records = self.read_records()?;
         if let Some(existing) = latest_record(&records, &command.command_id) {
             if !existing.command.same_intent(&command) {

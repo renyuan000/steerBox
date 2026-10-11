@@ -47,7 +47,8 @@
 ### P2. Core Schema
 
 - [x] 定义 EventEnvelope、event_id、sequence_no、correlation_id 和 causation_id
-- [ ] 定义 Portfolio、Project、Task、TaskRun、Attempt 和 TaskDependency
+- [ ] 定义 Portfolio、Project、Task 和 TaskDependency
+- [x] 定义 TaskRun／Attempt 的最小领域 schema、父关系和跨 Attempt 总预算校验（尚未接入 controller、持久化恢复或完整依赖投影）
 - [x] 定义 Task 状态及合法迁移表
 - [x] 定义最小 BoardProjection / BoardTaskCard
 - [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 与最小 `tool_call_failed` 关联事件已有测试；独立 ToolCallRecord 持久化仍待接线）
@@ -62,8 +63,8 @@
 - [ ] 定义 `VerificationResult`
 - [x] 定义 `TraceRecord`
 - [x] 定义 `ProviderProfile`、`EndpointProfile`、`ModelProfile`（已有注册/序列化及关联验证）
-- [x] 定义并测试 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`（静态 resolver 已验证 registry/provider/endpoint/model/role/task/version 绑定、审批阻断、低信任 user JSON 分层；实际 controller 审计接线仍待完成）
-- [x] 定义 `RouteDecision` 和 `ModelCallRecord`（字段结构和最小语义校验已有测试；完整调用审计接线仍待完成）
+- [x] 定义并测试 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`（静态 resolver 已验证 registry/provider/endpoint/model/role/task/version 绑定、审批阻断、低信任 user JSON 分层；resolved controller 审计路径已有 focused 验收）
+- [x] 定义 `RouteDecision` 和 `ModelCallRecord`（字段结构、最小语义校验及 resolved controller → ModelCallStore 的成功／失败审计已有测试；fallback、真实 provider 和恢复接线仍待完成）
 
 验收：
 
@@ -233,18 +234,20 @@ Memory 最小实现：
 ### P12. Model Registry、Prompt Resolution 与规则路由
 
 - [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（注册及 registry JSON 反序列化重验标识/关联，prompt 版本/role/task 查询已有测试；模型路由已使用 registry，完整 prompt resolution 尚未接线）
-- [x] 建立 provider-neutral OpenAI-compatible adapter、fake transport 和严格错误分类（真实网络 transport、凭据解析和 LoopController 接线仍待实现；非 `openai`/`openai-compatible` endpoint 会在 resolved bridge 发送前拒绝）
+- [x] 建立 provider-neutral OpenAI-compatible adapter、fake transport 和严格错误分类；新增 non-stream HTTP transport、注入式 credential resolver、localhost 安全集成测试和显式 no-redirect/no-retry/response-limit 边界；完成 secret-free profile → provider adapter 绑定（focused 3 tests 通过；配置绑定不调用 resolver、不读取环境变量、不发起网络请求；非 `openai`/`openai-compatible` endpoint 会在 resolved bridge 发送前拒绝）
 - [x] 建立 provider-to-`ModelAdapter` bridge（仅接受严格 `decision`/`summary` JSON envelope；固定输出契约放 system，用户目标与 observation 作为 JSON 编码数据放 user，不升格为 system/developer；fake transport 实际请求体已有回归，不代表完整 prompt 解析或提示注入防护）
-- [ ] 接入至少一个真实网络 model provider
+- [ ] 接入至少一个真实网络 model provider（HTTP transport 和 secret-free profile/auth_ref 绑定已通过 focused 回归；仍未完成获准 live 调用）
 - [x] 接入 secret-free `LocalFixtureModelAdapter`，并记录结构化 model decision 事件
 - [ ] 配置 cheap/fast、strong/slow、specialized、evaluator 或 local profile fixture
 - [x] 实现按 task type、agent role、能力、风险、成本和延迟过滤与排序的规则式路由，并通过 `ModelAdapterRegistry` 接入 LoopController（需审批时 fail-closed；审批恢复尚未实现）
 - [x] 定义、校验并持久化 `RouteDecision` 到 EventLog；routed 模型调用的开始/成功/失败事件关联 route ID
 - [x] 实现按 prompt ID/version、role/task 的最小 prompt binding 查询
-- [x] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成可冻结的 `ResolvedPromptPack` 并由 opt-in resolved bridge 使用（fake 请求已验证模板实际进入最终 messages、logical model 与 wire model 分离、wire body hash 一致；LoopController/ModelCallStore 仍待接线）
-- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore`（尚未将实际调用和 resolved prompt 写入该 store）
+- [x] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成可冻结的 `ResolvedPromptPack` 并由 opt-in resolved bridge 使用（fake/localhost 请求已验证模板实际进入最终 messages、logical model 与 wire model 分离、wire body hash 一致；resolved controller 审计路径已接线）
+- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore`（resolved controller 成功、provider 失败、审计写入失败和 binding/approval fail-closed 已有回归；真实 provider、fallback 和完整验证结果仍待完成）
 - [ ] 实现能力兼容、非静默的 fallback 事件
 - [ ] 验证 registry、prompt、trace、event log 和 checkpoint 不保存认证明文
+
+最新验证记录（2026-10-11）：`config_provider_binding` 3 项、`provider_model_adapter` 5 项、`resolved_provider_model_adapter` 9 项、`loop_controller` 17 项、`stream_reporter` 5 项、`user_command_inbox` 11 项 focused 测试通过；修复 CLI 进度标识回归后，全量 test、clippy、build、fmt 和 diff 门禁由 master 复跑通过。该记录不等于真实 provider、live credential、fallback、OS stdin 接入、模型动作闭环或完整 Phase 1 验收通过。
 
 验收：
 

@@ -37,6 +37,7 @@ impl fmt::Debug for ResolvedModelResponse {
 pub struct ProviderModelAdapter<T: ProviderTransport> {
     provider: OpenAiCompatibleAdapter<T>,
     auth_ref: Option<String>,
+    model_id: String,
     timeout_ms: u64,
 }
 
@@ -45,8 +46,30 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
         Self {
             provider,
             auth_ref,
+            model_id: String::new(),
             timeout_ms: DEFAULT_TIMEOUT_MS,
         }
+    }
+
+    pub fn with_model_id(mut self, model_id: impl Into<String>) -> Self {
+        self.model_id = model_id.into();
+        self
+    }
+
+    pub fn provider_id(&self) -> &str {
+        self.provider.provider_id()
+    }
+
+    pub fn endpoint_base_url(&self) -> &str {
+        self.provider.base_url()
+    }
+
+    pub fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    pub fn auth_ref(&self) -> Option<&str> {
+        self.auth_ref.as_deref()
     }
 
     pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {

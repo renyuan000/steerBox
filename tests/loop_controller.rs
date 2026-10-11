@@ -1,12 +1,16 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use steerbox::audit_store::{SideEffectLedger, TraceStore};
-use steerbox::domain::{BudgetKind, GoalContract, LoopBudget, LoopStatus};
+use steerbox::domain::{
+    AttemptStatus, BudgetKind, GoalContract, LoopBudget, LoopStatus, TaskRunStatus,
+};
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{LoopControllerError, ReadOnlyLoopController};
 use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
 use steerbox::policy_gate::{PolicyDecision, PolicyGate};
+use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
 use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallInput};
 use steerbox::tool_registry::ToolRegistry;
 use steerbox::user_command_inbox::{CommandKind, CommandStatus, UserCommand, UserCommandInbox};
@@ -17,6 +21,102 @@ fn test_data_dir() -> PathBuf {
         .expect("clock is after epoch")
         .as_nanos();
     PathBuf::from(format!("/temp/steerbox/test-loop-{nonce}"))
+}
+
+struct RecordingSink(Arc<Mutex<Vec<ProgressEvent>>>);
+
+impl ProgressSink for RecordingSink {
+    fn report(&mut self, event: ProgressEvent) -> std::io::Result<()> {
+        self.0.lock().expect("recording sink lock").push(event);
+        Ok(())
+    }
+}
+
+#[test]
+fn controller_reports_safe_lifecycle_metadata_without_payloads() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut controller = ReadOnlyLoopController::start_with_progress_sink(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-progress",
+            "project-progress",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-progress",
+        "task-run-progress",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+        RecordingSink(recorded.clone()),
+    )
+    .expect("loop starts with progress sink");
+
+    controller
+        .run_observation("step-progress", "secret observation must not stream")
+        .expect("observation succeeds");
+    controller.complete().expect("loop completes");
+
+    let events = recorded.lock().expect("recorded events lock");
+    assert_eq!(events[0].subject, ProgressSubject::Loop);
+    assert_eq!(events[0].status, ProgressStatus::Started);
+    assert!(events.iter().any(|event| {
+        event.subject == ProgressSubject::Step && event.status == ProgressStatus::Started
+    }));
+    assert!(events.iter().any(|event| {
+        event.subject == ProgressSubject::Step && event.status == ProgressStatus::Completed
+    }));
+    assert!(events.iter().any(|event| {
+        event.subject == ProgressSubject::Loop && event.status == ProgressStatus::Completed
+    }));
+    assert!(events
+        .iter()
+        .all(|event| { event.summary.as_deref() != Some("secret observation must not stream") }));
+}
+
+#[test]
+fn controller_binds_initial_attempt_and_finishes_task_run_without_resetting_budget() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-attempt",
+            "project-attempt",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-attempt",
+        "task-run-attempt",
+        LoopBudget::new(2, 0, 1, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+
+    let attempt_id = controller
+        .current_attempt_id()
+        .expect("initial attempt is bound")
+        .to_owned();
+    controller
+        .run_observation("step-attempt", "observed")
+        .expect("observation succeeds");
+    let steps_used = controller.budget().steps_used;
+    controller.complete().expect("loop completes");
+
+    assert_eq!(controller.task_run().status, TaskRunStatus::Succeeded);
+    assert_eq!(
+        controller.task_run().current_attempt_id.as_deref(),
+        Some(attempt_id.as_str())
+    );
+    assert_eq!(controller.task_run().attempts.len(), 1);
+    assert_eq!(
+        controller.task_run().attempts[0].status,
+        AttemptStatus::Succeeded
+    );
+    assert_eq!(controller.budget().steps_used, steps_used);
 }
 
 fn steering_command(

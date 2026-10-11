@@ -2,11 +2,11 @@
 
 ## 定位与证据边界
 
-状态核对日期：2026-10-11。代码基线仍为 `a084bee`；本轮未提交的新代码须以本文末尾的实际验证命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
+状态核对日期：2026-10-11。代码基线为 `38a974b`，当前工作树包含未提交的 provider、审计、交互报告和命令轮询切片；未提交代码仍须以本文末尾的实际验证命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
 
 本文是剩余验收的归并视图，不替代 [PHASE_1_CONTRACTS.md](PHASE_1_CONTRACTS.md)、[PHASE_1_IMPLEMENTATION_SCOPE.md](PHASE_1_IMPLEMENTATION_SCOPE.md)、[PHASE_1_TODO.md](PHASE_1_TODO.md) 或 [PHASE_1_VALIDATION_PLAN.md](PHASE_1_VALIDATION_PLAN.md)。对象、身份、授权、事件及恢复语义以 Contracts 为准，范围以 Scope 为准，逐项状态和验收用例分别回查 TODO 与 Validation。
 
-上一批全量 **188 项测试通过** 是历史证据；本轮新增的静态 prompt、冻结请求和 resolved bridge 已由 master 独立定向复跑 **44 项通过**（6+7+5+17+9），但这不是全量测试，也不能证明下述六包已完成。本轮没有真实网络调用或真实凭据检查。
+上一批全量 **188 项测试通过** 是历史证据。2026-10-11 master 最新复跑确认：provider profile binding **3 项**、provider/model/resolved adapter **17 项**、StreamReporter/controller **22 项**（17+5）、UserCommandInbox **11 项** focused 测试通过；随后全量 test、clippy、build、fmt 和 diff 门禁均通过。这些是当前代码切片的回归证据，不代表下述六包或完整 Phase 1 已完成；本轮没有真实网络调用或真实凭据检查。
 
 当前可运行的是只读 observation、secret-free fixture 决策，以及调用者预先指定路径、原文、替换内容和审批标记的 Markdown 修改／链接验证切片。`dev markdown` 确实修改文件并产出验证与审计记录，但不是模型自行提出修改。当前不能交付给用户作为任意 coding Agent，也不能声明完整 Phase 1 已完成。
 
@@ -16,11 +16,11 @@
 
 | 包 | 交付结果 | 验收层级 | 当前边界 |
 |---|---|---|---|
-| 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | adapter/fake transport 已有，真实网络与凭据解析未交付 |
-| 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | prepared 请求、resolver 与 opt-in resolved bridge 已通过 fake 定向验收；LoopController 的实际 ModelCallStore 审计、真实 provider 和 fallback 仍未交付 |
+| 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | non-stream OpenAI-compatible HTTP transport、注入式 credential resolver、secret-free provider profile binding 和 localhost 安全集成测试已通过；live 凭据与 live 调用仍未交付 |
+| 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | resolved bridge 已接入 LoopController，并以 ModelCallStore、route/prompt/wire hash/output ref 做 fail-closed 审计；真实 provider、fallback 和完整恢复绑定仍未交付 |
 | 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 决策步、只读工具和预定义 Markdown 修改尚未连成模型动作闭环 |
-| 4 | 用户入口、preflight、状态／取消及真实开发任务 E2E | 首个受限可用版本门槛 | fixture CLI 与历史查询已有；真实 Agent 入口及 live 控制未交付 |
-| 5 | TaskRun／Attempt、目标／计划修订与 controller 恢复 | 完整 Phase 1 补齐项；fallback lineage／总预算是包 2 前置门禁 | 状态投影 reopen 已有，不等于恢复运行 |
+| 4 | 用户入口、preflight、状态／取消及真实开发任务 E2E | 首个受限可用版本门槛 | fixture CLI、注入式安全进度报告和可测试的完整行命令轮询已有；真实 OS stdin、常驻 Agent 入口、live 控制及 E2E 未交付 |
+| 5 | TaskRun／Attempt、目标／计划修订与 controller 恢复 | 完整 Phase 1 补齐项；fallback lineage／总预算是包 2 前置门禁 | TaskRun／Attempt 领域 schema、父关系、跨 Attempt 总预算校验以及初始 Attempt 到 controller 完成的最小绑定已通过；尚未接入 EventLog/StateStore 恢复、目标/计划修订或跨进程 resume |
 | 6 | 项目范围 recipe／memory／wiki 候选与验证回链 | 完整 Phase 1 补齐项 | LessonCandidate 失败来源回链已有，其余候选链未交付 |
 
 包 1–4 必须共同通过，才能称为“首个受限可用、连接真实模型的开发 Agent”；该版本只承诺经过验收的工具和任务范围，不承诺任意代码任务。包 5–6 和正式规范中的其余适用验收一并通过后，才可称完整 Phase 1。受限版本仍必须遵守现有 Contracts，不得以分包为理由取消授权、预算、证据或副作用边界。
@@ -33,14 +33,17 @@
 
 - [provider_adapter.rs](../src/provider_adapter.rs) 定义 `ProviderTransport`、OpenAI-compatible 请求／响应、超时和错误分类；[provider_model_adapter.rs](../src/provider_model_adapter.rs) 可将严格 decision/summary 响应转换为既有模型决策。
 - [runtime_config.rs](../src/runtime_config.rs) 已有 model profile、endpoint 和 `auth_ref` 配置字段；fake transport 测试不需要真实认证信息。
+- `RuntimeConfig::build_http_provider_adapter` 已将 profile 的 provider／endpoint／model／opaque `auth_ref` 绑定到 `ProviderModelAdapter<HttpProviderTransport<_>>`；factory 不调用 resolver、不读取环境变量、不发起网络请求。
+- [http_transport.rs](../src/http_transport.rs) 已提供 non-stream OpenAI-compatible HTTP transport；credential resolver 可注入，生产默认拒绝普通 HTTP，显式禁用 redirect、自动 retry 和 Referer，并限制响应体大小。
+- `tests/http_transport.rs` 的 localhost-only 测试已覆盖 credential 失败零连接、请求头／body、HTTPS/loopback policy、redirect、响应上限、timeout 和 streaming 明确拒绝。
 
 剩余：
 
-- 实现至少一个真实网络 transport，在调用边界解析隔离的 credential 引用；不得在 registry、prompt、事件、trace、checkpoint、summary 或错误摘要保存认证正文。
-- 将配置中的 provider／endpoint／model 与真实 adapter 建立可执行绑定；配置有效不能冒充 endpoint 可达或凭据可用。
+- 在获准隔离环境中验证真实 provider endpoint 与 credential resolver；不得把 resolver 返回的 credential 正文写入 registry、prompt、事件、trace、checkpoint、summary 或错误摘要。
+- 配置绑定成功不能冒充 endpoint 可达、凭据可用或 live provider 已验收。
 - 验证超时、网络失败、认证失败及非成功响应的终止和安全分类，不把上游敏感正文透传给日志。
 
-可复现验收证据：现有隔离回归入口为 `cargo test --test provider_adapter --test provider_model_adapter`，覆盖 fake 请求体与安全错误分类，不能代替 live 验收。补充本地假 HTTP 服务的真实 transport 测试，并在获准的隔离环境下记录一次 live provider 请求的模型标识、结果、耗时和安全审计引用；不记录 credential 正文。新的 live 命令须在入口实现后写入使用说明，本文不虚构可执行命令。
+可复现验收证据：`cargo test --locked --test config_provider_binding --test provider_model_adapter --test resolved_provider_model_adapter` 已通过 17 项（3+5+9），其中配置绑定 focused 测试为 3 项；全量 test、clippy、build、fmt 和 diff 门禁亦已由 master 复跑通过。这些测试覆盖 secret-free metadata binding、fake 请求体与安全错误分类，不能代替 live 验收。后续仍需在获准隔离环境中记录一次 live provider 请求的模型标识、结果、耗时和安全审计引用；不记录 credential 正文。
 
 正式依据：Scope「10. 多模型接入最小垂直切片」；Contracts「十一、Secret 与敏感数据边界」；TODO P12；Validation V13。
 
@@ -51,15 +54,16 @@
 - [prompt_registry.rs](../src/prompt_registry.rs) 提供 ID/version、role/task binding 和模板登记查询；[model_registry.rs](../src/model_registry.rs)、[model_router.rs](../src/model_router.rs) 与 controller 已有本地规则路由。
 - [model_contracts.rs](../src/model_contracts.rs)、[model_call_store.rs](../src/model_call_store.rs) 提供 `RouteDecision`／`ModelCallRecord` 字段校验及独立 append-only 存储。
 - provider bridge 的固定输出契约位于 system；用户 objective／observation 经 JSON 编码放入 user。该分层修复不等于完整 prompt resolution 或提示注入防护。
+- `ReadOnlyLoopController::run_resolved_model_step` 已将 `ResolvedPromptPack`、`ProviderModelAdapter`、`ModelCallRecord` 和 `ModelCallStore` 接成 opt-in 路径；成功、provider 失败、审计写入失败、binding mismatch 和审批阻断均有 focused 回归。
 
 剩余：
 
-- 本批 `PreparedProviderRequest`、`ResolvedPromptPack` resolver 与 opt-in provider bridge 已通过 master 定向 fake 验收；这只证明冻结请求、静态解析和实际 wire 绑定，不证明 controller 的完整 prompt／实际调用审计链。不得把独立模块测试或测试作者自报等同于 ModelCallStore 已接线。
+- 本批 `PreparedProviderRequest`、`ResolvedPromptPack` resolver、opt-in provider bridge 及 controller 审计接线已通过 master focused 验收；这仍不等于真实 provider 可达、live credential 可用或 fallback 已完成。
 - 按 provider／model／role／task 和适用 skill／context 层解析实际使用的 `ResolvedPromptPack`，校验后端兼容性，并验证模板确实进入最终请求，不止返回 registry 条目。
-- 将实际模型调用与 prompt 版本、route、结果和验证状态写入 `ModelCallStore`，并能经 event／trace 反查；当前独立 store 的测试写入不是 controller 的实际调用审计。
+- 将实际模型调用与 prompt 版本、route、结果和验证状态继续扩展到真实 provider、attempt lineage、trace/output artifact 和验证结果；当前 opt-in 路径已覆盖 fake/localhost transport，不代表完整 coding loop。
 - 完成能力兼容、非静默的 fallback；自动执行必须先通过包 5 的新 Attempt／`parent_attempt_id`／TaskRun 总预算门禁，保留原失败证据和既有消耗，再创建新 route、重新解析 prompt 和重新验证。前置门禁未通过时必须关闭自动 fallback，不能把 lineage 当作切换完成后的补记事项。
 
-可复现验收证据：本轮已执行 `CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --test prepared_provider_request --test resolved_prompt --test resolved_provider_model_adapter --test provider_adapter --test provider_model_adapter`，结果 44 passed、0 failed。下一步仍需捕获 controller 的最终调用并从落盘记录反查同一次调用的 provider、endpoint、model、prompt ID/version、route 和结果；不匹配、缺失 binding、审批未解析及审计写入失败应有明确的拒绝或失败记录。fallback 验收对应 Validation V13，并须同时验证包 5 的 Attempt 父关系、原失败证据和 TaskRun 总预算；缺少这些条件时验证自动 fallback 被阻断，不能仅展示新 schema 或把阻断用例替代成功切换验收。
+可复现验收证据：本轮已执行 `cargo test --locked --test http_transport --test model_call_controller_audit --test task_attempt_lineage --test prepared_provider_request --test resolved_prompt --test resolved_provider_model_adapter --test provider_adapter --test provider_model_adapter`，共 49 passed、0 failed；随后 `cargo test --locked --all-targets --all-features --quiet`、`cargo clippy --locked --all-targets --all-features -- -D warnings` 和 `cargo build --locked --all-targets --all-features` 均退出 0。live provider、fallback、跨进程恢复和完整 coding loop 仍未验收。
 
 正式依据：Scope「10. 多模型接入最小垂直切片」；TODO P2／P12；Validation V13 及「最小验收命令」。
 
@@ -110,7 +114,7 @@
 
 剩余：
 
-- 补齐单 Portfolio／Project／Task／TaskRun／Attempt 及依赖身份；retry／fallback／resume／fork 创建新 Attempt，并保留原 evidence、父关系及 TaskRun 总预算。
+- 补齐单 Portfolio／Project／Task／TaskRun／Attempt 及依赖身份；当前已具备 TaskRun／Attempt 最小 schema、初始 Attempt controller 绑定及完成／失败状态写回；retry／fallback／resume／fork 的 controller 创建新 Attempt、依赖身份和完整 evidence 链仍待实现。
 - 上述 fallback lineage／总预算子集是包 2 自动 fallback 的先行依赖，即使包 5 的其余修订／恢复能力尚未交付，也不能推迟此门禁或通过重新创建 controller 补额度。验收未通过前首个受限版本必须关闭自动 fallback。
 - 相关 steer 创建 GoalRevision，使旧 PlanRevision 失效后重新规划；无关请求进入独立 Task。补齐 object_version 冲突、审批／接管及 InterruptRequest 的 side_effect_uncertain 分支。
 - 从事件和已记录边界恢复 controller 的目标、计划、策略修订、预算消耗及无进展历史；执行恢复前协调 workspace／checkpoint／外部副作用，无法确认时等待人工，不自动重放。
@@ -138,7 +142,7 @@
 
 ## 验收记录与范围保护
 
-本轮列出的 `cargo test` 命令均为现有回归的复跑入口，**本轮尚未执行**，不等于各交付包已验收。获准复跑时将构建产物放在 `/tmp/steerbox-phase1-target`，使用 `CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2`，不要将构建或运行产物加入源码提交。
+2026-10-11 master 复跑记录：focused provider-binding／provider-model／resolved-provider 测试合计 17 项通过；全量 test、clippy、build、fmt 和 diff 门禁均退出 0；构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
 
 每包交接记录应给出代码基线、实际执行命令、结果／退出码、产物位置与证据引用、已验证范围及未通过项。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
 

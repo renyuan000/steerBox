@@ -186,6 +186,12 @@ impl TransportResponse {
 pub enum TransportError {
     Timeout,
     Network,
+    Credential,
+    ResponseTooLarge,
+    InvalidEndpoint,
+    InvalidResponse,
+    Redirect,
+    UnsupportedStreaming,
     Other,
 }
 
@@ -368,8 +374,17 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
             )
             .map_err(|error| match error {
                 TransportError::Timeout => ProviderAdapterError::Timeout,
+                TransportError::Credential => ProviderAdapterError::Authentication,
+                TransportError::InvalidEndpoint | TransportError::UnsupportedStreaming => {
+                    ProviderAdapterError::InvalidRequest {
+                        reason: "transport endpoint or mode is invalid",
+                    }
+                }
                 TransportError::Network => ProviderAdapterError::Transport,
-                TransportError::Other => ProviderAdapterError::Transport,
+                TransportError::ResponseTooLarge
+                | TransportError::InvalidResponse
+                | TransportError::Redirect
+                | TransportError::Other => ProviderAdapterError::Transport,
             })?;
         if !(200..300).contains(&response.status_code) {
             return Err(match response.status_code {

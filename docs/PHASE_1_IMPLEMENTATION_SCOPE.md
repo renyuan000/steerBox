@@ -29,11 +29,11 @@
 
 ### 当前可执行切片
 
-已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop、secret-free `LocalFixtureModelAdapter` 决策链，以及接入 `LoopController` 的 `ToolRegistry`/`PolicyGate` 和受控只读工具执行器切片。当前 executor 只执行固定 argv 的 `git status --short --branch`，不接受 shell 字符串、不执行写操作，且对 workspace、超时和输出大小做限制；controller 会记录 `policy_decision`、`tool_call_requested`、成功或失败的工具事件，并追加 trace/side-effect 记录。软件开发垂直切片还可执行受审批的 Markdown 修改、链接验证和 `RunSummary` 写入，验证失败返回非零退出。UserCommandInbox 已在 controller 安全边界支持 pause/resume/cancel，但同步模型调用期间不读取命令；可连接的后台控制面、修订/接管、真实模型、完整工具执行器与完整 Agent 仍未完成。
+已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop、secret-free `LocalFixtureModelAdapter` 决策链，以及接入 `LoopController` 的 `ToolRegistry`/`PolicyGate` 和受控只读工具执行器切片。当前 executor 只执行固定 argv 的 `git status --short --branch`，不接受 shell 字符串、不执行写操作，且对 workspace、超时和输出大小做限制；controller 会记录 `policy_decision`、`tool_call_requested`、成功或失败的工具事件，并追加 trace/side-effect 记录。软件开发垂直切片还可执行受审批的 Markdown 修改、链接验证和 `RunSummary` 写入，验证失败返回非零退出。当前新增了注入式 non-stream HTTP transport、secret-free credential resolver 边界、`ResolvedPromptPack` 到 `ModelCallStore` 的 opt-in 审计路径，以及 TaskRun／Attempt 最小父关系／总预算 schema。UserCommandInbox 已在 controller 安全边界支持 pause/resume/cancel，但同步模型调用期间不读取命令；可连接的后台控制面、修订/接管、真实 profile/live provider、模型动作闭环、完整工具执行器与完整 Agent 仍未完成。
 
 ### 长期运行目标与 Phase 1 实现边界
 
-模型路径已有本地规则路由到 `ModelAdapterRegistry` 的 LoopController 接线，EventLog 保存路由及关联的调用事件；High risk 或 Restricted privacy 路由在没有审批 resolver 时先记录人工介入，再拒绝调用。模型失败会写 `step_failed`，避免 StateStore 留下 Running 步骤。静态 `ResolvedPromptPack` 和 opt-in provider bridge 已通过 fake 请求验证 provider/endpoint/model/prompt 分层及实际 wire hash，但尚未接入 LoopController 的实际 `ModelCallStore` 记录。动态 fallback 和真实网络 transport 仍待接线。registry 与审计字段校验不保证任意 URL、prompt 或摘要字符串不含敏感正文。
+模型路径已有本地规则路由到 `ModelAdapterRegistry` 的 LoopController 接线，EventLog 保存路由及关联的调用事件；High risk 或 Restricted privacy 路由在没有审批 resolver 时先记录人工介入，再拒绝调用。模型失败会写 `step_failed`，避免 StateStore 留下 Running 步骤。静态 `ResolvedPromptPack`、opt-in provider bridge 和 `ResolvedPromptPack` → `ModelCallStore` 审计路径已通过 fake/localhost 请求验证 provider/endpoint/model/prompt 分层、实际 wire hash、usage/finish_reason 和 fail-closed 失败路径。动态 fallback、真实 profile/live provider、模型动作闭环和完整恢复仍待接线。registry 与审计字段校验不保证任意 URL、prompt 或摘要字符串不含敏感正文。
 
 架构目标是四个专业方向都支持 7x24 常驻和多年可恢复生命周期；这不是 Phase 1 已实现能力的声明。Phase 1 的目标边界包含本地单机、顺序执行、持久化事件、任务状态和最小 `RecoveryCheckpoint`。当前代码已实现 JSON StateStore 持久化 reopen、Trace/Checkpoint/SideEffect JSONL 记录、只读 BoardProjection fixture、静态 GoalAlignment/DriftGuard 报告以及 Markdown 文件修改/链接验证开发 loop；完整恢复闭环、运行中用户控制面和真实模型 provider 仍是未完成验收项。
 

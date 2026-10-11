@@ -438,6 +438,256 @@ impl LoopBudget {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptReason {
+    Initial,
+    Retry,
+    Fallback,
+    Resume,
+    Fork,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptStatus {
+    Running,
+    Succeeded,
+    Failed,
+    WaitingHuman,
+    Blocked,
+    Cancelled,
+}
+
+impl AttemptStatus {
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Running)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Attempt {
+    pub attempt_id: String,
+    pub task_run_id: String,
+    pub attempt_no: u32,
+    pub reason: AttemptReason,
+    pub worker_id: Option<String>,
+    pub workspace_ref: Option<String>,
+    pub route_decision_id: Option<String>,
+    pub resolved_prompt_pack_id: Option<String>,
+    pub parent_attempt_id: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub status: AttemptStatus,
+    pub verification_status: String,
+    pub artifact_refs: Vec<String>,
+    pub evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRunStatus {
+    Running,
+    Succeeded,
+    Failed,
+    WaitingHuman,
+    Blocked,
+    Cancelled,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum AttemptLineageError {
+    #[error("task run field must not be empty: {field}")]
+    EmptyField { field: &'static str },
+    #[error("task run is terminal")]
+    TaskRunTerminal,
+    #[error("initial attempt cannot have a parent")]
+    InitialParent,
+    #[error("non-initial attempt requires a parent")]
+    ParentRequired,
+    #[error("attempt parent does not belong to this task run: {0}")]
+    ParentNotFound(String),
+    #[error("attempt parent is still running: {0}")]
+    ParentNotFinished(String),
+    #[error("attempt already exists: {0}")]
+    DuplicateAttempt(String),
+    #[error("attempt number overflow")]
+    AttemptNumberOverflow,
+    #[error("attempt budget exhausted")]
+    AttemptBudgetExhausted,
+    #[error("attempt not found: {0}")]
+    AttemptNotFound(String),
+    #[error("attempt is already terminal: {0}")]
+    AttemptAlreadyFinished(String),
+    #[error("attempt status must be terminal when finishing")]
+    NonTerminalFinish,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskRun {
+    pub task_run_id: String,
+    pub task_id: String,
+    pub schema_version: u32,
+    pub object_version: u64,
+    pub worker_id: Option<String>,
+    pub workspace_ref: Option<String>,
+    pub budget: LoopBudget,
+    pub status: TaskRunStatus,
+    pub verification_status: String,
+    pub artifact_refs: Vec<String>,
+    pub evidence_refs: Vec<String>,
+    pub blocking_issue_refs: Vec<String>,
+    pub started_at: String,
+    pub heartbeat_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub current_attempt_id: Option<String>,
+    pub attempts: Vec<Attempt>,
+}
+
+impl TaskRun {
+    pub fn new(
+        task_run_id: impl Into<String>,
+        task_id: impl Into<String>,
+        budget: LoopBudget,
+    ) -> Result<Self, AttemptLineageError> {
+        let task_run_id = task_run_id.into();
+        let task_id = task_id.into();
+        require_lineage_field(&task_run_id, "task_run_id")?;
+        require_lineage_field(&task_id, "task_id")?;
+        Ok(Self {
+            task_run_id,
+            task_id,
+            schema_version: 1,
+            object_version: 1,
+            worker_id: None,
+            workspace_ref: None,
+            budget,
+            status: TaskRunStatus::Running,
+            verification_status: "not_run".into(),
+            artifact_refs: Vec::new(),
+            evidence_refs: Vec::new(),
+            blocking_issue_refs: Vec::new(),
+            started_at: now(),
+            heartbeat_at: None,
+            finished_at: None,
+            current_attempt_id: None,
+            attempts: Vec::new(),
+        })
+    }
+
+    pub fn start_attempt(
+        &mut self,
+        attempt_id: impl Into<String>,
+        reason: AttemptReason,
+        parent_attempt_id: Option<String>,
+    ) -> Result<Attempt, AttemptLineageError> {
+        if !matches!(self.status, TaskRunStatus::Running) {
+            return Err(AttemptLineageError::TaskRunTerminal);
+        }
+        let attempt_id = attempt_id.into();
+        require_lineage_field(&attempt_id, "attempt_id")?;
+        if self
+            .attempts
+            .iter()
+            .any(|attempt| attempt.attempt_id == attempt_id)
+        {
+            return Err(AttemptLineageError::DuplicateAttempt(attempt_id));
+        }
+        match (reason, parent_attempt_id.as_deref()) {
+            (AttemptReason::Initial, None) if self.attempts.is_empty() => {}
+            (AttemptReason::Initial, Some(_)) => return Err(AttemptLineageError::InitialParent),
+            (AttemptReason::Initial, None) => {
+                return Err(AttemptLineageError::DuplicateAttempt("initial".into()))
+            }
+            (_, None) => return Err(AttemptLineageError::ParentRequired),
+            (_, Some(parent_id)) => {
+                let parent = self
+                    .attempts
+                    .iter()
+                    .find(|attempt| attempt.attempt_id == parent_id)
+                    .ok_or_else(|| AttemptLineageError::ParentNotFound(parent_id.into()))?;
+                if !parent.status.is_terminal() {
+                    return Err(AttemptLineageError::ParentNotFinished(parent_id.into()));
+                }
+            }
+        }
+        let attempt_no = u32::try_from(self.attempts.len())
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or(AttemptLineageError::AttemptNumberOverflow)?;
+        let mut next_budget = self.budget.clone();
+        next_budget
+            .start_attempt()
+            .map_err(|_| AttemptLineageError::AttemptBudgetExhausted)?;
+        let attempt = Attempt {
+            attempt_id,
+            task_run_id: self.task_run_id.clone(),
+            attempt_no,
+            reason,
+            worker_id: self.worker_id.clone(),
+            workspace_ref: self.workspace_ref.clone(),
+            route_decision_id: None,
+            resolved_prompt_pack_id: None,
+            parent_attempt_id,
+            started_at: now(),
+            finished_at: None,
+            status: AttemptStatus::Running,
+            verification_status: "not_run".into(),
+            artifact_refs: Vec::new(),
+            evidence_refs: Vec::new(),
+        };
+        self.budget = next_budget;
+        self.current_attempt_id = Some(attempt.attempt_id.clone());
+        self.attempts.push(attempt.clone());
+        self.object_version += 1;
+        Ok(attempt)
+    }
+
+    pub fn finish_attempt(
+        &mut self,
+        attempt_id: &str,
+        status: AttemptStatus,
+        verification_status: impl Into<String>,
+        artifact_refs: Vec<String>,
+        evidence_refs: Vec<String>,
+    ) -> Result<(), AttemptLineageError> {
+        if !status.is_terminal() {
+            return Err(AttemptLineageError::NonTerminalFinish);
+        }
+        let attempt = self
+            .attempts
+            .iter_mut()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound(attempt_id.into()))?;
+        if attempt.status.is_terminal() {
+            return Err(AttemptLineageError::AttemptAlreadyFinished(
+                attempt_id.into(),
+            ));
+        }
+        attempt.status = status;
+        attempt.verification_status = verification_status.into();
+        attempt.artifact_refs = artifact_refs;
+        attempt.evidence_refs = evidence_refs;
+        attempt.finished_at = Some(now());
+        self.object_version += 1;
+        Ok(())
+    }
+
+    pub fn attempt(&self, attempt_id: &str) -> Option<&Attempt> {
+        self.attempts
+            .iter()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+    }
+}
+
+fn require_lineage_field(value: &str, field: &'static str) -> Result<(), AttemptLineageError> {
+    if value.trim().is_empty() {
+        Err(AttemptLineageError::EmptyField { field })
+    } else {
+        Ok(())
+    }
+}
+
 fn consume_budget(limit: u32, used: &mut u32, kind: BudgetKind) -> Result<(), BudgetKind> {
     if *used >= limit {
         Err(kind)
