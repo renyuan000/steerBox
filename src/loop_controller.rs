@@ -29,8 +29,8 @@ use crate::tool_executor::{
 };
 use crate::tool_registry::ToolRegistry;
 use crate::user_command_inbox::{
-    CommandKind, CommandPollResult, CommandPoller, CommandStatus, NonBlockingCommandReader,
-    UserCommandInbox, UserCommandInboxError,
+    CommandDrainResult, CommandKind, CommandPollResult, CommandPoller, CommandStatus,
+    NonBlockingCommandReader, UserCommandInbox, UserCommandInboxError,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -420,6 +420,28 @@ impl ReadOnlyLoopController {
             .ok_or(LoopControllerError::CommandInboxRequired)?;
         let result = poller.poll()?;
         if let CommandPollResult::Command(command) = &result {
+            inbox.submit(command.clone())?;
+        }
+        Ok(result)
+    }
+
+    /// Polls and persists at most `max_commands` complete commands for one
+    /// runtime tick. Applying their effects remains deferred to the next
+    /// action's existing safe boundary.
+    pub fn poll_and_submit_commands<R>(
+        &mut self,
+        poller: &mut CommandPoller<R>,
+        max_commands: usize,
+    ) -> Result<CommandDrainResult, LoopControllerError>
+    where
+        R: NonBlockingCommandReader,
+    {
+        let inbox = self
+            .command_inbox
+            .clone()
+            .ok_or(LoopControllerError::CommandInboxRequired)?;
+        let result = poller.poll_many(max_commands)?;
+        for command in &result.commands {
             inbox.submit(command.clone())?;
         }
         Ok(result)
@@ -1371,14 +1393,14 @@ impl ReadOnlyLoopController {
         self.append_model_event(
             "tool_call_completed",
             &format!("{step_id}:tool_completed"),
-            json!({"tool_id": input.tool_id, "summary": output.summary, "result": output.result}),
+            redacted_tool_success_payload(&input.tool_id, &output),
         )?;
         self.record_tool_audit(
             registry,
             &input.tool_id,
             &step_id,
             "completed",
-            &output.summary,
+            "tool call completed; output redacted",
         )?;
         self.report_progress(
             ProgressSubject::Tool,
@@ -1842,6 +1864,18 @@ fn tool_failure_payload(
             "lifecycle_state": "candidate"
         },
         "redaction_class": "summary"
+    })
+}
+
+fn redacted_tool_success_payload(tool_id: &str, output: &ToolCallOutput) -> serde_json::Value {
+    let result = &output.result;
+    json!({
+        "tool_id": tool_id,
+        "executed": result.get("executed").and_then(serde_json::Value::as_bool),
+        "exit_code": result.get("exit_code"),
+        "stdout_truncated": result.get("stdout_truncated"),
+        "stderr_truncated": result.get("stderr_truncated"),
+        "output_redacted": true,
     })
 }
 

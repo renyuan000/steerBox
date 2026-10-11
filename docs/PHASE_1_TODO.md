@@ -246,7 +246,7 @@ Memory 最小实现：
 - [x] 实现按 prompt ID/version、role/task 的最小 prompt binding 查询
 - [x] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成可冻结的 `ResolvedPromptPack` 并由 opt-in resolved bridge 使用（fake/localhost 请求已验证模板实际进入最终 messages、logical model 与 wire model 分离、wire body hash 一致；resolved controller 审计路径已接线）
 - [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（resolved controller 成功、provider 失败、审计写入失败和 binding/approval fail-closed 已有回归；真实 provider、fallback 和完整验证结果仍待完成）
-- [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
+- [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；只读工具 raw output 已从 EventLog/TraceStore/SideEffectLedger 脱敏；文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
 - [ ] 实现能力兼容、非静默的 fallback 事件
 - [ ] 验证 registry、prompt、trace、event log 和 checkpoint 不保存认证明文
 

@@ -8,8 +8,8 @@ use std::os::unix::net::UnixStream;
 #[cfg(unix)]
 use steerbox::user_command_inbox::UnixCommandReader;
 use steerbox::user_command_inbox::{
-    CommandKind, CommandPollResult, CommandPoller, CommandRead, CommandStatus,
-    NonBlockingCommandReader, ReadCommandReader, UserCommand, UserCommandInbox,
+    CommandDrainStopReason, CommandKind, CommandPollResult, CommandPoller, CommandRead,
+    CommandStatus, NonBlockingCommandReader, ReadCommandReader, UserCommand, UserCommandInbox,
     UserCommandInboxError,
 };
 
@@ -283,6 +283,77 @@ fn poll_rejects_complete_line_over_configured_limit() {
         poller.poll(),
         Err(UserCommandInboxError::InputLineTooLong { max_bytes: 4 })
     ));
+}
+
+#[test]
+fn poll_many_limits_flood_and_preserves_command_order() {
+    let commands = [
+        command("flood-1", serde_json::json!({"order": 1})),
+        command("flood-2", serde_json::json!({"order": 2})),
+        command("flood-3", serde_json::json!({"order": 3})),
+    ];
+    let mut input = Vec::new();
+    for command in &commands {
+        input.extend(serde_json::to_vec(command).expect("command serializes"));
+        input.push(b'\n');
+    }
+    let mut poller = CommandPoller::new(ScriptedReader::new([
+        Ok(CommandRead::Data(input)),
+        Ok(CommandRead::NoInput),
+    ]));
+
+    let first = poller.poll_many(2).expect("first bounded drain succeeds");
+    assert_eq!(
+        first
+            .commands
+            .iter()
+            .map(|command| command.command_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["flood-1", "flood-2"]
+    );
+    assert_eq!(first.stop_reason, CommandDrainStopReason::LimitReached);
+
+    let second = poller.poll_many(2).expect("second bounded drain succeeds");
+    assert_eq!(
+        second
+            .commands
+            .iter()
+            .map(|command| command.command_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["flood-3"]
+    );
+    assert_eq!(second.stop_reason, CommandDrainStopReason::NoInput);
+}
+
+#[test]
+fn poll_many_reports_no_input_and_zero_limit_without_reading() {
+    let mut no_input = CommandPoller::new(ScriptedReader::new([Ok(CommandRead::NoInput)]));
+    let result = no_input.poll_many(2).expect("no input drain succeeds");
+    assert!(result.commands.is_empty());
+    assert_eq!(result.stop_reason, CommandDrainStopReason::NoInput);
+
+    let mut zero_limit =
+        CommandPoller::new(ScriptedReader::new([Err(UserCommandInboxError::Io {
+            message: "reader must not be called for zero limit".into(),
+        })]));
+    let result = zero_limit.poll_many(0).expect("zero limit is a no-op");
+    assert!(result.commands.is_empty());
+    assert_eq!(result.stop_reason, CommandDrainStopReason::LimitReached);
+}
+
+#[test]
+fn poll_many_reports_eof_after_draining_available_commands() {
+    let expected = command("eof-1", serde_json::json!({"reason": "done"}));
+    let mut input = serde_json::to_vec(&expected).expect("command serializes");
+    input.push(b'\n');
+    let mut poller = CommandPoller::new(ScriptedReader::new([
+        Ok(CommandRead::Data(input)),
+        Ok(CommandRead::Eof),
+    ]));
+
+    let result = poller.poll_many(2).expect("eof drain succeeds");
+    assert_eq!(result.commands, vec![expected]);
+    assert_eq!(result.stop_reason, CommandDrainStopReason::Eof);
 }
 
 #[test]

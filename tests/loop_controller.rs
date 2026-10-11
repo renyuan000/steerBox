@@ -19,8 +19,8 @@ use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, Pro
 use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallInput};
 use steerbox::tool_registry::ToolRegistry;
 use steerbox::user_command_inbox::{
-    CommandKind, CommandPollResult, CommandPoller, CommandRead, CommandStatus,
-    NonBlockingCommandReader, UserCommand, UserCommandInbox, UserCommandInboxError,
+    CommandDrainStopReason, CommandKind, CommandPollResult, CommandPoller, CommandRead,
+    CommandStatus, NonBlockingCommandReader, UserCommand, UserCommandInbox, UserCommandInboxError,
 };
 
 fn test_data_dir() -> PathBuf {
@@ -476,6 +476,113 @@ fn controller_polls_and_submits_before_next_safe_boundary_applies_pause_and_resu
             .expect("resume status exists")
             .status,
         CommandStatus::Applied
+    );
+}
+
+#[test]
+fn controller_batch_poll_submits_at_most_limit_in_order() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let inbox = UserCommandInbox::open(directory.join("commands.jsonl"));
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-batch-poll",
+            "project-batch-poll",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["manual_review".into()],
+        ),
+        "loop-batch-poll",
+        "task-run-batch-poll",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts")
+    .with_command_inbox(inbox.clone());
+
+    let commands = [
+        steering_command(
+            "batch-1",
+            "project-batch-poll",
+            "goal-batch-poll",
+            "task-run-batch-poll",
+            "loop-batch-poll",
+            CommandKind::Pause,
+        ),
+        steering_command(
+            "batch-2",
+            "project-batch-poll",
+            "goal-batch-poll",
+            "task-run-batch-poll",
+            "loop-batch-poll",
+            CommandKind::Resume,
+        ),
+        steering_command(
+            "batch-3",
+            "project-batch-poll",
+            "goal-batch-poll",
+            "task-run-batch-poll",
+            "loop-batch-poll",
+            CommandKind::Cancel,
+        ),
+    ];
+    let mut input = Vec::new();
+    for command in &commands {
+        input.extend(serde_json::to_vec(command).expect("command serializes"));
+        input.push(b'\n');
+    }
+    let mut poller = CommandPoller::new(ScriptedReader::new([
+        Ok(CommandRead::Data(input)),
+        Ok(CommandRead::NoInput),
+    ]));
+
+    let first = controller
+        .poll_and_submit_commands(&mut poller, 2)
+        .expect("first batch submits");
+    assert_eq!(
+        first
+            .commands
+            .iter()
+            .map(|command| command.command_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["batch-1", "batch-2"]
+    );
+    assert_eq!(first.stop_reason, CommandDrainStopReason::LimitReached);
+    assert_eq!(
+        inbox
+            .latest("batch-1")
+            .expect("first command exists")
+            .status,
+        CommandStatus::Pending
+    );
+    assert_eq!(
+        inbox
+            .latest("batch-2")
+            .expect("second command exists")
+            .status,
+        CommandStatus::Pending
+    );
+    assert!(inbox.latest("batch-3").is_err());
+
+    let second = controller
+        .poll_and_submit_commands(&mut poller, 2)
+        .expect("second batch submits");
+    assert_eq!(
+        second
+            .commands
+            .iter()
+            .map(|command| command.command_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["batch-3"]
+    );
+    assert_eq!(second.stop_reason, CommandDrainStopReason::NoInput);
+    assert_eq!(
+        inbox
+            .latest("batch-3")
+            .expect("third command exists")
+            .status,
+        CommandStatus::Pending
     );
 }
 
@@ -1289,6 +1396,81 @@ fn controller_persists_tool_trace_and_explicit_no_side_effect_record() {
     assert_eq!(side_effects.len(), 1);
     assert_eq!(side_effects[0].class, "none");
     assert_eq!(side_effects[0].status, "completed");
+}
+
+#[test]
+fn controller_redacts_raw_search_output_from_persisted_audit_records() {
+    let directory = test_data_dir();
+    let workspace = directory.join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace creates");
+    let marker = "FAKE_SECRET_MARKER_FOR_AUDIT_TEST";
+    fs::write(workspace.join("evidence.txt"), format!("{marker}\n"))
+        .expect("fixture evidence writes");
+
+    let mut goal = GoalContract::new(
+        "goal-redaction",
+        "project-redaction",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["search completed".into()],
+    );
+    goal.allowed_tools = vec!["rg_fixed".into()];
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        goal,
+        "loop-redaction",
+        "task-run-redaction",
+        LoopBudget::new(1, 1, 1, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts")
+    .with_audit_stores(
+        directory.join("traces.jsonl"),
+        directory.join("side-effects.jsonl"),
+    );
+
+    controller
+        .execute_read_only_tool(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &PolicyGate::new(),
+            &ReadOnlyToolExecutor,
+            &workspace,
+            ToolCallInput {
+                tool_id: "rg_fixed".into(),
+                arguments: serde_json::json!({
+                    "path": "evidence.txt",
+                    "query": marker,
+                }),
+            },
+            "step-redaction",
+        )
+        .expect("search tool executes");
+
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    let traces = TraceStore::open(directory.join("traces.jsonl"))
+        .read_all()
+        .expect("traces read");
+    let side_effects = SideEffectLedger::open(directory.join("side-effects.jsonl"))
+        .read_all()
+        .expect("side effects read");
+    let persisted = format!("{events:?}{traces:?}{side_effects:?}");
+    assert!(!persisted.contains(marker));
+    let completed = events
+        .iter()
+        .find(|event| event.event_type == "tool_call_completed")
+        .expect("completed event exists");
+    assert_eq!(completed.payload["tool_id"], "rg_fixed");
+    assert_eq!(completed.payload["output_redacted"], true);
+    assert!(completed.payload.get("stdout").is_none());
+    assert!(completed.payload.get("query").is_none());
+    assert_eq!(traces[0].summary, "tool call completed; output redacted");
+    assert_eq!(
+        side_effects[0].summary,
+        "tool call completed; output redacted"
+    );
 }
 
 #[test]

@@ -238,6 +238,19 @@ pub enum CommandPollResult {
     Eof,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandDrainStopReason {
+    LimitReached,
+    NoInput,
+    Eof,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandDrainResult {
+    pub commands: Vec<UserCommand>,
+    pub stop_reason: CommandDrainStopReason,
+}
+
 /// Maximum command line size used by [`CommandPoller::new`].
 pub const DEFAULT_MAX_COMMAND_LINE_BYTES: usize = 1024 * 1024;
 
@@ -299,6 +312,42 @@ impl<R: NonBlockingCommandReader> CommandPoller<R> {
                 CommandRead::Eof => self.eof = true,
             }
         }
+    }
+
+    pub fn poll_many(
+        &mut self,
+        max_commands: usize,
+    ) -> Result<CommandDrainResult, UserCommandInboxError> {
+        if max_commands == 0 {
+            return Ok(CommandDrainResult {
+                commands: Vec::new(),
+                stop_reason: CommandDrainStopReason::LimitReached,
+            });
+        }
+
+        let mut commands = Vec::with_capacity(max_commands.min(8));
+        while commands.len() < max_commands {
+            match self.poll()? {
+                CommandPollResult::Command(command) => commands.push(command),
+                CommandPollResult::NoInput => {
+                    return Ok(CommandDrainResult {
+                        commands,
+                        stop_reason: CommandDrainStopReason::NoInput,
+                    });
+                }
+                CommandPollResult::Eof => {
+                    return Ok(CommandDrainResult {
+                        commands,
+                        stop_reason: CommandDrainStopReason::Eof,
+                    });
+                }
+            }
+        }
+
+        Ok(CommandDrainResult {
+            commands,
+            stop_reason: CommandDrainStopReason::LimitReached,
+        })
     }
 
     fn take_complete_line(&mut self) -> Result<Option<String>, UserCommandInboxError> {
