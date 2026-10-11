@@ -82,6 +82,12 @@ impl ToolRegistry {
                 "read a bounded regular file within the workspace",
                 "read-file-readonly",
             ),
+            workspace_write_profile(
+                "edit_markdown",
+                "edit Markdown",
+                "replace exact Markdown content after explicit approval",
+                "markdown-edit-workspace",
+            ),
             readonly_profile(
                 "markdown_link_check",
                 "Markdown link check",
@@ -106,6 +112,30 @@ fn readonly_profile(tool_id: &str, name: &str, description: &str, recipe_ref: &s
         risk_level: RiskLevel::Low,
         allowed_in_modes: vec![
             HumanSteeringMode::AutonomousLoop,
+            HumanSteeringMode::HumanSteerableLoop,
+            HumanSteeringMode::HumanInTheLoop,
+            HumanSteeringMode::ManualTakeover,
+        ],
+        recipe_ref: Some(recipe_ref.into()),
+        version: 1,
+    }
+}
+
+fn workspace_write_profile(
+    tool_id: &str,
+    name: &str,
+    description: &str,
+    recipe_ref: &str,
+) -> ToolProfile {
+    ToolProfile {
+        tool_id: tool_id.into(),
+        name: name.into(),
+        description: description.into(),
+        input_schema: serde_json::json!({"arguments": "object"}),
+        output_schema: serde_json::json!({"relative_path": "string", "changed": "boolean"}),
+        side_effect_class: SideEffectClass::WorkspaceWrite,
+        risk_level: RiskLevel::Medium,
+        allowed_in_modes: vec![
             HumanSteeringMode::HumanSteerableLoop,
             HumanSteeringMode::HumanInTheLoop,
             HumanSteeringMode::ManualTakeover,

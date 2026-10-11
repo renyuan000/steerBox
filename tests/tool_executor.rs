@@ -3,6 +3,7 @@ use steerbox::domain::{HumanSteeringMode, RiskLevel};
 use steerbox::model_contracts::{ActionPathScope, ModelActionEnvelope, VerificationContract};
 use steerbox::tool_executor::{
     ReadOnlyToolExecutor, StructuredToolAction, ToolCallInput, ToolExecutionError,
+    WorkspaceToolExecutionError, WorkspaceToolExecutor,
 };
 use steerbox::tool_registry::{SideEffectClass, ToolProfile, ToolRegistry};
 
@@ -279,4 +280,70 @@ fn structured_action_rejects_workspace_mismatch_and_path_escape() {
         ReadOnlyToolExecutor.map_action(&registry, &workspace, &escape),
         Err(ToolExecutionError::InvalidArguments)
     ));
+}
+
+#[test]
+fn workspace_edit_requires_explicit_approval_and_preserves_scope() {
+    let workspace = std::env::temp_dir().join(format!("steerbox-tool-edit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("workspace creates");
+    std::fs::write(workspace.join("README.md"), "old\n").expect("fixture writes");
+    let goal = steerbox::domain::GoalContract::new(
+        "goal-tool-edit",
+        "project-tool-edit",
+        "update docs",
+        vec![".".into()],
+        Vec::new(),
+        vec!["edit_markdown".into()],
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let executor = WorkspaceToolExecutor;
+
+    let input = ToolCallInput {
+        tool_id: "edit_markdown".into(),
+        arguments: json!({
+            "path": "README.md",
+            "expected": "old\n",
+            "replacement": "new\n",
+        }),
+    };
+    assert!(matches!(
+        executor.execute(&registry, &workspace, &goal, input.clone(), false),
+        Err(WorkspaceToolExecutionError::Edit(
+            steerbox::workspace_edit::WorkspaceEditError::ApprovalRequired
+        ))
+    ));
+    let result = executor
+        .execute(&registry, &workspace, &goal, input, true)
+        .expect("approved edit succeeds");
+    assert!(result.changed);
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("README.md")).unwrap(),
+        "new\n"
+    );
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn workspace_edit_maps_as_a_write_action_but_does_not_execute() {
+    let workspace = std::env::current_dir().expect("current directory exists");
+    let action = action(
+        "edit_markdown",
+        json!({"path": "README.md", "expected": "x", "replacement": "y"}),
+        "README.md",
+    );
+    assert_eq!(
+        WorkspaceToolExecutor
+            .map_action(
+                &ToolRegistry::baseline().expect("baseline tools register"),
+                &workspace,
+                &action,
+            )
+            .expect("write action maps"),
+        StructuredToolAction::EditMarkdown {
+            path: "README.md".into(),
+            expected: "x".into(),
+            replacement: "y".into(),
+        }
+    );
 }

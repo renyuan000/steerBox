@@ -1,6 +1,7 @@
-use crate::domain::RiskLevel;
+use crate::domain::{GoalContract, RiskLevel};
 use crate::model_contracts::ModelActionEnvelope;
 use crate::tool_registry::{SideEffectClass, ToolRegistry};
+use crate::workspace_edit::{edit_markdown, EditResult, WorkspaceEditError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -29,9 +30,21 @@ pub struct ToolCallOutput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StructuredToolAction {
     GitStatus,
-    ReadFile { path: String },
-    RgFixed { query: String, path: String },
-    MarkdownLinkCheck { path: String },
+    ReadFile {
+        path: String,
+    },
+    RgFixed {
+        query: String,
+        path: String,
+    },
+    MarkdownLinkCheck {
+        path: String,
+    },
+    EditMarkdown {
+        path: String,
+        expected: String,
+        replacement: String,
+    },
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -60,6 +73,21 @@ pub enum ToolExecutionError {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ReadOnlyToolExecutor;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum WorkspaceToolExecutionError {
+    #[error("tool is not registered: {0}")]
+    NotRegistered(String),
+    #[error("tool arguments must be an object with the exact expected fields")]
+    InvalidArguments,
+    #[error("tool is not a workspace-write profile: {0}")]
+    UnsafeToolProfile(String),
+    #[error("workspace edit failed: {0}")]
+    Edit(#[from] WorkspaceEditError),
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WorkspaceToolExecutor;
 
 impl ReadOnlyToolExecutor {
     /// Map a validated model action to one of the fixed read-only tool shapes.
@@ -239,6 +267,82 @@ impl ReadOnlyToolExecutor {
     }
 }
 
+impl WorkspaceToolExecutor {
+    /// Map a validated write action without executing it. The caller still
+    /// needs a policy decision and explicit approval before `execute`.
+    pub fn map_action(
+        &self,
+        registry: &ToolRegistry,
+        workspace: &Path,
+        action: &ModelActionEnvelope,
+    ) -> Result<StructuredToolAction, WorkspaceToolExecutionError> {
+        action
+            .validate()
+            .map_err(|_| WorkspaceToolExecutionError::InvalidArguments)?;
+        if !workspace.is_dir() || action.path_scope.root != workspace.display().to_string() {
+            return Err(WorkspaceToolExecutionError::InvalidArguments);
+        }
+        let profile = registry
+            .get(&action.tool_id)
+            .ok_or_else(|| WorkspaceToolExecutionError::NotRegistered(action.tool_id.clone()))?;
+        ensure_workspace_write_profile(profile)?;
+        if profile.recipe_ref.as_deref() != Some("markdown-edit-workspace") {
+            return Err(WorkspaceToolExecutionError::UnsafeToolProfile(
+                profile.tool_id.clone(),
+            ));
+        }
+        require_exact_keys_write(&action.parameters, &["expected", "path", "replacement"])?;
+        Ok(StructuredToolAction::EditMarkdown {
+            path: required_write_string(&action.parameters, "path")?,
+            expected: required_string_allow_empty(&action.parameters, "expected")?,
+            replacement: required_string_allow_empty(&action.parameters, "replacement")?,
+        })
+    }
+
+    /// Execute only the registered Markdown edit recipe. `approved` must be
+    /// supplied by a trusted policy/interaction boundary; the helper itself
+    /// remains atomic and workspace-scoped.
+    pub fn execute(
+        &self,
+        registry: &ToolRegistry,
+        workspace: &Path,
+        goal: &GoalContract,
+        input: ToolCallInput,
+        approved: bool,
+    ) -> Result<EditResult, WorkspaceToolExecutionError> {
+        let profile = registry
+            .get(&input.tool_id)
+            .ok_or_else(|| WorkspaceToolExecutionError::NotRegistered(input.tool_id.clone()))?;
+        ensure_workspace_write_profile(profile)?;
+        if profile.recipe_ref.as_deref() != Some("markdown-edit-workspace") {
+            return Err(WorkspaceToolExecutionError::UnsafeToolProfile(
+                profile.tool_id.clone(),
+            ));
+        }
+        require_exact_keys_write(&input.arguments, &["expected", "path", "replacement"])?;
+        edit_markdown(
+            workspace,
+            goal,
+            &required_write_string(&input.arguments, "path")?,
+            &required_string_allow_empty(&input.arguments, "expected")?,
+            &required_string_allow_empty(&input.arguments, "replacement")?,
+            approved,
+        )
+        .map_err(WorkspaceToolExecutionError::from)
+    }
+}
+
+fn ensure_workspace_write_profile(
+    profile: &crate::tool_registry::ToolProfile,
+) -> Result<(), WorkspaceToolExecutionError> {
+    if profile.side_effect_class != SideEffectClass::WorkspaceWrite {
+        return Err(WorkspaceToolExecutionError::UnsafeToolProfile(
+            profile.tool_id.clone(),
+        ));
+    }
+    Ok(())
+}
+
 fn ensure_read_only_profile(
     profile: &crate::tool_registry::ToolProfile,
 ) -> Result<(), ToolExecutionError> {
@@ -260,6 +364,19 @@ fn require_exact_keys(value: &Value, expected: &[&str]) -> Result<(), ToolExecut
     Ok(())
 }
 
+fn require_exact_keys_write(
+    value: &Value,
+    expected: &[&str],
+) -> Result<(), WorkspaceToolExecutionError> {
+    let object = value
+        .as_object()
+        .ok_or(WorkspaceToolExecutionError::InvalidArguments)?;
+    if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
+        return Err(WorkspaceToolExecutionError::InvalidArguments);
+    }
+    Ok(())
+}
+
 fn required_string(value: &Value, key: &'static str) -> Result<String, ToolExecutionError> {
     value
         .get(key)
@@ -267,6 +384,29 @@ fn required_string(value: &Value, key: &'static str) -> Result<String, ToolExecu
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
         .ok_or(ToolExecutionError::InvalidArguments)
+}
+
+fn required_string_allow_empty(
+    value: &Value,
+    key: &'static str,
+) -> Result<String, WorkspaceToolExecutionError> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or(WorkspaceToolExecutionError::InvalidArguments)
+}
+
+fn required_write_string(
+    value: &Value,
+    key: &'static str,
+) -> Result<String, WorkspaceToolExecutionError> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or(WorkspaceToolExecutionError::InvalidArguments)
 }
 
 fn resolve_workspace_path(workspace: &Path, relative: &str) -> Result<PathBuf, ToolExecutionError> {

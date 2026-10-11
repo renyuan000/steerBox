@@ -60,6 +60,27 @@ fn baseline_registry_exposes_read_only_recipes() {
 }
 
 #[test]
+fn baseline_registry_exposes_workspace_edit_as_approval_gated() {
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let profile = registry
+        .get("edit_markdown")
+        .expect("workspace edit profile exists");
+    assert_eq!(profile.side_effect_class, SideEffectClass::WorkspaceWrite);
+    assert_eq!(profile.risk_level, RiskLevel::Medium);
+    assert_eq!(
+        profile.recipe_ref.as_deref(),
+        Some("markdown-edit-workspace")
+    );
+
+    let decision = PolicyGate::new().evaluate(
+        &registry,
+        &goal(vec!["edit_markdown"], Vec::new()),
+        &request("edit_markdown"),
+    );
+    assert_eq!(decision.decision, PolicyDecision::RequireHumanApproval);
+}
+
+#[test]
 fn registry_rejects_duplicate_without_replacing_original_profile() {
     let mut registry = ToolRegistry::baseline().expect("baseline tools register");
     let original = registry
