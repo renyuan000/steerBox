@@ -1,3 +1,4 @@
+pub mod anthropic_adapter;
 pub mod audit_store;
 pub mod board_projection;
 pub mod budget_calculator;

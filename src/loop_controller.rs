@@ -26,7 +26,8 @@ use crate::tool_executor::{
 };
 use crate::tool_registry::ToolRegistry;
 use crate::user_command_inbox::{
-    CommandKind, CommandStatus, UserCommandInbox, UserCommandInboxError,
+    CommandKind, CommandPollResult, CommandPoller, CommandStatus, NonBlockingCommandReader,
+    UserCommandInbox, UserCommandInboxError,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -80,6 +81,8 @@ pub enum LoopControllerError {
     AuditStore(#[from] AuditStoreError),
     #[error("user command inbox failed: {0}")]
     UserCommandInbox(#[from] UserCommandInboxError),
+    #[error("user command inbox is not configured")]
+    CommandInboxRequired,
     #[error("progress reporting failed: {0}")]
     ProgressReport(String),
 }
@@ -360,6 +363,27 @@ impl ReadOnlyLoopController {
     pub fn with_command_inbox(mut self, inbox: UserCommandInbox) -> Self {
         self.command_inbox = Some(inbox);
         self
+    }
+
+    /// Polls one injected non-blocking command source and persists only a
+    /// complete, validated command. Loop state changes remain deferred to the
+    /// next action's existing safe-boundary processing.
+    pub fn poll_and_submit_command<R>(
+        &mut self,
+        poller: &mut CommandPoller<R>,
+    ) -> Result<CommandPollResult, LoopControllerError>
+    where
+        R: NonBlockingCommandReader,
+    {
+        let inbox = self
+            .command_inbox
+            .clone()
+            .ok_or(LoopControllerError::CommandInboxRequired)?;
+        let result = poller.poll()?;
+        if let CommandPollResult::Command(command) = &result {
+            inbox.submit(command.clone())?;
+        }
+        Ok(result)
     }
 
     pub fn run_observation(

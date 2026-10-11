@@ -150,6 +150,7 @@ Memory 最小实现：
 - [ ] 支持失败后 reflection summary
 - [x] 实现 LoopBudget 与 NoProgressTracker 的领域级停止规则
 - [x] 实现 `UserCommandInbox` 持久化、command_id 幂等和按 loop 的 pending 读取；LoopController 已在安全边界应用 `pause` / `resume` / `cancel`，`takeover` 和 side-effect 不确定分支仍待完成
+- [x] 增加注入式完整行 `CommandPoller`，并提供 poll → validate → submit → 下一安全边界 apply 的 controller API；真实 OS stdin、后台 polling 和 takeover 仍待完成
 - [ ] 实现 `GoalRevision` / `PlanRevision` 与旧计划失效
 - [ ] 实现 `InterruptRequest` 的安全边界和 `side_effect_uncertain` 分支
 - [x] 实现 `LoopBudget` 与 `NoProgressObservation`，达到上限后停止自动重试（model loop 已接入重复动作检测）
@@ -235,6 +236,7 @@ Memory 最小实现：
 
 - [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（注册及 registry JSON 反序列化重验标识/关联，prompt 版本/role/task 查询已有测试；模型路由已使用 registry，完整 prompt resolution 尚未接线）
 - [x] 建立 provider-neutral OpenAI-compatible adapter、fake transport 和严格错误分类；新增 non-stream HTTP transport、注入式 credential resolver、localhost 安全集成测试和显式 no-redirect/no-retry/response-limit 边界；完成 secret-free profile → provider adapter 绑定（focused 3 tests 通过；配置绑定不调用 resolver、不读取环境变量、不发起网络请求；非 `openai`/`openai-compatible` endpoint 会在 resolved bridge 发送前拒绝）
+- [x] 增加独立 Anthropic non-stream protocol adapter（独立 `x-api-key` / `anthropic-version` envelope、状态分类、响应解析和 secret-free auth_ref 校验）；未接入真实 HTTP transport 或 live provider
 - [x] 建立 provider-to-`ModelAdapter` bridge（仅接受严格 `decision`/`summary` JSON envelope；固定输出契约放 system，用户目标与 observation 作为 JSON 编码数据放 user，不升格为 system/developer；fake transport 实际请求体已有回归，不代表完整 prompt 解析或提示注入防护）
 - [ ] 接入至少一个真实网络 model provider（HTTP transport 和 secret-free profile/auth_ref 绑定已通过 focused 回归；仍未完成获准 live 调用）
 - [x] 接入 secret-free `LocalFixtureModelAdapter`，并记录结构化 model decision 事件
@@ -244,10 +246,11 @@ Memory 最小实现：
 - [x] 实现按 prompt ID/version、role/task 的最小 prompt binding 查询
 - [x] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成可冻结的 `ResolvedPromptPack` 并由 opt-in resolved bridge 使用（fake/localhost 请求已验证模板实际进入最终 messages、logical model 与 wire model 分离、wire body hash 一致；resolved controller 审计路径已接线）
 - [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore`（resolved controller 成功、provider 失败、审计写入失败和 binding/approval fail-closed 已有回归；真实 provider、fallback 和完整验证结果仍待完成）
+- [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；尚未接入模型输出、PolicyGate、ToolExecutor 或验证回传闭环
 - [ ] 实现能力兼容、非静默的 fallback 事件
 - [ ] 验证 registry、prompt、trace、event log 和 checkpoint 不保存认证明文
 
-最新验证记录（2026-10-11）：`config_provider_binding` 3 项、`provider_model_adapter` 5 项、`resolved_provider_model_adapter` 9 项、`loop_controller` 17 项、`stream_reporter` 5 项、`user_command_inbox` 11 项 focused 测试通过；修复 CLI 进度标识回归后，全量 test、clippy、build、fmt 和 diff 门禁由 master 复跑通过。该记录不等于真实 provider、live credential、fallback、OS stdin 接入、模型动作闭环或完整 Phase 1 验收通过。
+最新验证记录（2026-10-11）：`anthropic_adapter` 5 项、`model_contracts` 11 项、`model_action_contracts` 6 项、`config_provider_binding` 3 项、`provider_model_adapter` 5 项、`resolved_provider_model_adapter` 9 项、`loop_controller` 22 项、`stream_reporter` 5 项、`user_command_inbox` 11 项 focused 测试通过；随后全量 test、clippy、build、fmt 和 diff 门禁由 master 复跑通过。该记录不等于 live provider、fallback、OS stdin 接入、模型动作执行闭环、恢复或完整 Phase 1 验收通过。
 
 验收：
 

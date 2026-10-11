@@ -18,7 +18,7 @@
 |---|---|---|---|
 | 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | non-stream OpenAI-compatible HTTP transport、注入式 credential resolver、secret-free provider profile binding 和 localhost 安全集成测试已通过；live 凭据与 live 调用仍未交付 |
 | 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | resolved bridge 已接入 LoopController，并以 ModelCallStore、route/prompt/wire hash/output ref 做 fail-closed 审计；真实 provider、fallback 和完整恢复绑定仍未交付 |
-| 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 决策步、只读工具和预定义 Markdown 修改尚未连成模型动作闭环 |
+| 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 已有版本化、结构化、fail-closed 的动作 envelope；决策步、只读工具和预定义 Markdown 修改仍尚未连成模型动作闭环 |
 | 4 | 用户入口、preflight、状态／取消及真实开发任务 E2E | 首个受限可用版本门槛 | fixture CLI、注入式安全进度报告和可测试的完整行命令轮询已有；真实 OS stdin、常驻 Agent 入口、live 控制及 E2E 未交付 |
 | 5 | TaskRun／Attempt、目标／计划修订与 controller 恢复 | 完整 Phase 1 补齐项；fallback lineage／总预算是包 2 前置门禁 | TaskRun／Attempt 领域 schema、父关系、跨 Attempt 总预算校验以及初始 Attempt 到 controller 完成的最小绑定已通过；尚未接入 EventLog/StateStore 恢复、目标/计划修订或跨进程 resume |
 | 6 | 项目范围 recipe／memory／wiki 候选与验证回链 | 完整 Phase 1 补齐项 | LessonCandidate 失败来源回链已有，其余候选链未交付 |
@@ -71,7 +71,7 @@
 
 已有：
 
-- [model_adapter.rs](../src/model_adapter.rs) 的响应只有 continue_observation／complete_loop／request_human 与摘要，不包含可执行动作提案。
+- [model_adapter.rs](../src/model_adapter.rs) 的既有响应仍只有 continue_observation／complete_loop／request_human 与摘要；[model_contracts.rs](../src/model_contracts.rs) 新增了独立的版本化 `ModelActionEnvelope`，但尚未接入模型响应解析或执行链。
 - [loop_controller.rs](../src/loop_controller.rs) 已有模型步骤、policy 检查、固定 argv 的只读 `git_status` 执行，以及事件／trace／side-effect 记录。
 - [workspace_edit.rs](../src/workspace_edit.rs)、[main.rs](../src/main.rs) 已有受审批的 Markdown 精确修改、链接验证、checkpoint metadata 和成功／失败 RunSummary；[drift_guard.rs](../src/drift_guard.rs) 已有静态对齐／偏离检查。
 
@@ -91,7 +91,7 @@
 
 - [main.rs](../src/main.rs) 提供 runtime init、config validate、event、execution list/show/page、board、loop readonly/fixture 和 dev markdown；没有已交付的真实模型开发任务入口。
 - [stream_reporter.rs](../src/stream_reporter.rs) 已接入 readonly／fixture CLI 的生命周期反馈；[execution_query.rs](../src/execution_query.rs) 是 metadata-only detached 历史投影，不是后台 live worker。
-- inbox/controller 已支持 pause／resume／cancel 安全边界应用，但同步模型调用期间不会读取命令，CLI 尚未提供可连接运行任务的控制入口。
+- inbox/controller 已支持 pause／resume／cancel 安全边界应用；新增的注入式 `CommandPoller` 可在下一安全边界前提交完整命令，但真实 OS stdin、同步模型调用期间轮询和 CLI 尚未提供可连接运行任务的控制入口。
 
 剩余：
 

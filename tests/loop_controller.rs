@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -13,7 +14,10 @@ use steerbox::policy_gate::{PolicyDecision, PolicyGate};
 use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
 use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallInput};
 use steerbox::tool_registry::ToolRegistry;
-use steerbox::user_command_inbox::{CommandKind, CommandStatus, UserCommand, UserCommandInbox};
+use steerbox::user_command_inbox::{
+    CommandKind, CommandPollResult, CommandPoller, CommandRead, CommandStatus,
+    NonBlockingCommandReader, UserCommand, UserCommandInbox, UserCommandInboxError,
+};
 
 fn test_data_dir() -> PathBuf {
     let nonce = SystemTime::now()
@@ -139,6 +143,324 @@ fn steering_command(
         serde_json::json!({"reason": "operator request"}),
     )
     .expect("steering command is valid")
+}
+
+struct ScriptedReader {
+    events: VecDeque<Result<CommandRead, UserCommandInboxError>>,
+}
+
+impl ScriptedReader {
+    fn new(events: impl IntoIterator<Item = Result<CommandRead, UserCommandInboxError>>) -> Self {
+        Self {
+            events: events.into_iter().collect(),
+        }
+    }
+}
+
+impl NonBlockingCommandReader for ScriptedReader {
+    fn read_available(&mut self) -> Result<CommandRead, UserCommandInboxError> {
+        self.events.pop_front().unwrap_or_else(|| {
+            Err(UserCommandInboxError::Io {
+                message: "scripted reader exhausted".into(),
+            })
+        })
+    }
+}
+
+fn command_poller(command: &UserCommand) -> CommandPoller<ScriptedReader> {
+    let mut input = serde_json::to_vec(command).expect("command serializes");
+    input.push(b'\n');
+    CommandPoller::new(ScriptedReader::new([Ok(CommandRead::Data(input))]))
+}
+
+#[test]
+fn controller_polls_and_submits_before_next_safe_boundary_applies_pause_and_resume() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let inbox = UserCommandInbox::open(directory.join("commands.jsonl"));
+    let goal = GoalContract::new(
+        "goal-polled-steering",
+        "project-polled-steering",
+        "inspect repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["manual_review".into()],
+    );
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        goal,
+        "loop-polled-steering",
+        "task-run-polled-steering",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts")
+    .with_command_inbox(inbox.clone());
+
+    let pause = steering_command(
+        "pause-polled",
+        "project-polled-steering",
+        "goal-polled-steering",
+        "task-run-polled-steering",
+        "loop-polled-steering",
+        CommandKind::Pause,
+    );
+    let mut pause_poller = command_poller(&pause);
+    assert_eq!(
+        controller
+            .poll_and_submit_command(&mut pause_poller)
+            .expect("pause poll submits"),
+        CommandPollResult::Command(pause)
+    );
+    assert_eq!(
+        inbox
+            .latest("pause-polled")
+            .expect("pause is persisted")
+            .status,
+        CommandStatus::Pending
+    );
+    assert_eq!(controller.status(), LoopStatus::Running);
+
+    let budget_before_pause = controller.budget().clone();
+    assert!(matches!(
+        controller.run_observation("step-after-pause", "not executed"),
+        Err(LoopControllerError::Paused)
+    ));
+    assert_eq!(controller.budget(), &budget_before_pause);
+    assert_eq!(
+        inbox
+            .latest("pause-polled")
+            .expect("pause status exists")
+            .status,
+        CommandStatus::Applied
+    );
+
+    let resume = steering_command(
+        "resume-polled",
+        "project-polled-steering",
+        "goal-polled-steering",
+        "task-run-polled-steering",
+        "loop-polled-steering",
+        CommandKind::Resume,
+    );
+    let mut resume_poller = command_poller(&resume);
+    assert_eq!(
+        controller
+            .poll_and_submit_command(&mut resume_poller)
+            .expect("resume poll submits"),
+        CommandPollResult::Command(resume)
+    );
+    controller
+        .run_observation("step-after-resume", "resumed safely")
+        .expect("resume applies before the next step");
+    assert_eq!(controller.status(), LoopStatus::Running);
+    assert_eq!(controller.budget().steps_used, 1);
+    assert_eq!(
+        inbox
+            .latest("resume-polled")
+            .expect("resume status exists")
+            .status,
+        CommandStatus::Applied
+    );
+}
+
+#[test]
+fn controller_does_not_submit_eof_partial_or_invalid_poll_results() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let inbox_path = directory.join("commands.jsonl");
+    let inbox = UserCommandInbox::open(&inbox_path);
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-poll-errors",
+            "project-poll-errors",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["manual_review".into()],
+        ),
+        "loop-poll-errors",
+        "task-run-poll-errors",
+        LoopBudget::new(1, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts")
+    .with_command_inbox(inbox);
+
+    let mut eof = CommandPoller::new(ScriptedReader::new([Ok(CommandRead::Eof)]));
+    assert_eq!(
+        controller
+            .poll_and_submit_command(&mut eof)
+            .expect("eof is a non-command result"),
+        CommandPollResult::Eof
+    );
+
+    let mut partial = CommandPoller::new(ScriptedReader::new([
+        Ok(CommandRead::Data(b"{\"command_id\":".to_vec())),
+        Ok(CommandRead::Eof),
+    ]));
+    assert!(matches!(
+        controller.poll_and_submit_command(&mut partial),
+        Err(LoopControllerError::UserCommandInbox(
+            UserCommandInboxError::PartialLineAtEof
+        ))
+    ));
+
+    let mut invalid = CommandPoller::new(ScriptedReader::new([Ok(CommandRead::Data(
+        b"not-json\n".to_vec(),
+    ))]));
+    assert!(matches!(
+        controller.poll_and_submit_command(&mut invalid),
+        Err(LoopControllerError::UserCommandInbox(
+            UserCommandInboxError::InvalidJson { line: 1, .. }
+        ))
+    ));
+    assert!(!inbox_path.exists());
+}
+
+#[test]
+fn polling_without_an_inbox_fails_closed_without_persisting_a_command() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let command_path = directory.join("commands.jsonl");
+    let command = steering_command(
+        "no-inbox",
+        "project-no-inbox",
+        "goal-no-inbox",
+        "task-run-no-inbox",
+        "loop-no-inbox",
+        CommandKind::Pause,
+    );
+    let mut poller = command_poller(&command);
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-no-inbox",
+            "project-no-inbox",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["manual_review".into()],
+        ),
+        "loop-no-inbox",
+        "task-run-no-inbox",
+        LoopBudget::new(1, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+
+    assert!(matches!(
+        controller.poll_and_submit_command(&mut poller),
+        Err(LoopControllerError::CommandInboxRequired)
+    ));
+    assert!(!command_path.exists());
+}
+
+#[test]
+fn polled_takeover_is_rejected_without_changing_attempt_or_budget() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let inbox = UserCommandInbox::open(directory.join("commands.jsonl"));
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-takeover",
+            "project-takeover",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["manual_review".into()],
+        ),
+        "loop-takeover",
+        "task-run-takeover",
+        LoopBudget::new(1, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts")
+    .with_command_inbox(inbox.clone());
+    let attempt_before = controller
+        .current_attempt_id()
+        .expect("attempt exists")
+        .to_owned();
+    let budget_before = controller.budget().clone();
+    let takeover = steering_command(
+        "takeover-polled",
+        "project-takeover",
+        "goal-takeover",
+        "task-run-takeover",
+        "loop-takeover",
+        CommandKind::Takeover,
+    );
+    let mut poller = command_poller(&takeover);
+    assert!(matches!(
+        controller.poll_and_submit_command(&mut poller),
+        Ok(CommandPollResult::Command(_))
+    ));
+
+    controller
+        .run_observation("step-after-takeover", "normal action remains allowed")
+        .expect("rejected takeover does not stop normal loop action");
+    assert_eq!(controller.status(), LoopStatus::Running);
+    assert_eq!(
+        controller.current_attempt_id(),
+        Some(attempt_before.as_str())
+    );
+    assert_eq!(controller.budget().steps_used, budget_before.steps_used + 1);
+    assert_eq!(
+        inbox
+            .latest("takeover-polled")
+            .expect("takeover status exists")
+            .status,
+        CommandStatus::Rejected
+    );
+}
+
+#[test]
+fn polled_cancel_is_applied_at_the_next_boundary_without_consuming_budget() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let inbox = UserCommandInbox::open(directory.join("commands.jsonl"));
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-cancel-polled",
+            "project-cancel-polled",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["manual_review".into()],
+        ),
+        "loop-cancel-polled",
+        "task-run-cancel-polled",
+        LoopBudget::new(1, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts")
+    .with_command_inbox(inbox.clone());
+    let budget_before = controller.budget().clone();
+    let cancel = steering_command(
+        "cancel-polled",
+        "project-cancel-polled",
+        "goal-cancel-polled",
+        "task-run-cancel-polled",
+        "loop-cancel-polled",
+        CommandKind::Cancel,
+    );
+    let mut poller = command_poller(&cancel);
+    assert!(matches!(
+        controller.poll_and_submit_command(&mut poller),
+        Ok(CommandPollResult::Command(_))
+    ));
+
+    assert!(matches!(
+        controller.run_observation("step-after-cancel", "not executed"),
+        Err(LoopControllerError::Terminal)
+    ));
+    assert_eq!(controller.status(), LoopStatus::Cancelled);
+    assert_eq!(controller.budget(), &budget_before);
+    assert_eq!(
+        inbox
+            .latest("cancel-polled")
+            .expect("cancel status exists")
+            .status,
+        CommandStatus::Applied
+    );
 }
 
 #[test]

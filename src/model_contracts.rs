@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
+
+pub const MODEL_ACTION_SCHEMA_VERSION: u32 = 1;
+const MAX_ACTION_IDENTIFIER_LENGTH: usize = 128;
+const MAX_PATH_LENGTH: usize = 4096;
+const MAX_ALLOWED_PATHS: usize = 256;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ModelContractError {
@@ -12,6 +18,122 @@ pub enum ModelContractError {
     SensitiveField { field: String },
     #[error("model contract serialization failed: {message}")]
     Serialization { message: String },
+}
+
+/// A versioned, structured action proposal kept separate from `ModelDecision`.
+/// It describes what a tool may receive; it does not execute the action.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelActionEnvelope {
+    pub schema_version: u32,
+    pub action_id: String,
+    pub tool_id: String,
+    pub parameters: Value,
+    pub path_scope: ActionPathScope,
+    pub verification: VerificationContract,
+}
+
+/// Lexical workspace boundary for paths carried by an action.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ActionPathScope {
+    pub root: String,
+    pub allowed_paths: Vec<String>,
+}
+
+/// Required verification step for a proposed action.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct VerificationContract {
+    pub verifier_tool_id: String,
+    pub parameters: Value,
+}
+
+impl ModelActionEnvelope {
+    pub fn parse_json(contents: &str) -> Result<Self, ModelContractError> {
+        let action = serde_json::from_str::<Self>(contents).map_err(|error| {
+            ModelContractError::Serialization {
+                message: error.to_string(),
+            }
+        })?;
+        action.validate()?;
+        Ok(action)
+    }
+
+    pub fn to_json(&self) -> Result<String, ModelContractError> {
+        self.validate()?;
+        serde_json::to_string(self).map_err(|error| ModelContractError::Serialization {
+            message: error.to_string(),
+        })
+    }
+
+    pub fn validate(&self) -> Result<(), ModelContractError> {
+        if self.schema_version != MODEL_ACTION_SCHEMA_VERSION {
+            return Err(ModelContractError::InvalidField {
+                field: "schema_version",
+                reason: "unsupported action schema version",
+            });
+        }
+        validate_identifier("action_id", &self.action_id)?;
+        validate_identifier("tool_id", &self.tool_id)?;
+        validate_structured_parameters("parameters", &self.parameters)?;
+        validate_no_shell_fields(&self.parameters, "parameters")?;
+        self.path_scope.validate()?;
+        validate_parameter_paths(&self.parameters, &self.path_scope)?;
+        self.verification.validate()?;
+        validate_no_shell_fields(&self.verification.parameters, "verification")?;
+        validate_parameter_paths(&self.verification.parameters, &self.path_scope)?;
+        self.validate_secret_free()
+    }
+
+    pub fn validate_secret_free(&self) -> Result<(), ModelContractError> {
+        validate_secret_free(self)
+    }
+}
+
+impl ActionPathScope {
+    fn validate(&self) -> Result<(), ModelContractError> {
+        if self.root.trim().is_empty()
+            || self.root.len() > MAX_PATH_LENGTH
+            || !self.root.starts_with('/')
+            || self.root == "/"
+            || contains_root_path_escape(&self.root)
+        {
+            return Err(ModelContractError::InvalidField {
+                field: "path_scope",
+                reason: "root must be an absolute, bounded path without traversal",
+            });
+        }
+        if self.allowed_paths.is_empty() || self.allowed_paths.len() > MAX_ALLOWED_PATHS {
+            return Err(ModelContractError::InvalidField {
+                field: "path_scope",
+                reason: "allowed_paths must be a bounded non-empty list",
+            });
+        }
+        for path in &self.allowed_paths {
+            if !is_relative_path(path) {
+                return Err(ModelContractError::InvalidField {
+                    field: "path_scope",
+                    reason: "allowed paths must remain below root",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn contains(&self, path: &str) -> bool {
+        self.allowed_paths.iter().any(|allowed| {
+            let allowed = allowed.trim_end_matches('/');
+            path == allowed || (!allowed.is_empty() && path.starts_with(&format!("{allowed}/")))
+        })
+    }
+}
+
+impl VerificationContract {
+    fn validate(&self) -> Result<(), ModelContractError> {
+        validate_identifier("verification", &self.verifier_tool_id)?;
+        validate_structured_parameters("verification", &self.parameters)
+    }
 }
 
 /// A persisted, secret-free explanation of how a model was selected for a task.
@@ -154,6 +276,150 @@ impl ModelCallRecord {
     pub fn validate_secret_free(&self) -> Result<(), ModelContractError> {
         validate_secret_free(self)
     }
+}
+
+fn validate_identifier(field: &'static str, value: &str) -> Result<(), ModelContractError> {
+    if value.trim().is_empty() {
+        return Err(ModelContractError::InvalidField {
+            field,
+            reason: "must not be empty",
+        });
+    }
+    if value.len() > MAX_ACTION_IDENTIFIER_LENGTH
+        || value.chars().any(|character| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':'))
+        })
+    {
+        return Err(ModelContractError::InvalidField {
+            field,
+            reason: "must be a bounded identifier",
+        });
+    }
+    Ok(())
+}
+
+fn validate_structured_parameters(
+    field: &'static str,
+    value: &Value,
+) -> Result<(), ModelContractError> {
+    match value {
+        Value::Object(fields) if !fields.is_empty() => Ok(()),
+        Value::Object(_) => Err(ModelContractError::InvalidField {
+            field,
+            reason: "must not be empty",
+        }),
+        _ => Err(ModelContractError::InvalidField {
+            field,
+            reason: "must be a non-empty structured object",
+        }),
+    }
+}
+
+fn validate_no_shell_fields(value: &Value, field: &'static str) -> Result<(), ModelContractError> {
+    const FORBIDDEN_SHELL_FIELDS: &[&str] = &[
+        "shell",
+        "command",
+        "command_line",
+        "shell_command",
+        "script",
+    ];
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                let normalized = key.to_ascii_lowercase();
+                if FORBIDDEN_SHELL_FIELDS
+                    .iter()
+                    .any(|forbidden| *forbidden == normalized)
+                {
+                    return Err(ModelContractError::InvalidField {
+                        field,
+                        reason: "free shell command fields are not allowed",
+                    });
+                }
+                validate_no_shell_fields(value, field)?;
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                validate_no_shell_fields(value, field)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    Ok(())
+}
+
+fn validate_parameter_paths(
+    value: &Value,
+    scope: &ActionPathScope,
+) -> Result<(), ModelContractError> {
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                let normalized = key.to_ascii_lowercase();
+                if normalized == "path" || normalized.ends_with("_path") {
+                    validate_path_value(value, scope)?;
+                } else if normalized == "paths" || normalized.ends_with("_paths") {
+                    match value {
+                        Value::Array(paths) => {
+                            for path in paths {
+                                validate_path_value(path, scope)?;
+                            }
+                        }
+                        _ => {
+                            return Err(ModelContractError::InvalidField {
+                                field: "path_scope",
+                                reason: "path collections must be arrays",
+                            });
+                        }
+                    }
+                } else {
+                    validate_parameter_paths(value, scope)?;
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                validate_parameter_paths(value, scope)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    Ok(())
+}
+
+fn validate_path_value(value: &Value, scope: &ActionPathScope) -> Result<(), ModelContractError> {
+    let path = value.as_str().ok_or(ModelContractError::InvalidField {
+        field: "path_scope",
+        reason: "path values must be strings",
+    })?;
+    if !is_relative_path(path) || !scope.contains(path) {
+        return Err(ModelContractError::InvalidField {
+            field: "path_scope",
+            reason: "action path is outside the declared scope",
+        });
+    }
+    Ok(())
+}
+
+fn is_relative_path(path: &str) -> bool {
+    !path.trim().is_empty()
+        && path.len() <= MAX_PATH_LENGTH
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !contains_path_escape(path)
+        && !path.chars().any(|character| character.is_control())
+}
+
+fn contains_path_escape(path: &str) -> bool {
+    path.split('/')
+        .any(|component| component == ".." || component.is_empty())
+}
+
+fn contains_root_path_escape(path: &str) -> bool {
+    path.split('/')
+        .skip(1)
+        .any(|component| component == ".." || component.is_empty())
 }
 
 fn require_nonempty(field: &'static str, value: &str) -> Result<(), ModelContractError> {
