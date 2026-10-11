@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use steerbox::model_adapter::{ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest};
 use steerbox::provider_adapter::{
-    OpenAiCompatibleAdapter, ProviderTransport, TransportError, TransportResponse,
+    OpenAiCompatibleAdapter, ProviderStreamEvent, ProviderTransport, TransportError,
+    TransportResponse,
 };
 use steerbox::provider_model_adapter::ProviderModelAdapter;
 
@@ -120,6 +121,87 @@ fn structured_provider_response_rejects_unknown_shell_and_out_of_scope_action_fi
             .expect_err("invalid action must fail closed");
         assert_eq!(error, ModelAdapterError::ProviderTextUnmappable);
     }
+}
+
+#[test]
+fn provider_stream_preserves_delta_and_completed_order_with_strict_request_layers() {
+    let transport = FakeTransport::response(
+        "data: {\"id\":\"chatcmpl-stream\",\"model\":\"provider-model\",\"choices\":[{\"delta\":{\"content\":\"hel\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-stream\",\"model\":\"provider-model\",\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl-stream\",\"model\":\"provider-model\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n",
+    );
+    let bodies = Arc::clone(&transport.bodies);
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("provider-a", "https://example.test/v1", transport),
+        Some("keychain:steerbox/provider-a".into()),
+    );
+
+    let events = adapter.stream(request()).expect("stream events");
+    assert_eq!(
+        events,
+        vec![
+            ProviderStreamEvent::delta("chatcmpl-stream", "provider-model", "hel"),
+            ProviderStreamEvent::delta("chatcmpl-stream", "provider-model", "lo"),
+            ProviderStreamEvent::completed("chatcmpl-stream", "provider-model", "stop"),
+        ]
+    );
+
+    let body = bodies.lock().expect("bodies lock");
+    let wire: serde_json::Value = serde_json::from_str(&body[0]).expect("wire JSON parses");
+    assert_eq!(wire["model"], "provider-model");
+    assert_eq!(wire["stream"], true);
+    assert!(!body[0].contains("keychain:steerbox/provider-a"));
+    let messages = wire["messages"].as_array().expect("messages exist");
+    assert_eq!(messages[0]["role"], "system");
+    assert!(messages[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("decision"));
+    let user_payload: serde_json::Value =
+        serde_json::from_str(messages[1]["content"].as_str().unwrap()).expect("user JSON");
+    assert_eq!(user_payload["objective"], request().objective);
+    assert_eq!(user_payload["observation"], request().observation);
+}
+
+#[test]
+fn provider_stream_rejects_invalid_input_and_provider_failures_without_transport_leakage() {
+    let transport = FakeTransport::response("data: [DONE]\n");
+    let bodies = Arc::clone(&transport.bodies);
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("provider-a", "https://example.test/v1", transport),
+        Some("env:STEERBOX_PROVIDER_KEY".into()),
+    );
+
+    let mut empty_model = request();
+    empty_model.model_id.clear();
+    assert_eq!(
+        adapter.stream(empty_model).expect_err("empty model"),
+        ModelAdapterError::EmptyModelId
+    );
+    let mut empty_objective = request();
+    empty_objective.objective.clear();
+    assert_eq!(
+        adapter
+            .stream(empty_objective)
+            .expect_err("empty objective"),
+        ModelAdapterError::EmptyObjective
+    );
+    assert!(bodies.lock().expect("bodies lock").is_empty());
+
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new(
+            "provider-a",
+            "https://example.test/v1",
+            FakeTransport::timeout(),
+        ),
+        Some("env:STEERBOX_PROVIDER_KEY".into()),
+    );
+    let error = adapter.stream(request()).expect_err("provider timeout");
+    assert_eq!(
+        error,
+        ModelAdapterError::Provider {
+            class: steerbox::provider_adapter::ProviderErrorClass::Timeout,
+        }
+    );
+    assert!(!error.to_string().contains("credential"));
 }
 
 #[test]

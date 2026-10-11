@@ -4,7 +4,8 @@ use crate::model_adapter::{
 };
 use crate::model_contracts::ModelActionEnvelope;
 use crate::provider_adapter::{
-    OpenAiCompatibleAdapter, ProviderMessage, ProviderRequest, ProviderResponse, ProviderTransport,
+    OpenAiCompatibleAdapter, ProviderMessage, ProviderRequest, ProviderResponse,
+    ProviderStreamEvent, ProviderTransport,
 };
 use crate::resolved_prompt::ResolvedPromptPack;
 use serde::Deserialize;
@@ -199,6 +200,43 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
             })?;
 
         parse_decision_with_action(&response.text)
+    }
+
+    /// Stream provider events using the same trusted system/user message
+    /// layers as `complete`. The transport owns credential lookup; this method
+    /// forwards only the opaque auth reference and never exposes credential
+    /// material in the request body or returned error.
+    pub fn stream(
+        &self,
+        request: ModelRequest,
+    ) -> Result<Vec<ProviderStreamEvent>, ModelAdapterError> {
+        if request.model_id.trim().is_empty() {
+            return Err(ModelAdapterError::EmptyModelId);
+        }
+        if request.objective.trim().is_empty() {
+            return Err(ModelAdapterError::EmptyObjective);
+        }
+
+        self.provider
+            .stream(ProviderRequest {
+                model: request.model_id,
+                messages: vec![
+                    ProviderMessage::system(DECISION_SYSTEM_PROMPT),
+                    ProviderMessage::user(
+                        serde_json::json!({
+                            "objective": request.objective,
+                            "observation": request.observation,
+                        })
+                        .to_string(),
+                    ),
+                ],
+                auth_ref: self.auth_ref.clone(),
+                timeout_ms: self.timeout_ms,
+                stream: true,
+            })
+            .map_err(|error| ModelAdapterError::Provider {
+                class: error.class(),
+            })
     }
 }
 

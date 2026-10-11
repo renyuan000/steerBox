@@ -223,6 +223,29 @@ impl<'a> ModelRouter<'a> {
     }
 }
 
+/// Select the next unattempted fallback in the route's declared order.
+///
+/// This is a pure planning helper: it does not invoke a model, mutate the
+/// route, or retry a failed call. The primary model is always excluded, and
+/// repeated attempted or fallback entries do not change the deterministic
+/// first-eligible result.
+pub fn next_fallback_model<'a>(
+    route: &'a RouteDecision,
+    attempted_models: &[String],
+) -> Option<&'a str> {
+    route.fallback_chain.iter().find_map(|candidate| {
+        if candidate == &route.selected_model
+            || attempted_models
+                .iter()
+                .any(|attempted| attempted == candidate)
+        {
+            None
+        } else {
+            Some(candidate.as_str())
+        }
+    })
+}
+
 struct ScoredCandidate {
     model_id: String,
     provider_id: String,

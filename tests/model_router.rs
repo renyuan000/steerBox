@@ -9,7 +9,10 @@ mod model_router;
 
 use model_contracts::RouteDecision;
 use model_registry::{EndpointProfile, ModelProfile, ModelRegistry, ProviderProfile};
-use model_router::{ModelRouteProfile, ModelRouter, PrivacyRequirement, RiskLevel, RouteRequest};
+use model_router::{
+    next_fallback_model, ModelRouteProfile, ModelRouter, PrivacyRequirement, RiskLevel,
+    RouteRequest,
+};
 
 fn registry_fixture() -> ModelRegistry {
     let mut registry = ModelRegistry::default();
@@ -175,6 +178,53 @@ fn route_decision_contains_ordered_fallback_chain() {
         .rejected_candidates
         .iter()
         .all(|candidate| !candidate.starts_with("strong-safe:")));
+}
+
+#[test]
+fn next_fallback_model_preserves_route_order_and_skips_primary() {
+    let router = router_fixture();
+    let mut decision = router.route(&request(RiskLevel::High)).unwrap();
+    decision.fallback_chain = vec![
+        decision.selected_model.clone(),
+        "backup".into(),
+        "backup".into(),
+        "cheap-fast".into(),
+    ];
+
+    assert_eq!(next_fallback_model(&decision, &[]), Some("backup"));
+    assert_eq!(
+        next_fallback_model(
+            &decision,
+            &["strong-safe".into(), "backup".into(), "backup".into()],
+        ),
+        Some("cheap-fast")
+    );
+}
+
+#[test]
+fn next_fallback_model_returns_none_when_empty_or_exhausted() {
+    let router = router_fixture();
+    let mut decision = router.route(&request(RiskLevel::High)).unwrap();
+    decision.fallback_chain.clear();
+    assert_eq!(next_fallback_model(&decision, &[]), None);
+
+    let decision = router.route(&request(RiskLevel::High)).unwrap();
+    assert_eq!(
+        next_fallback_model(
+            &decision,
+            &["strong-safe".into(), "backup".into(), "cheap-fast".into()],
+        ),
+        None
+    );
+}
+
+#[test]
+fn next_fallback_model_skips_primary_even_if_it_was_not_attempted() {
+    let router = router_fixture();
+    let mut decision = router.route(&request(RiskLevel::High)).unwrap();
+    decision.fallback_chain = vec![decision.selected_model.clone(), "backup".into()];
+
+    assert_eq!(next_fallback_model(&decision, &[]), Some("backup"));
 }
 
 #[test]
