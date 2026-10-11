@@ -540,6 +540,15 @@ fn resolved_action_executes_verification_and_persists_final_audit_fields() {
     assert!(events
         .iter()
         .any(|event| event.event_type == "model_call_completed"));
+    let event_index = |event_type: &str| {
+        events
+            .iter()
+            .position(|event| event.event_type == event_type)
+            .expect("event exists for ordering assertion")
+    };
+    assert!(event_index("model_action_started") < event_index("model_action_verified"));
+    assert!(event_index("model_action_verified") < event_index("model_call_completed"));
+    assert!(event_index("model_call_completed") < event_index("step_completed"));
     assert!(!events.iter().any(|event| {
         event.event_type == "step_failed"
             && event.step_id.as_deref() == Some("step-resolved-action")

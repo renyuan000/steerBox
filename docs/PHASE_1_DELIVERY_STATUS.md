@@ -52,7 +52,7 @@
 已有：
 
 - [prompt_registry.rs](../src/prompt_registry.rs) 提供 ID/version、role/task binding 和模板登记查询；[model_registry.rs](../src/model_registry.rs)、[model_router.rs](../src/model_router.rs) 与 controller 已有本地规则路由。
-- [model_contracts.rs](../src/model_contracts.rs)、[model_call_store.rs](../src/model_call_store.rs) 提供 `RouteDecision`／`ModelCallRecord` 字段校验及独立 append-only 存储。
+- [model_contracts.rs](../src/model_contracts.rs)、[model_call_store.rs](../src/model_call_store.rs) 提供 `RouteDecision`／`ModelCallRecord` 字段校验、独立 append-only 存储及有界 `read_page(offset, limit)` 查询。
 - provider bridge 的固定输出契约位于 system；用户 objective／observation 经 JSON 编码放入 user。该分层修复不等于完整 prompt resolution 或提示注入防护。
 - `ReadOnlyLoopController::run_resolved_model_step` 已将 `ResolvedPromptPack`、`ProviderModelAdapter`、`ModelCallRecord` 和 `ModelCallStore` 接成 opt-in 路径；成功、provider 失败、审计写入失败、binding mismatch 和审批阻断均有 focused 回归。
 
