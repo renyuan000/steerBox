@@ -77,7 +77,7 @@
 - 第一阶段主语言和构建工具已确定为 `Rust` + `Cargo`
 - 当前已实现并验证领域契约、配置校验、append-only JSONL EventLog（含分页读取）、StateStore 重建/持久化、Trace/Checkpoint/SideEffect 记录、GoalAlignment/DriftGuard 最小报告和只读 BoardProjection fixture
 - 当前开发垂直切片可执行受审批的 Markdown 文件修改与链接验证，成功/失败均写入 run summary；验证失败会保留事件、状态和摘要并以非零退出
-- 当前仍不是可连接真实网络模型并自主执行开发任务的 Agent：已有本地 fixture、OpenAI-compatible fake transport、严格 provider-to-ModelAdapter bridge，以及接入 LoopController 的规则式模型路由；路由和调用事件关联 `route_decision_id`，需要审批的路由会留下人工介入事件并拒绝调用，模型失败会结束对应 step。独立 `ModelCallStore` 可校验并持久化调用记录，但尚未接入实际调用；真实网络 transport/凭据解析、完整 prompt resolution、动态 fallback、审批恢复、takeover 和完整恢复闭环仍未完成
+- 当前仍不是可连接真实网络模型并自主执行开发任务的 Agent：已有本地 fixture、OpenAI-compatible fake transport、严格 provider-to-ModelAdapter bridge，以及接入 LoopController 的规则式模型路由；本轮新增并验证了静态 `ResolvedPromptPack`、固定输出契约 v1、provider/endpoint/逻辑模型与 wire model 绑定、实际 wire body hash 和 usage/finish_reason 保留，但该 resolved 路径尚未接入 LoopController 的 ModelCallStore 审计。路由和调用事件关联 `route_decision_id`，需要审批的路由会留下人工介入事件并拒绝调用，模型失败会结束对应 step。真实网络 transport/凭据解析、动态 fallback、审批恢复、takeover 和完整恢复闭环仍未完成
 - 历史查询支持 metadata-only `execution list/show/page`，分页是读取全量事件后的 detached snapshot，不是流式读取或 live cursor；CLI 生命周期输出仅在真实完成时报告 loop completed
 - 执行策略已有可验证的库 API 切片：按显式任务特征选择策略，记录选择/调整事件，将倍率分配限制在既有授权预算内，并在需审批时拒绝动作；调整不清零消耗或重复动作历史。验证频率与协作/专业领域策略目前只是需求元数据，不代表自动验证、多 agent 编排或专业操作已执行
 - 用户中途接入后台任务已有设计契约，但没有常驻后台 worker 或可连接它的交互控制面；见 [Human Steering Modes](./docs/HUMAN_STEERING_MODES.md) 与 [Control Plane Discussion](./docs/CONTROL_PLANE_DISCUSSION.md)

@@ -10,6 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 thiserror = "1"
+sha2 = "0.10.9"
 
 [dev-dependencies]
 serde_json = "1"

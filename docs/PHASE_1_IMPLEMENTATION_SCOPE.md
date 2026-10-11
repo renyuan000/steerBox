@@ -33,7 +33,7 @@
 
 ### 长期运行目标与 Phase 1 实现边界
 
-模型路径已有本地规则路由到 `ModelAdapterRegistry` 的 LoopController 接线，EventLog 保存路由及关联的调用事件；High risk 或 Restricted privacy 路由在没有审批 resolver 时先记录人工介入，再拒绝调用。模型失败会写 `step_failed`，避免 StateStore 留下 Running 步骤。独立 `ModelCallStore` 具备校验后的 JSONL append/read，但实际调用记录、resolved prompt、动态 fallback 和真实网络 transport 仍待接线。registry 与审计字段校验不保证任意 URL、prompt 或摘要字符串不含敏感正文。
+模型路径已有本地规则路由到 `ModelAdapterRegistry` 的 LoopController 接线，EventLog 保存路由及关联的调用事件；High risk 或 Restricted privacy 路由在没有审批 resolver 时先记录人工介入，再拒绝调用。模型失败会写 `step_failed`，避免 StateStore 留下 Running 步骤。静态 `ResolvedPromptPack` 和 opt-in provider bridge 已通过 fake 请求验证 provider/endpoint/model/prompt 分层及实际 wire hash，但尚未接入 LoopController 的实际 `ModelCallStore` 记录。动态 fallback 和真实网络 transport 仍待接线。registry 与审计字段校验不保证任意 URL、prompt 或摘要字符串不含敏感正文。
 
 架构目标是四个专业方向都支持 7x24 常驻和多年可恢复生命周期；这不是 Phase 1 已实现能力的声明。Phase 1 的目标边界包含本地单机、顺序执行、持久化事件、任务状态和最小 `RecoveryCheckpoint`。当前代码已实现 JSON StateStore 持久化 reopen、Trace/Checkpoint/SideEffect JSONL 记录、只读 BoardProjection fixture、静态 GoalAlignment/DriftGuard 报告以及 Markdown 文件修改/链接验证开发 loop；完整恢复闭环、运行中用户控制面和真实模型 provider 仍是未完成验收项。
 

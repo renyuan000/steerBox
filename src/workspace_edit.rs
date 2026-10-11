@@ -1,6 +1,7 @@
 use crate::domain::GoalContract;
 use std::fs;
-use std::path::{Component, Path};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -17,6 +18,12 @@ pub enum WorkspaceEditError {
     Io { message: String },
     #[error("expected file content did not match")]
     ExpectedContentMismatch,
+    #[error("workspace path crosses a symbolic link: {0}")]
+    SymbolicLink(String),
+    #[error("workspace path resolves outside workspace: {0}")]
+    OutsideWorkspaceResolved(String),
+    #[error("workspace path is not a regular file: {0}")]
+    NotRegularFile(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,7 +60,7 @@ pub fn edit_markdown(
     if !relative.ends_with(".md") && !relative.ends_with(".markdown") {
         return Err(WorkspaceEditError::NotMarkdown(relative));
     }
-    let target = workspace.join(&relative);
+    let target = checked_existing_file(workspace, &relative)?;
     let before = fs::read_to_string(&target).map_err(io_error)?;
     if before != expected {
         return Err(WorkspaceEditError::ExpectedContentMismatch);
@@ -74,9 +81,20 @@ pub fn edit_markdown(
             .unwrap_or("md"),
         std::process::id()
     ));
-    fs::write(&temporary, replacement).map_err(io_error)?;
+    let mut temporary_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(io_error)?;
+    temporary_file
+        .write_all(replacement.as_bytes())
+        .map_err(io_error)?;
+    temporary_file.flush().map_err(io_error)?;
+    drop(temporary_file);
     if let Err(error) = fs::rename(&temporary, &target) {
-        let _ = fs::remove_file(&temporary);
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = fs::remove_file(&temporary);
+        }
         return Err(io_error(error));
     }
     Ok(EditResult {
@@ -93,7 +111,10 @@ pub fn verify_markdown_links(
 ) -> Result<LinkVerification, WorkspaceEditError> {
     let relative = safe_relative_path(relative_path)
         .ok_or_else(|| WorkspaceEditError::InvalidPath(relative_path.into()))?;
-    let source = workspace.join(&relative);
+    if !relative.ends_with(".md") && !relative.ends_with(".markdown") {
+        return Err(WorkspaceEditError::NotMarkdown(relative));
+    }
+    let source = checked_existing_file(workspace, &relative)?;
     let contents = fs::read_to_string(&source).map_err(io_error)?;
     let mut checked_links = Vec::new();
     let mut missing_links = Vec::new();
@@ -111,7 +132,7 @@ pub fn verify_markdown_links(
         let target = target.split('#').next().unwrap_or(target);
         checked_links.push(target.to_owned());
         let link_path = source.parent().unwrap_or(workspace).join(target);
-        if !link_path.is_file() {
+        if !resolved_regular_file_within_workspace(workspace, &link_path) {
             missing_links.push(target.to_owned());
         }
     }
@@ -120,6 +141,61 @@ pub fn verify_markdown_links(
         checked_links,
         missing_links,
     })
+}
+
+fn checked_existing_file(workspace: &Path, relative: &str) -> Result<PathBuf, WorkspaceEditError> {
+    let target = workspace.join(relative);
+    let metadata = fs::symlink_metadata(&target).map_err(io_error)?;
+    if metadata.file_type().is_symlink() {
+        return Err(WorkspaceEditError::SymbolicLink(relative.into()));
+    }
+    if !metadata.is_file() {
+        return Err(WorkspaceEditError::NotRegularFile(relative.into()));
+    }
+    ensure_no_symlink_ancestors(workspace, &target, relative)?;
+    let workspace_canonical = fs::canonicalize(workspace).map_err(io_error)?;
+    let target_canonical = fs::canonicalize(&target).map_err(io_error)?;
+    if !target_canonical.starts_with(&workspace_canonical) {
+        return Err(WorkspaceEditError::OutsideWorkspaceResolved(
+            relative.into(),
+        ));
+    }
+    Ok(target)
+}
+
+fn ensure_no_symlink_ancestors(
+    workspace: &Path,
+    target: &Path,
+    relative: &str,
+) -> Result<(), WorkspaceEditError> {
+    let mut current = target.parent();
+    while let Some(path) = current {
+        if path == workspace {
+            break;
+        }
+        let metadata = fs::symlink_metadata(path).map_err(io_error)?;
+        if metadata.file_type().is_symlink() {
+            return Err(WorkspaceEditError::SymbolicLink(relative.into()));
+        }
+        current = path.parent();
+    }
+    Ok(())
+}
+
+fn resolved_regular_file_within_workspace(workspace: &Path, path: &Path) -> bool {
+    let Ok(workspace_canonical) = fs::canonicalize(workspace) else {
+        return false;
+    };
+    let Ok(path_metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !path_metadata.is_file() {
+        return false;
+    }
+    let Ok(path_canonical) = fs::canonicalize(path) else {
+        return false;
+    };
+    path_canonical.starts_with(workspace_canonical)
 }
 
 fn safe_relative_path(path: &str) -> Option<String> {

@@ -16,6 +16,7 @@ pub mod policy_gate;
 pub mod prompt_registry;
 pub mod provider_adapter;
 pub mod provider_model_adapter;
+pub mod resolved_prompt;
 pub mod runtime_config;
 pub mod state_store;
 pub mod strategy_selector;

@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fmt;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -48,6 +50,32 @@ pub struct ProviderRequest {
     pub auth_ref: Option<String>,
     pub timeout_ms: u64,
     pub stream: bool,
+}
+
+/// A validated completion snapshot. The hash covers the exact body sent to the
+/// transport, not auth references, headers, or operational timeout settings.
+#[derive(Clone)]
+pub struct PreparedProviderRequest {
+    request: ProviderRequest,
+    body: String,
+    input_hash: String,
+    provider_id: String,
+    base_url: String,
+}
+
+impl PreparedProviderRequest {
+    pub fn input_hash(&self) -> &str {
+        &self.input_hash
+    }
+}
+
+impl fmt::Debug for PreparedProviderRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedProviderRequest")
+            .field("input_hash", &self.input_hash)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -242,18 +270,56 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
         &self.provider_id
     }
 
-    pub fn complete(
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn prepare_complete(
         &self,
         request: ProviderRequest,
-    ) -> Result<ProviderResponse, ProviderAdapterError> {
+    ) -> Result<PreparedProviderRequest, ProviderAdapterError> {
+        if self.provider_id.trim().is_empty() || self.base_url.trim().is_empty() {
+            return Err(ProviderAdapterError::InvalidRequest {
+                reason: "provider identity and endpoint must not be empty",
+            });
+        }
         if request.stream {
             return Err(ProviderAdapterError::InvalidRequest {
                 reason: "complete request must set stream=false",
             });
         }
         let body = self.prepare_request(&request, false)?;
-        let response = self.send(&request, &body, false)?;
+        let input_hash = format!("sha256:{:x}", Sha256::digest(body.as_bytes()));
+        Ok(PreparedProviderRequest {
+            request,
+            body,
+            input_hash,
+            provider_id: self.provider_id.clone(),
+            base_url: self.base_url.trim_end_matches('/').to_owned(),
+        })
+    }
+
+    pub fn complete_prepared(
+        &self,
+        prepared: &PreparedProviderRequest,
+    ) -> Result<ProviderResponse, ProviderAdapterError> {
+        if prepared.provider_id != self.provider_id
+            || prepared.base_url != self.base_url.trim_end_matches('/')
+        {
+            return Err(ProviderAdapterError::InvalidRequest {
+                reason: "prepared request belongs to a different provider or endpoint",
+            });
+        }
+        let response = self.send(&prepared.request, &prepared.body, false)?;
         parse_completion_response(&response.body)
+    }
+
+    pub fn complete(
+        &self,
+        request: ProviderRequest,
+    ) -> Result<ProviderResponse, ProviderAdapterError> {
+        let prepared = self.prepare_complete(request)?;
+        self.complete_prepared(&prepared)
     }
 
     pub fn stream(
