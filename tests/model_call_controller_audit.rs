@@ -642,3 +642,86 @@ fn resolved_action_verification_failure_is_recorded_before_step_failure() {
             && event.step_id.as_deref() == Some("step-resolved-verification-failure")
     }));
 }
+
+#[test]
+fn resolved_action_audit_write_failure_keeps_evidence_without_claiming_completion() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let content = json!({
+        "decision": "continue_observation",
+        "summary": "fixture action audit failure",
+        "action": {
+            "schema_version": 1,
+            "action_id": "action-resolved-audit-failure",
+            "tool_id": "git_status",
+            "parameters": {"scope": "workspace"},
+            "path_scope": {
+                "root": workspace.display().to_string(),
+                "allowed_paths": ["README.md"]
+            },
+            "verification": {
+                "verifier_tool_id": "markdown_link_check",
+                "parameters": {"path": "README.md"}
+            }
+        }
+    })
+    .to_string();
+    let model_call_path = directory.model_calls();
+    fs::create_dir(&model_call_path).expect("directory-backed audit failure fixture creates");
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_model_call_store(
+        ModelCallStore::open(&model_call_path).expect("directory-backed store opens"),
+    );
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new(
+            "fixture-provider",
+            BASE_URL,
+            FakeTransport::with_decision_content(content),
+        ),
+        None,
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+
+    assert!(controller
+        .run_resolved_model_step_with_action(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-resolved-audit-failure".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            "step-resolved-audit-failure",
+        )
+        .is_err());
+
+    let events = EventLog::open(directory.events())
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_verified"));
+    assert!(events.iter().any(|event| {
+        event.event_type == "model_call_failed" && event.payload["audit_failure"] == true
+    }));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "model_call_completed"));
+    assert!(!events.iter().any(|event| {
+        event.event_type == "step_completed"
+            && event.step_id.as_deref() == Some("step-resolved-audit-failure")
+    }));
+}
