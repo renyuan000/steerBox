@@ -88,7 +88,7 @@ fn strict_provider_decision_envelope_maps_to_existing_model_response() {
 }
 
 #[test]
-fn structured_provider_response_retains_validated_action_without_breaking_legacy_response() {
+fn structured_provider_response_requires_action_capable_entry_point() {
     let content = r#"{"decision":"continue_observation","summary":"inspect workspace","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"workspace"},"path_scope":{"root":"/tmp/workspace","allowed_paths":["workspace"]},"verification":{"verifier_tool_id":"git_status_verify","parameters":{"path":"workspace"}}}}"#;
     let adapter = adapter_for_content(content);
 
@@ -99,9 +99,10 @@ fn structured_provider_response_retains_validated_action_without_breaking_legacy
     assert_eq!(structured.summary, "inspect workspace");
     assert!(structured.action.is_some());
 
-    let legacy = adapter.complete(request()).expect("legacy response");
-    assert_eq!(legacy.decision, ModelDecision::ContinueObservation);
-    assert_eq!(legacy.summary, "inspect workspace");
+    let legacy = adapter
+        .complete(request())
+        .expect_err("legacy entry point must fail closed on action");
+    assert_eq!(legacy, ModelAdapterError::ProviderTextUnmappable);
 }
 
 #[test]

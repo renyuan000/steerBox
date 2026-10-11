@@ -233,7 +233,11 @@ impl<T: ProviderTransport> ModelAdapter for ProviderModelAdapter<T> {
                 class: error.class(),
             })?;
 
-        parse_decision(&response.text)
+        let response = parse_decision_with_action(&response.text)?;
+        if response.action.is_some() {
+            return Err(ModelAdapterError::ProviderTextUnmappable);
+        }
+        Ok(response.into_legacy())
     }
 
     fn complete_with_action(
@@ -242,10 +246,6 @@ impl<T: ProviderTransport> ModelAdapter for ProviderModelAdapter<T> {
     ) -> Result<ModelResponseWithAction, ModelAdapterError> {
         ProviderModelAdapter::complete_with_action(self, request)
     }
-}
-
-fn parse_decision(text: &str) -> Result<ModelResponse, ModelAdapterError> {
-    parse_decision_with_action(text).map(ModelResponseWithAction::into_legacy)
 }
 
 fn parse_decision_with_action(text: &str) -> Result<ModelResponseWithAction, ModelAdapterError> {
