@@ -251,6 +251,62 @@ pub struct CommandDrainResult {
     pub stop_reason: CommandDrainStopReason,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTickResult {
+    pub commands: Vec<UserCommand>,
+    pub stop_reason: CommandDrainStopReason,
+    pub applied_count: usize,
+}
+
+#[derive(Debug)]
+pub enum RuntimeTickError<E> {
+    Poll(UserCommandInboxError),
+    SafeBoundary {
+        command_index: usize,
+        command_id: String,
+        applied_count: usize,
+        source: E,
+    },
+}
+
+pub struct RuntimeTick;
+
+impl RuntimeTick {
+    /// Drains one bounded command batch and invokes the supplied callback in
+    /// input order. The callback is the caller's safe-boundary operation; this
+    /// helper does not mutate controller state by itself.
+    pub fn run<R, F, E>(
+        poller: &mut CommandPoller<R>,
+        max_commands: usize,
+        mut apply_at_safe_boundary: F,
+    ) -> Result<RuntimeTickResult, RuntimeTickError<E>>
+    where
+        R: NonBlockingCommandReader,
+        F: FnMut(&UserCommand) -> Result<(), E>,
+    {
+        let drain = poller
+            .poll_many(max_commands)
+            .map_err(RuntimeTickError::Poll)?;
+        let mut applied_count = 0;
+        for (command_index, command) in drain.commands.iter().enumerate() {
+            if let Err(source) = apply_at_safe_boundary(command) {
+                return Err(RuntimeTickError::SafeBoundary {
+                    command_index,
+                    command_id: command.command_id.clone(),
+                    applied_count,
+                    source,
+                });
+            }
+            applied_count += 1;
+        }
+        Ok(RuntimeTickResult {
+            commands: drain.commands,
+            stop_reason: drain.stop_reason,
+            applied_count,
+        })
+    }
+}
+
 /// Maximum command line size used by [`CommandPoller::new`].
 pub const DEFAULT_MAX_COMMAND_LINE_BYTES: usize = 1024 * 1024;
 

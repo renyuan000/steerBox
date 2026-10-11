@@ -77,6 +77,12 @@ impl ToolRegistry {
                 "rg-fixed-search",
             ),
             readonly_profile(
+                "read_file",
+                "read file",
+                "read a bounded regular file within the workspace",
+                "read-file-readonly",
+            ),
+            readonly_profile(
                 "markdown_link_check",
                 "Markdown link check",
                 "check Markdown links without changing files",

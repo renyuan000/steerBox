@@ -6,6 +6,7 @@ pub enum ProgressSubject {
     Step,
     Tool,
     Model,
+    Action,
     Loop,
 }
 
@@ -15,6 +16,7 @@ impl ProgressSubject {
             Self::Step => "step",
             Self::Tool => "tool",
             Self::Model => "model",
+            Self::Action => "action",
             Self::Loop => "loop",
         }
     }
@@ -24,6 +26,7 @@ impl ProgressSubject {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressStatus {
     Started,
+    Progress,
     Completed,
     Failed,
     Paused,
@@ -35,6 +38,7 @@ impl ProgressStatus {
     fn label(self) -> &'static str {
         match self {
             Self::Started => "started",
+            Self::Progress => "progress",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Paused => "paused",
@@ -111,6 +115,22 @@ impl<W: Write> StreamReporter<W> {
         )
     }
 
+    pub fn progress(
+        &mut self,
+        subject: ProgressSubject,
+        subject_id: &str,
+        summary: Option<&str>,
+        progress: (u32, u32),
+    ) -> io::Result<()> {
+        self.report_event(
+            subject,
+            subject_id,
+            ProgressStatus::Progress,
+            summary,
+            Some(progress),
+        )
+    }
+
     pub fn failed(
         &mut self,
         subject: ProgressSubject,
@@ -183,6 +203,14 @@ impl<W: Write> StreamReporter<W> {
         summary: Option<&str>,
         progress: Option<(u32, u32)>,
     ) -> io::Result<()> {
+        if let Some((current, total)) = progress {
+            if current > total {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "progress current value must not exceed total",
+                ));
+            }
+        }
         self.report(ProgressEvent {
             subject,
             subject_id: subject_id.to_owned(),
@@ -208,6 +236,12 @@ impl<W: Write> ProgressSink for StreamReporter<W> {
         );
 
         if let Some((current, total)) = event.progress {
+            if current > total {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "progress current value must not exceed total",
+                ));
+            }
             line.push_str(&format!(" [{current}/{total}]"));
         }
         if let Some(summary) = event.summary.as_deref().and_then(sanitize_summary) {
@@ -215,7 +249,8 @@ impl<W: Write> ProgressSink for StreamReporter<W> {
             line.push_str(&summary);
         }
         line.push('\n');
-        self.writer.write_all(line.as_bytes())
+        self.writer.write_all(line.as_bytes())?;
+        self.writer.flush()
     }
 }
 

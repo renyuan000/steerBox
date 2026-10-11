@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::{Arc, Mutex};
 
 use steerbox::stream_reporter::{
     ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject, StreamReporter,
@@ -78,6 +79,117 @@ fn supports_progress_and_can_be_disabled() {
     assert_eq!(
         String::from_utf8(output).unwrap(),
         "step step-2 started [2/5] - running\n"
+    );
+}
+
+#[test]
+fn emits_non_empty_ordered_progress_for_step_tool_model_action_and_failure() {
+    let mut output = Vec::new();
+    let mut reporter = StreamReporter::new(&mut output);
+
+    reporter
+        .started(ProgressSubject::Step, "step-1", Some("step started"), None)
+        .unwrap();
+    reporter
+        .progress(
+            ProgressSubject::Step,
+            "step-1",
+            Some("step running"),
+            (1, 3),
+        )
+        .unwrap();
+    reporter
+        .started(ProgressSubject::Tool, "tool-1", Some("tool started"), None)
+        .unwrap();
+    reporter
+        .completed(
+            ProgressSubject::Tool,
+            "tool-1",
+            Some("tool completed"),
+            Some((1, 1)),
+        )
+        .unwrap();
+    reporter
+        .started(
+            ProgressSubject::Model,
+            "model-1",
+            Some("model started"),
+            None,
+        )
+        .unwrap();
+    reporter
+        .started(
+            ProgressSubject::Action,
+            "action-1",
+            Some("action started"),
+            None,
+        )
+        .unwrap();
+    reporter
+        .failed(
+            ProgressSubject::Action,
+            "action-1",
+            Some("verification failed"),
+            None,
+        )
+        .unwrap();
+
+    let lines = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 7);
+    assert!(lines.iter().all(|line| !line.trim().is_empty()));
+    assert_eq!(lines[0], "step step-1 started - step started");
+    assert_eq!(lines[1], "step step-1 progress [1/3] - step running");
+    assert_eq!(lines[2], "tool tool-1 started - tool started");
+    assert_eq!(lines[3], "tool tool-1 completed [1/1] - tool completed");
+    assert_eq!(lines[4], "model model-1 started - model started");
+    assert_eq!(lines[5], "action action-1 started - action started");
+    assert_eq!(lines[6], "action action-1 failed - verification failed");
+}
+
+#[test]
+fn rejects_invalid_progress_and_flushes_each_visible_event() {
+    #[derive(Clone)]
+    struct FlushWriter {
+        output: Arc<Mutex<Vec<u8>>>,
+        flushes: Arc<Mutex<usize>>,
+    }
+
+    impl io::Write for FlushWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.output.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            *self.flushes.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let flushes = Arc::new(Mutex::new(0));
+    let mut reporter = StreamReporter::new(FlushWriter {
+        output: Arc::clone(&output),
+        flushes: Arc::clone(&flushes),
+    });
+
+    let error = reporter
+        .progress(ProgressSubject::Tool, "tool-2", Some("invalid"), (2, 1))
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(*flushes.lock().unwrap(), 0);
+
+    reporter
+        .progress(ProgressSubject::Tool, "tool-2", Some("visible"), (1, 2))
+        .unwrap();
+    assert_eq!(*flushes.lock().unwrap(), 1);
+    assert_eq!(
+        String::from_utf8(output.lock().unwrap().clone()).unwrap(),
+        "tool tool-2 progress [1/2] - visible\n"
     );
 }
 

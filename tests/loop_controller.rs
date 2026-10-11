@@ -587,6 +587,120 @@ fn controller_batch_poll_submits_at_most_limit_in_order() {
 }
 
 #[test]
+fn controller_poll_and_apply_commands_limits_and_applies_in_order() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let events_path = directory.join("events.jsonl");
+    let inbox = UserCommandInbox::open(directory.join("commands.jsonl"));
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&events_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-tick-apply",
+            "project-tick-apply",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["manual_review".into()],
+        ),
+        "loop-tick-apply",
+        "task-run-tick-apply",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts")
+    .with_command_inbox(inbox.clone());
+
+    let commands = [
+        steering_command(
+            "tick-apply-1",
+            "project-tick-apply",
+            "goal-tick-apply",
+            "task-run-tick-apply",
+            "loop-tick-apply",
+            CommandKind::Pause,
+        ),
+        steering_command(
+            "tick-apply-2",
+            "project-tick-apply",
+            "goal-tick-apply",
+            "task-run-tick-apply",
+            "loop-tick-apply",
+            CommandKind::Resume,
+        ),
+        steering_command(
+            "tick-apply-3",
+            "project-tick-apply",
+            "goal-tick-apply",
+            "task-run-tick-apply",
+            "loop-tick-apply",
+            CommandKind::Cancel,
+        ),
+    ];
+    let mut input = Vec::new();
+    for command in &commands {
+        input.extend(serde_json::to_vec(command).expect("command serializes"));
+        input.push(b'\n');
+    }
+    let mut poller = CommandPoller::new(ScriptedReader::new([
+        Ok(CommandRead::Data(input)),
+        Ok(CommandRead::NoInput),
+    ]));
+
+    let first = controller
+        .poll_and_apply_commands(&mut poller, 2)
+        .expect("first tick applies");
+    assert_eq!(first.submitted_count, 2);
+    assert_eq!(first.applied_count, 2);
+    assert_eq!(first.rejected_count, 0);
+    assert_eq!(first.stop_reason, CommandDrainStopReason::LimitReached);
+    assert_eq!(
+        inbox
+            .latest("tick-apply-1")
+            .expect("first command exists")
+            .status,
+        CommandStatus::Applied
+    );
+    assert_eq!(
+        inbox
+            .latest("tick-apply-2")
+            .expect("second command exists")
+            .status,
+        CommandStatus::Applied
+    );
+    assert!(inbox.latest("tick-apply-3").is_err());
+    assert_eq!(controller.status(), LoopStatus::Running);
+
+    let second = controller
+        .poll_and_apply_commands(&mut poller, 2)
+        .expect("second tick applies");
+    assert_eq!(second.submitted_count, 1);
+    assert_eq!(second.applied_count, 1);
+    assert_eq!(second.rejected_count, 0);
+    assert_eq!(second.stop_reason, CommandDrainStopReason::NoInput);
+    assert_eq!(
+        inbox
+            .latest("tick-apply-3")
+            .expect("third command exists")
+            .status,
+        CommandStatus::Applied
+    );
+    assert_eq!(controller.status(), LoopStatus::Cancelled);
+
+    let events = EventLog::open(events_path)
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    let applied_ids = events
+        .iter()
+        .filter(|event| event.event_type == "user_command_applied")
+        .filter_map(|event| event.payload["command_id"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        applied_ids,
+        vec!["tick-apply-1", "tick-apply-2", "tick-apply-3"]
+    );
+}
+
+#[test]
 fn controller_does_not_submit_eof_partial_or_invalid_poll_results() {
     let directory = test_data_dir();
     fs::create_dir_all(&directory).expect("test directory creates");

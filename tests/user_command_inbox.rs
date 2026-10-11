@@ -9,8 +9,8 @@ use std::os::unix::net::UnixStream;
 use steerbox::user_command_inbox::UnixCommandReader;
 use steerbox::user_command_inbox::{
     CommandDrainStopReason, CommandKind, CommandPollResult, CommandPoller, CommandRead,
-    CommandStatus, NonBlockingCommandReader, ReadCommandReader, UserCommand, UserCommandInbox,
-    UserCommandInboxError,
+    CommandStatus, NonBlockingCommandReader, ReadCommandReader, RuntimeTick, RuntimeTickError,
+    UserCommand, UserCommandInbox, UserCommandInboxError,
 };
 
 fn command(command_id: &str, payload: serde_json::Value) -> UserCommand {
@@ -354,6 +354,90 @@ fn poll_many_reports_eof_after_draining_available_commands() {
     let result = poller.poll_many(2).expect("eof drain succeeds");
     assert_eq!(result.commands, vec![expected]);
     assert_eq!(result.stop_reason, CommandDrainStopReason::Eof);
+}
+
+#[test]
+fn runtime_tick_applies_a_bounded_batch_in_input_order() {
+    let commands = [
+        command("tick-1", serde_json::json!({"order": 1})),
+        command("tick-2", serde_json::json!({"order": 2})),
+        command("tick-3", serde_json::json!({"order": 3})),
+    ];
+    let mut input = Vec::new();
+    for command in &commands {
+        input.extend(serde_json::to_vec(command).expect("command serializes"));
+        input.push(b'\n');
+    }
+    let mut poller = CommandPoller::new(ScriptedReader::new([
+        Ok(CommandRead::Data(input)),
+        Ok(CommandRead::NoInput),
+    ]));
+    let mut applied = Vec::new();
+
+    let result = RuntimeTick::run(&mut poller, 2, |command| {
+        applied.push(command.command_id.clone());
+        Ok::<_, ()>(())
+    })
+    .expect("runtime tick succeeds");
+
+    assert_eq!(applied, vec!["tick-1", "tick-2"]);
+    assert_eq!(result.applied_count, 2);
+    assert_eq!(result.commands.len(), 2);
+    assert_eq!(result.stop_reason, CommandDrainStopReason::LimitReached);
+}
+
+#[test]
+fn runtime_tick_preserves_no_input_and_eof_without_calling_callback() {
+    let mut no_input = CommandPoller::new(ScriptedReader::new([Ok(CommandRead::NoInput)]));
+    let no_input_result =
+        RuntimeTick::run(&mut no_input, 2, |_| Ok::<_, ()>(())).expect("no input tick succeeds");
+    assert!(no_input_result.commands.is_empty());
+    assert_eq!(no_input_result.applied_count, 0);
+    assert_eq!(no_input_result.stop_reason, CommandDrainStopReason::NoInput);
+
+    let mut eof = CommandPoller::new(ScriptedReader::new([Ok(CommandRead::Eof)]));
+    let eof_result = RuntimeTick::run(&mut eof, 2, |_| Ok::<_, ()>(())).expect("eof tick succeeds");
+    assert!(eof_result.commands.is_empty());
+    assert_eq!(eof_result.applied_count, 0);
+    assert_eq!(eof_result.stop_reason, CommandDrainStopReason::Eof);
+}
+
+#[test]
+fn runtime_tick_fails_closed_when_safe_boundary_callback_rejects() {
+    let command = command("tick-rejected", serde_json::json!({}));
+    let mut input = serde_json::to_vec(&command).expect("command serializes");
+    input.push(b'\n');
+    let mut poller = CommandPoller::new(ScriptedReader::new([Ok(CommandRead::Data(input))]));
+
+    let error = RuntimeTick::run(&mut poller, 1, |_| Err::<(), _>("boundary blocked"))
+        .expect_err("callback rejection fails the tick");
+    assert!(matches!(
+        error,
+        RuntimeTickError::SafeBoundary {
+            command_index: 0,
+            command_id,
+            applied_count: 0,
+            source: "boundary blocked",
+        } if command_id == "tick-rejected"
+    ));
+}
+
+#[test]
+fn runtime_tick_fails_closed_on_reader_error_without_callback() {
+    let mut poller = CommandPoller::new(ScriptedReader::new([Err(UserCommandInboxError::Io {
+        message: "reader failed".into(),
+    })]));
+    let mut callback_called = false;
+
+    let error = RuntimeTick::run(&mut poller, 1, |_| {
+        callback_called = true;
+        Ok::<_, ()>(())
+    })
+    .expect_err("reader error fails the tick");
+    assert!(!callback_called);
+    assert!(
+        matches!(error, RuntimeTickError::Poll(UserCommandInboxError::Io { message }) if message == "reader failed")
+    );
 }
 
 #[test]

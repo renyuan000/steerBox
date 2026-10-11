@@ -29,8 +29,9 @@ use crate::tool_executor::{
 };
 use crate::tool_registry::ToolRegistry;
 use crate::user_command_inbox::{
-    CommandDrainResult, CommandKind, CommandPollResult, CommandPoller, CommandStatus,
-    NonBlockingCommandReader, UserCommandInbox, UserCommandInboxError,
+    CommandDrainResult, CommandDrainStopReason, CommandKind, CommandPollResult, CommandPoller,
+    CommandStatus, NonBlockingCommandReader, RuntimeTick, RuntimeTickError, UserCommand,
+    UserCommandInbox, UserCommandInboxError,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -124,6 +125,21 @@ pub struct ModelActionExecution {
     pub action_id: String,
     pub action_output: ToolCallOutput,
     pub verification_output: ToolCallOutput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandApplyResult {
+    pub commands: Vec<UserCommand>,
+    pub stop_reason: CommandDrainStopReason,
+    pub submitted_count: usize,
+    pub applied_count: usize,
+    pub rejected_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct CommandApplyCounts {
+    applied_count: usize,
+    rejected_count: usize,
 }
 
 struct ModelActionFailure {
@@ -445,6 +461,39 @@ impl ReadOnlyLoopController {
             inbox.submit(command.clone())?;
         }
         Ok(result)
+    }
+
+    /// Drains at most `max_commands`, stages those commands in the inbox, then
+    /// applies all pending commands at the controller's existing safe boundary.
+    pub fn poll_and_apply_commands<R>(
+        &mut self,
+        poller: &mut CommandPoller<R>,
+        max_commands: usize,
+    ) -> Result<CommandApplyResult, LoopControllerError>
+    where
+        R: NonBlockingCommandReader,
+    {
+        let inbox = self
+            .command_inbox
+            .clone()
+            .ok_or(LoopControllerError::CommandInboxRequired)?;
+        let tick = RuntimeTick::run(poller, max_commands, |command| {
+            inbox.submit(command.clone()).map(|_| ())
+        })
+        .map_err(|error| match error {
+            RuntimeTickError::Poll(error) => LoopControllerError::UserCommandInbox(error),
+            RuntimeTickError::SafeBoundary { source, .. } => {
+                LoopControllerError::UserCommandInbox(source)
+            }
+        })?;
+        let counts = self.apply_pending_commands()?;
+        Ok(CommandApplyResult {
+            commands: tick.commands,
+            stop_reason: tick.stop_reason,
+            submitted_count: tick.applied_count,
+            applied_count: counts.applied_count,
+            rejected_count: counts.rejected_count,
+        })
     }
 
     pub fn run_observation(
@@ -1720,11 +1769,12 @@ impl ReadOnlyLoopController {
         Ok(())
     }
 
-    fn apply_pending_commands(&mut self) -> Result<(), LoopControllerError> {
+    fn apply_pending_commands(&mut self) -> Result<CommandApplyCounts, LoopControllerError> {
         let Some(inbox) = self.command_inbox.clone() else {
-            return Ok(());
+            return Ok(CommandApplyCounts::default());
         };
         let commands = inbox.pending_for_loop(&self.goal.project_id, &self.loop_run.loop_run_id)?;
+        let mut counts = CommandApplyCounts::default();
         for entry in commands {
             let command = entry.command;
             if command.goal_id != self.goal.goal_id
@@ -1739,6 +1789,7 @@ impl ReadOnlyLoopController {
                         "reason": "runtime target mismatch",
                     }),
                 )?;
+                counts.rejected_count += 1;
                 continue;
             }
 
@@ -1805,6 +1856,7 @@ impl ReadOnlyLoopController {
                         "actor_ref": command.actor_ref,
                     }),
                 )?;
+                counts.applied_count += 1;
             } else {
                 inbox.update_status(&command.command_id, CommandStatus::Rejected)?;
                 self.append_model_event(
@@ -1815,9 +1867,10 @@ impl ReadOnlyLoopController {
                         "reason": "command kind is not implemented at this safe boundary",
                     }),
                 )?;
+                counts.rejected_count += 1;
             }
         }
-        Ok(())
+        Ok(counts)
     }
 }
 

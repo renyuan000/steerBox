@@ -29,6 +29,7 @@ pub struct ToolCallOutput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StructuredToolAction {
     GitStatus,
+    ReadFile { path: String },
     RgFixed { query: String, path: String },
     MarkdownLinkCheck { path: String },
 }
@@ -99,6 +100,11 @@ impl ReadOnlyToolExecutor {
                 let path = required_string(&action.parameters, "path")?;
                 let query = required_string(&action.parameters, "query")?;
                 Ok(StructuredToolAction::RgFixed { query, path })
+            }
+            Some("read-file-readonly") => {
+                require_exact_keys(&action.parameters, &["path"])?;
+                let path = required_string(&action.parameters, "path")?;
+                Ok(StructuredToolAction::ReadFile { path })
             }
             Some("markdown-link-check") => {
                 require_exact_keys(&action.parameters, &["path"])?;
@@ -185,6 +191,22 @@ impl ReadOnlyToolExecutor {
                     "stdout_truncated": output.stdout.truncated,
                     "stderr": output.stderr.text,
                     "stderr_truncated": output.stderr.truncated,
+                }),
+            });
+        }
+        if profile.recipe_ref.as_deref() == Some("read-file-readonly") {
+            require_exact_keys(&input.arguments, &["path"])?;
+            let relative_path = required_string(&input.arguments, "path")?;
+            let path = resolve_workspace_path(workspace, &relative_path)?;
+            let content = read_bounded_file(&path)?;
+            return Ok(ToolCallOutput {
+                summary: content.clone(),
+                result: serde_json::json!({
+                    "tool_id": input.tool_id,
+                    "workspace": workspace,
+                    "path": relative_path,
+                    "executed": true,
+                    "content": content,
                 }),
             });
         }

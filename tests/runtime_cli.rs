@@ -1,9 +1,12 @@
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use steerbox::audit_store::{CheckpointStore, RunSummary, SideEffectLedger, TraceStore};
 use steerbox::event_log::EventLog;
+use steerbox::model_call_store::ModelCallStore;
+use steerbox::model_contracts::ModelCallRecord;
 use steerbox::runtime_config::RuntimeConfig;
 use steerbox::state_store::StateStore;
 
@@ -13,6 +16,34 @@ fn project_ref() -> String {
         .expect("clock is after epoch")
         .as_nanos();
     format!("cli-e2e-{nonce}")
+}
+
+fn model_call_record(id: &str) -> ModelCallRecord {
+    ModelCallRecord {
+        model_call_id: id.into(),
+        task_id: "task-cli".into(),
+        task_run_id: "task-run-cli".into(),
+        agent_role: "implementer".into(),
+        provider_id: "fixture-provider".into(),
+        endpoint_id: "fixture-endpoint".into(),
+        model_id: "fixture-model".into(),
+        route_decision_id: format!("route-{id}"),
+        resolved_prompt_pack_id: "prompt-cli".into(),
+        input_context_hash: "sha256:fixture".into(),
+        output_artifact_ref: format!("trace://{id}/output"),
+        latency_ms: Some(5),
+        input_tokens: Some(10),
+        output_tokens: Some(12),
+        estimated_cost: Some(0.0),
+        streaming: false,
+        finish_reason: "stop".into(),
+        tool_call_count: 0,
+        verification_status: "not_run".into(),
+        error_class: None,
+        started_at: "2026-10-11T00:00:00Z".into(),
+        completed_at: Some("2026-10-11T00:00:01Z".into()),
+        created_at: "2026-10-11T00:00:01Z".into(),
+    }
 }
 
 #[test]
@@ -594,5 +625,98 @@ fn board_list_cli_rebuilds_read_only_projection_from_events() {
     let output = String::from_utf8_lossy(&board.stdout);
     assert!(output.contains("task-cli"));
     assert!(output.contains("CLI board task"));
+    let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
+}
+
+#[test]
+fn model_call_page_cli_reads_bounded_audit_records() {
+    let project_ref = project_ref();
+    let config = RuntimeConfig::default_for_project(project_ref.clone()).expect("config builds");
+    let _ = fs::remove_dir_all(&config.data_root);
+    let binary = env!("CARGO_BIN_EXE_steerbox");
+
+    let init = Command::new(binary)
+        .args(["runtime", "init", &project_ref])
+        .output()
+        .expect("runtime init starts");
+    assert!(init.status.success());
+    assert!(!config.model_calls_path().exists());
+
+    let missing = Command::new(binary)
+        .args([
+            "model-call",
+            "page",
+            &config.config_path().display().to_string(),
+            "0",
+            "10",
+        ])
+        .output()
+        .expect("missing model-call page starts");
+    assert!(
+        missing.status.success(),
+        "missing page stderr: {}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+    let missing_json: serde_json::Value =
+        serde_json::from_slice(&missing.stdout).expect("missing page JSON");
+    assert_eq!(missing_json["offset"], 0);
+    assert_eq!(missing_json["limit"], 10);
+    assert_eq!(missing_json["count"], 0);
+    assert!(missing_json["model_calls"].as_array().unwrap().is_empty());
+
+    let store = ModelCallStore::open(config.model_calls_path()).expect("model call store opens");
+    store
+        .append(&model_call_record("call-1"))
+        .expect("first model call appends");
+    store
+        .append(&model_call_record("call-2"))
+        .expect("second model call appends");
+
+    for (offset, limit) in [(0, 0), (99, 2)] {
+        let output = Command::new(binary)
+            .args([
+                "model-call",
+                "page",
+                &config.config_path().display().to_string(),
+                &offset.to_string(),
+                &limit.to_string(),
+            ])
+            .output()
+            .expect("empty model-call page starts");
+        assert!(output.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("page JSON");
+        assert_eq!(json["offset"], offset);
+        assert_eq!(json["limit"], limit);
+        assert_eq!(json["count"], 0);
+        assert!(json["model_calls"].as_array().unwrap().is_empty());
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(config.model_calls_path())
+        .expect("model call log reopens");
+    writeln!(file, "not-json").expect("malformed trailing line writes");
+    drop(file);
+
+    let bounded = Command::new(binary)
+        .args([
+            "model-call",
+            "page",
+            &config.config_path().display().to_string(),
+            "1",
+            "1",
+        ])
+        .output()
+        .expect("bounded model-call page starts");
+    assert!(
+        bounded.status.success(),
+        "bounded page stderr: {}",
+        String::from_utf8_lossy(&bounded.stderr)
+    );
+    let bounded_json: serde_json::Value =
+        serde_json::from_slice(&bounded.stdout).expect("bounded page JSON");
+    assert_eq!(bounded_json["count"], 1);
+    assert_eq!(bounded_json["model_calls"][0]["model_call_id"], "call-2");
+
     let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
 }

@@ -2,13 +2,13 @@
 
 ## 定位与证据边界
 
-状态核对日期：2026-10-11。已提交代码基线为 `8bd0860`，当前工作树还包含未提交的 Anthropic profile binding、只读工具执行和模型动作闭环切片；未提交代码仍须以本文末尾的实际验证命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
+状态核对日期：2026-10-11。已提交代码基线为 `8bd0860`，当前工作树还包含未提交的 Anthropic profile binding、只读工具执行、模型动作闭环、bounded runtime tick、StreamReporter 进度刷新和 model-call 分页 CLI 切片；未提交代码仍须以本文末尾的实际验证命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
 
 本文是剩余验收的归并视图，不替代 [PHASE_1_CONTRACTS.md](PHASE_1_CONTRACTS.md)、[PHASE_1_IMPLEMENTATION_SCOPE.md](PHASE_1_IMPLEMENTATION_SCOPE.md)、[PHASE_1_TODO.md](PHASE_1_TODO.md) 或 [PHASE_1_VALIDATION_PLAN.md](PHASE_1_VALIDATION_PLAN.md)。对象、身份、授权、事件及恢复语义以 Contracts 为准，范围以 Scope 为准，逐项状态和验收用例分别回查 TODO 与 Validation。
 
 上一批全量 **188 项测试通过** 是历史证据；其中的全目标 test、clippy、build、fmt 结果不能直接覆盖当前工作树。2026-10-11 master 本轮新复跑的 focused 结果见本文末尾；工作树中另有未审核的 acceptance/benchmark 产物，因此当前不把 `--all-targets` 全量状态标为通过。本轮没有真实网络调用或真实凭据检查。
 
-当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的 Markdown 修改／链接验证切片，不是模型自行提出任意文件修改。当前不能交付给用户作为任意 coding Agent，也不能声明完整 Phase 1 已完成。
+当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、bounded `read_file`、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 已支持 action/progress、非法进度拒绝和逐事件 flush；model-call 审计已有独立分页 CLI。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的 Markdown 修改／链接验证切片，不是模型自行提出任意文件修改。当前不能交付给用户作为任意 coding Agent，也不能声明完整 Phase 1 已完成。
 
 ## 六个交付包
 
@@ -18,8 +18,8 @@
 |---|---|---|---|
 | 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | non-stream OpenAI-compatible/Anthropic HTTP transport、注入式 credential resolver、secret-free provider profile binding、Anthropic profile binding 和 localhost 安全集成测试已通过；live 凭据与 live 调用仍未交付 |
 | 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | resolved bridge 已接入 LoopController，并以 ModelCallStore、route/prompt/wire hash/output ref 做 fail-closed 审计；真实 provider、fallback 和完整恢复绑定仍未交付 |
-| 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 只读动作已连成 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的 controller 闭环并有 focused 覆盖；尚未从真实模型响应解析动作，也没有文件写入/Bash/副作用验证闭环 |
-| 4 | 用户入口、preflight、状态／取消及真实开发任务 E2E | 首个受限可用版本门槛 | fixture CLI、注入式安全进度报告和可测试的完整行命令轮询已有；真实 OS stdin、常驻 Agent 入口、live 控制及 E2E 未交付 |
+| 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 只读动作已连成 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的 controller 闭环并有 focused 覆盖；新增 bounded `read_file`，仍尚未从真实模型响应解析动作，也没有文件写入/Bash/副作用验证闭环 |
+| 4 | 用户入口、preflight、状态／取消及真实开发任务 E2E | 首个受限可用版本门槛 | fixture CLI、注入式安全进度报告、逐事件 flush、bounded RuntimeTick/controller safe-boundary 和可测试的完整行命令轮询已有；真实 OS stdin、常驻 Agent 入口、live 控制及 E2E 未交付 |
 | 5 | TaskRun／Attempt、目标／计划修订与 controller 恢复 | 完整 Phase 1 补齐项；fallback lineage／总预算是包 2 前置门禁 | TaskRun／Attempt 领域 schema、父关系、跨 Attempt 总预算校验以及初始 Attempt 到 controller 完成的最小绑定已通过；尚未接入 EventLog/StateStore 恢复、目标/计划修订或跨进程 resume |
 | 6 | 项目范围 recipe／memory／wiki 候选与验证回链 | 完整 Phase 1 补齐项 | LessonCandidate 失败来源回链已有，其余候选链未交付 |
 
@@ -144,7 +144,7 @@
 
 ## 验收记录与范围保护
 
-2026-10-11 master 复跑记录：`loop_controller` 27 项、`user_command_inbox` 18 项、`provider_model_adapter` 7 项、`resolved_provider_model_adapter` 11 项、`model_call_controller_audit` 7 项 focused 测试通过；本轮新增回归覆盖 resolved provider 模型响应→PolicyGate→两次只读工具执行→verification、成功/失败审计、旧入口 fail-closed、批量命令限流以及 raw tool output 脱敏。构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。工作树中另有未审核的 `tests/acceptance/` 与 `tests/benchmarks/` 产物，不能据此声称当前 `--all-targets` 全量通过；真实 provider、真实任务、文件写入／Bash、常驻后台 worker、跨进程恢复仍未验收。
+2026-10-11 master 复跑记录：本轮合并 focused 命令中 `loop_controller` 28 项、`user_command_inbox` 22 项、`stream_reporter` 7 项、`tool_executor` 9 项、`runtime_cli` 9 项通过，共 75 项；本轮覆盖 bounded RuntimeTick/controller safe-boundary、model-call 分页 CLI、StreamReporter action/progress/flush、bounded `read_file`，以及既有 resolved provider 动作闭环和 raw tool output 脱敏。随后同范围 clippy `-D warnings`、rustfmt 和 `git diff --check` 均通过。构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。工作树中另有未审核的 `tests/acceptance/` 与 `tests/benchmarks/` 产物，不能据此声称当前 `--all-targets` 全量通过；真实 provider、真实任务、文件写入／Bash、常驻后台 worker、跨进程恢复仍未验收。
 
 每包交接记录应给出代码基线、实际执行命令、结果／退出码、产物位置与证据引用、已验证范围及未通过项。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
 

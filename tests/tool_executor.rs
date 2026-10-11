@@ -76,6 +76,23 @@ fn baseline_read_only_recipes_execute_without_shell_arguments() {
         .expect("markdown link check executes");
     assert_eq!(links.result["tool_id"], "markdown_link_check");
     assert!(links.result["executed"].as_bool().unwrap());
+
+    let file = executor
+        .execute(
+            &registry,
+            &workspace,
+            ToolCallInput {
+                tool_id: "read_file".into(),
+                arguments: json!({"path": "README.md"}),
+            },
+        )
+        .expect("bounded file read executes");
+    assert_eq!(file.result["tool_id"], "read_file");
+    assert!(file.result["executed"].as_bool().unwrap());
+    assert!(file.result["content"]
+        .as_str()
+        .unwrap()
+        .contains("steerBox"));
 }
 
 #[test]
@@ -195,6 +212,16 @@ fn structured_action_maps_fixed_rg_and_markdown_link_check() {
             .map_action(&registry, &workspace, &links)
             .expect("link check maps"),
         StructuredToolAction::MarkdownLinkCheck {
+            path: "README.md".into(),
+        }
+    );
+
+    let read = action("read_file", json!({"path": "README.md"}), "README.md");
+    assert_eq!(
+        ReadOnlyToolExecutor
+            .map_action(&registry, &workspace, &read)
+            .expect("read file maps"),
+        StructuredToolAction::ReadFile {
             path: "README.md".into(),
         }
     );
