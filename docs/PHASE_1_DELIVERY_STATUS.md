@@ -31,7 +31,7 @@
 
 已有：
 
-- [provider_adapter.rs](../src/provider_adapter.rs) 定义 `ProviderTransport`、OpenAI-compatible 请求／响应、超时和错误分类；[provider_model_adapter.rs](../src/provider_model_adapter.rs) 可将严格 decision/summary 响应转换为既有模型决策。
+- [provider_adapter.rs](../src/provider_adapter.rs) 定义 `ProviderTransport`、OpenAI-compatible 请求／响应、超时和错误分类；[provider_model_adapter.rs](../src/provider_model_adapter.rs) 可将严格 decision/summary 响应转换为既有模型决策，并提供 secret-free `stream()` 事件边界。
 - [runtime_config.rs](../src/runtime_config.rs) 已有 model profile、endpoint 和 `auth_ref` 配置字段；fake transport 测试不需要真实认证信息。
 - `RuntimeConfig::build_http_provider_adapter` 已将 profile 的 provider／endpoint／model／opaque `auth_ref` 绑定到 `ProviderModelAdapter<HttpProviderTransport<_>>`；factory 不调用 resolver、不读取环境变量、不发起网络请求。
 - [http_transport.rs](../src/http_transport.rs) 已提供 non-stream OpenAI-compatible HTTP transport；credential resolver 可注入，生产默认拒绝普通 HTTP，显式禁用 redirect、自动 retry 和 Referer，并限制响应体大小。
@@ -52,7 +52,7 @@
 已有：
 
 - [prompt_registry.rs](../src/prompt_registry.rs) 提供 ID/version、role/task binding 和模板登记查询；[model_registry.rs](../src/model_registry.rs)、[model_router.rs](../src/model_router.rs) 与 controller 已有本地规则路由。
-- [model_contracts.rs](../src/model_contracts.rs)、[model_call_store.rs](../src/model_call_store.rs) 提供 `RouteDecision`／`ModelCallRecord` 字段校验、独立 append-only 存储及有界 `read_page(offset, limit)` 查询。
+- [model_contracts.rs](../src/model_contracts.rs)、[model_call_store.rs](../src/model_call_store.rs) 提供 `RouteDecision`／`ModelCallRecord` 字段校验、独立 append-only 存储及有界 `read_page(offset, limit)` 查询；`main.rs` 已提供独立 `model-call page` 只读入口。
 - provider bridge 的固定输出契约位于 system；用户 objective／observation 经 JSON 编码放入 user。该分层修复不等于完整 prompt resolution 或提示注入防护。
 - `ReadOnlyLoopController::run_resolved_model_step` 已将 `ResolvedPromptPack`、`ProviderModelAdapter`、`ModelCallRecord` 和 `ModelCallStore` 接成 opt-in 路径；成功、provider 失败、审计写入失败、binding mismatch 和审批阻断均有 focused 回归。
 
@@ -75,12 +75,12 @@
 - [loop_controller.rs](../src/loop_controller.rs) 新增 `run_model_step_with_action`：模型响应中的有限只读 action 会经过 `PolicyGate → ReadOnlyToolExecutor → verification`，并记录 `model_action_started`／`model_action_failed`／`model_action_verified` 事件；旧 `run_model_step` 不执行 action，保持兼容。
 - [loop_controller.rs](../src/loop_controller.rs) 已有模型步骤、policy 检查、固定 argv 的只读 `git_status` 执行，以及事件／trace／side-effect 记录。
 - resolved action 与只读工具的持久化审计只保留安全元数据；原始 stdout、stderr、query、路径结果不再进入 EventLog、TraceStore 或 SideEffectLedger。`CommandPoller::poll_many` 和 controller 批量提交接口已限制每个 tick 的命令数，但尚未接入常驻后台 worker。
-- [workspace_edit.rs](../src/workspace_edit.rs)、[main.rs](../src/main.rs) 已有受审批的 Markdown 精确修改、链接验证、checkpoint metadata 和成功／失败 RunSummary；[drift_guard.rs](../src/drift_guard.rs) 已有静态对齐／偏离检查。
+- [workspace_edit.rs](../src/workspace_edit.rs)、[tool_executor.rs](../src/tool_executor.rs)、[main.rs](../src/main.rs) 已有受审批的 Markdown 精确修改、链接验证、checkpoint metadata 和成功／失败 RunSummary；`WorkspaceToolExecutor` 仅允许注册的 Markdown edit recipe，必须显式 approval，且 PolicyGate 对 baseline profile 返回 `RequireHumanApproval`；[drift_guard.rs](../src/drift_guard.rs) 已有静态对齐／偏离检查。
 
 剩余：
 
 - resolved provider 的 opt-in 路径已接入 `run_resolved_model_step_with_action`：fake provider 响应经 `PolicyGate → ReadOnlyToolExecutor → verification`，最终 `ModelCallRecord` 写入实际 `tool_call_count`、`verification_status` 和错误分类；旧 resolved 入口遇到 action 会 fail-closed。真实 provider、文件写入／Bash、完整 artifact 持久化和跨进程恢复仍待完成。
-- 扩展文件读／写／edit、Bash 等副作用工具；每项都必须有 PolicyGate、checkpoint／side-effect ledger、写后验证和失败恢复边界。模型说 complete 不得替代真实验证。
+- 扩展文件读／写／edit、Bash 等副作用工具；当前 Markdown edit 只完成工具边界和显式审批切片，尚未接入模型动作 controller 的 checkpoint／side-effect ledger／写后验证和失败恢复闭环。每项都必须有 PolicyGate、checkpoint／side-effect ledger、写后验证和失败恢复边界。模型说 complete 不得替代真实验证。
 - 将 goal alignment／drift 检查及 ToolCallRecord／VerificationResult 的适用关联接入实际链；限制模型、工具、步骤、重试和无进展，不允许无限自循环。当前只读工具的 raw output 脱敏已接线，文件写入／Bash 的副作用验证与恢复仍待完成。
 
 可复现验收证据：现有入口为 `cargo test --test loop_controller --test tool_policy --test tool_executor --test workspace_edit --test dev_vertical_slice --test drift_guard`。新增受控闭环验收须让模型提出一次限定文件修改，验证器检查实际产物后将结果回传，最终 summary 可反查各步骤、policy、工具、diff boundary、验证及副作用。另覆盖越界／未注册／未审批的零副作用路径、验证失败后不伪报成功和预算耗尽停止。现有手工指定 Markdown 替换输入不能作为模型提出动作的证据。
@@ -144,7 +144,7 @@
 
 ## 验收记录与范围保护
 
-2026-10-11 master 复跑记录：本轮合并 focused 命令中 `loop_controller` 28 项、`user_command_inbox` 22 项、`stream_reporter` 7 项、`tool_executor` 9 项、`runtime_cli` 9 项通过，共 75 项；本轮覆盖 bounded RuntimeTick/controller safe-boundary、model-call 分页 CLI、StreamReporter action/progress/flush、bounded `read_file`，以及既有 resolved provider 动作闭环和 raw tool output 脱敏。随后同范围 clippy `-D warnings`、rustfmt 和 `git diff --check` 均通过。构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。工作树中另有未审核的 `tests/acceptance/` 与 `tests/benchmarks/` 产物，不能据此声称当前 `--all-targets` 全量通过；真实 provider、真实任务、文件写入／Bash、常驻后台 worker、跨进程恢复仍未验收。
+2026-10-11 master 复跑记录：前一批 focused 命令中 `loop_controller` 28 项、`user_command_inbox` 22 项、`stream_reporter` 7 项、`tool_executor` 9 项、`runtime_cli` 9 项通过，共 75 项；本轮新增 `provider_model_adapter` 9 项、`model_router` 10 项、`tool_executor` 11 项、`tool_policy` 7 项通过，共 37 项，累计记录 112 项（其中 `tool_executor` 的 9 项是前一批子集，不重复计数时为 103 项独立测试结果）。本轮覆盖 provider stream 边界、纯 fallback 选择、显式审批的 Markdown edit、PolicyGate 门禁，以及既有 RuntimeTick/controller safe-boundary、model-call 分页 CLI、StreamReporter action/progress/flush、bounded `read_file` 和 raw tool output 脱敏。随后同范围 clippy `-D warnings`、rustfmt 和 `git diff --check` 均通过。构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。工作树中另有未审核的 `tests/acceptance/` 与 `tests/benchmarks/` 产物，不能据此声称当前 `--all-targets` 全量通过；真实 provider、真实任务、文件写入／Bash、常驻后台 worker、跨进程恢复仍未验收。
 
 每包交接记录应给出代码基线、实际执行命令、结果／退出码、产物位置与证据引用、已验证范围及未通过项。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
 
