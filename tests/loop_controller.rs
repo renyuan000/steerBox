@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use steerbox::audit_store::{SideEffectLedger, TraceStore};
+use steerbox::audit_store::{CheckpointStore, SideEffectLedger, TraceStore};
 use steerbox::domain::{
     AttemptStatus, BudgetKind, GoalContract, LoopBudget, LoopStatus, TaskRunStatus,
 };
@@ -218,7 +218,12 @@ fn controller_executes_approved_workspace_edit_and_verifies_it() {
         "task-run-write",
         LoopBudget::new(3, 0, 0, 1, 0, 4, 1, 1),
     )
-    .expect("loop starts");
+    .expect("loop starts")
+    .with_checkpoint_store(directory.join("checkpoints.jsonl"))
+    .with_audit_stores(
+        directory.join("traces.jsonl"),
+        directory.join("side-effects.jsonl"),
+    );
 
     controller
         .execute_workspace_edit_action(
@@ -262,6 +267,77 @@ fn controller_executes_approved_workspace_edit_and_verifies_it() {
             let payload = event.payload.to_string();
             !payload.contains("before") && !payload.contains("after")
         }));
+    let checkpoints = CheckpointStore::open(directory.join("checkpoints.jsonl"))
+        .read_all()
+        .expect("checkpoints read");
+    assert_eq!(checkpoints.len(), 1);
+    assert_eq!(checkpoints[0].files, vec!["README.md"]);
+    let side_effects = SideEffectLedger::open(directory.join("side-effects.jsonl"))
+        .read_all()
+        .expect("side effects read");
+    assert!(side_effects.iter().any(|record| record.status == "started"));
+    assert!(side_effects
+        .iter()
+        .any(|record| record.status == "completed"));
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn controller_rejects_semantically_failed_markdown_verification() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    fs::write(directory.join("README.md"), "before").expect("markdown fixture writes");
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let mut action = workspace_edit_action(&directory);
+    action.parameters["replacement"] = serde_json::json!("after\n[broken](missing.md)");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-write-verify-fail",
+            "project-write-verify-fail",
+            "edit markdown",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-write-verify-fail",
+        "task-run-write-verify-fail",
+        LoopBudget::new(3, 0, 0, 1, 0, 4, 1, 1),
+    )
+    .expect("loop starts")
+    .with_audit_stores(
+        directory.join("traces.jsonl"),
+        directory.join("side-effects.jsonl"),
+    );
+
+    assert!(matches!(
+        controller.execute_workspace_edit_action(
+            &registry,
+            &gate,
+            &WorkspaceToolExecutor,
+            &ReadOnlyToolExecutor,
+            &directory,
+            &action,
+            "step-write-verify-fail",
+            true,
+        ),
+        Err(LoopControllerError::WorkspaceToolExecution(_))
+    ));
+    assert_eq!(
+        fs::read_to_string(directory.join("README.md")).unwrap(),
+        "after\n[broken](missing.md)"
+    );
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_failed"));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "model_action_verified"));
     let _ = fs::remove_dir_all(directory);
 }
 

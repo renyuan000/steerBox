@@ -1,5 +1,6 @@
 use crate::audit_store::{
-    AuditStoreError, SideEffectLedger, SideEffectRecord, TraceRecord, TraceStore,
+    AuditStoreError, CheckpointMetadata, CheckpointStore, SideEffectLedger, SideEffectRecord,
+    TraceRecord, TraceStore,
 };
 use crate::budget_calculator::BudgetCalculator;
 use crate::domain::{
@@ -114,6 +115,7 @@ pub struct ReadOnlyLoopController {
     next_step_no: u32,
     no_progress: NoProgressTracker,
     trace_store: Option<TraceStore>,
+    checkpoint_store: Option<CheckpointStore>,
     side_effect_ledger: Option<SideEffectLedger>,
     model_call_store: Option<ModelCallStore>,
     progress_sink: Option<ProgressSinkHolder>,
@@ -238,6 +240,7 @@ impl ReadOnlyLoopController {
             next_step_no: 1,
             no_progress: NoProgressTracker::new(max_no_progress_steps, max_same_action_repetitions),
             trace_store: None,
+            checkpoint_store: None,
             side_effect_ledger: None,
             model_call_store: None,
             progress_sink: None,
@@ -402,6 +405,11 @@ impl ReadOnlyLoopController {
     ) -> Self {
         self.trace_store = Some(TraceStore::open(trace_path));
         self.side_effect_ledger = Some(SideEffectLedger::open(side_effect_path));
+        self
+    }
+
+    pub fn with_checkpoint_store(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.checkpoint_store = Some(CheckpointStore::open(path));
         self
     }
 
@@ -1527,10 +1535,37 @@ impl ReadOnlyLoopController {
                 },
             });
         }
+        let relative_path = action
+            .parameters
+            .get("path")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                LoopControllerError::WorkspaceToolExecution("missing edit path".into())
+            })?;
+        if let Some(store) = &self.checkpoint_store {
+            store.append(&CheckpointMetadata {
+                checkpoint_id: format!("{step_id}:checkpoint:before-write"),
+                goal_id: self.goal.goal_id.clone(),
+                loop_run_id: self.loop_run.loop_run_id.clone(),
+                step_id: Some(step_id.clone()),
+                files: vec![relative_path.to_owned()],
+                diff_boundary: "single_markdown_replacement_metadata_only".into(),
+                recoverability: "local_workspace_restore_or_escalate".into(),
+                side_effect_refs: vec![format!("{step_id}:side-effect")],
+                created_at: chrono::Utc::now().to_rfc3339(),
+            })?;
+        }
         self.append_model_event(
             "model_action_started",
             &format!("{step_id}:action_started"),
             json!({"action_id": action.action_id, "tool_id": action.tool_id}),
+        )?;
+        self.record_tool_audit(
+            registry,
+            &action.tool_id,
+            &step_id,
+            "started",
+            "workspace edit approved; mutation started",
         )?;
         let _action_output = match workspace_executor.execute(
             registry,
@@ -1544,6 +1579,13 @@ impl ReadOnlyLoopController {
         ) {
             Ok(output) => output,
             Err(error) => {
+                self.record_tool_audit(
+                    registry,
+                    &action.tool_id,
+                    &step_id,
+                    "failed",
+                    "workspace edit failed before verification",
+                )?;
                 self.append_model_event(
                     "model_action_failed",
                     &format!("{step_id}:action_failed"),
@@ -1558,6 +1600,13 @@ impl ReadOnlyLoopController {
             "file_change_recorded",
             &format!("{step_id}:file_change_recorded"),
             json!({"action_id": action.action_id, "tool_id": action.tool_id, "path": action.parameters.get("path").and_then(|value| value.as_str())}),
+        )?;
+        self.record_tool_audit(
+            registry,
+            &action.tool_id,
+            &step_id,
+            "completed",
+            "workspace edit completed; output redacted",
         )?;
         let verification_action = ModelActionEnvelope {
             schema_version: action.schema_version,
@@ -1583,6 +1632,13 @@ impl ReadOnlyLoopController {
         ) {
             Ok(output) => output,
             Err(error) => {
+                self.record_tool_audit(
+                    registry,
+                    &action.tool_id,
+                    &step_id,
+                    "verification_failed",
+                    "workspace edit verification failed",
+                )?;
                 self.append_model_event(
                     "model_action_failed",
                     &format!("{step_id}:verification_failed"),
@@ -1591,6 +1647,28 @@ impl ReadOnlyLoopController {
                 return Err(error);
             }
         };
+        if verification_output
+            .result
+            .get("missing_local_links")
+            .and_then(|value| value.as_array())
+            .is_some_and(|missing| !missing.is_empty())
+        {
+            self.record_tool_audit(
+                registry,
+                &action.tool_id,
+                &step_id,
+                "verification_failed",
+                "workspace edit verification reported missing local links",
+            )?;
+            self.append_model_event(
+                "model_action_failed",
+                &format!("{step_id}:verification_failed"),
+                json!({"action_id": action.action_id, "tool_id": action.tool_id, "phase": "verification"}),
+            )?;
+            return Err(LoopControllerError::WorkspaceToolExecution(
+                "workspace edit verification reported missing local links".into(),
+            ));
+        }
         self.append_model_event(
             "model_action_verified",
             &format!("{step_id}:action_verified"),
