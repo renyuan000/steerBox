@@ -25,7 +25,7 @@ use crate::strategy_selector::{StrategyDecision, StrategySelectionError, Strateg
 use crate::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
 use crate::task_features::TaskFeatures;
 use crate::tool_executor::{
-    ReadOnlyToolExecutor, ToolCallInput, ToolCallOutput, ToolExecutionError,
+    ReadOnlyToolExecutor, ToolCallInput, ToolCallOutput, ToolExecutionError, WorkspaceToolExecutor,
 };
 use crate::tool_registry::ToolRegistry;
 use crate::user_command_inbox::{
@@ -81,6 +81,8 @@ pub enum LoopControllerError {
     PolicyGate(#[from] PolicyGateError),
     #[error("tool execution failed: {0}")]
     ToolExecution(#[from] ToolExecutionError),
+    #[error("workspace tool execution failed: {0}")]
+    WorkspaceToolExecution(String),
     #[error("audit store failed: {0}")]
     AuditStore(#[from] AuditStoreError),
     #[error("user command inbox failed: {0}")]
@@ -1475,6 +1477,132 @@ impl ReadOnlyLoopController {
     ) -> Result<ModelActionExecution, LoopControllerError> {
         self.execute_model_action_with_audit(registry, gate, executor, workspace, action, step_id)
             .map_err(|failure| failure.error)
+    }
+
+    /// Execute the registered Markdown workspace-edit recipe only after the
+    /// policy gate requests human approval and the caller supplies approval.
+    /// Verification remains read-only and all persisted payloads are metadata-only.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_workspace_edit_action(
+        &mut self,
+        registry: &ToolRegistry,
+        gate: &PolicyGate,
+        workspace_executor: &WorkspaceToolExecutor,
+        read_only_executor: &ReadOnlyToolExecutor,
+        workspace: &std::path::Path,
+        action: &ModelActionEnvelope,
+        step_id: impl Into<String>,
+        approved: bool,
+    ) -> Result<ToolCallOutput, LoopControllerError> {
+        action.validate()?;
+        workspace_executor
+            .map_action(registry, workspace, action)
+            .map_err(|error| LoopControllerError::WorkspaceToolExecution(error.to_string()))?;
+        let step_id = step_id.into();
+        let request = PolicyRequest {
+            policy_event_id: format!("{step_id}:policy"),
+            tool_id: action.tool_id.clone(),
+            project_id: self.goal.project_id.clone(),
+            goal_id: self.goal.goal_id.clone(),
+            task_run_id: self.loop_run.task_run_id.clone(),
+            loop_run_id: self.loop_run.loop_run_id.clone(),
+            step_id: step_id.clone(),
+            correlation_id: self.loop_run.loop_run_id.clone(),
+            human_steering_mode: self.goal.human_steering_mode,
+        };
+        let decision = gate.evaluate(registry, &self.goal, &request);
+        gate.record_decision(&mut self.event_log, &request, &decision)?;
+        if decision.decision != PolicyDecision::RequireHumanApproval || !approved {
+            self.append_model_event(
+                "model_action_failed",
+                &format!("{step_id}:action_failed"),
+                json!({"action_id": action.action_id, "tool_id": action.tool_id, "phase": "approval"}),
+            )?;
+            return Err(LoopControllerError::PolicyDenied {
+                decision: decision.decision,
+                reason: if approved {
+                    "workspace edit must require human approval".into()
+                } else {
+                    "workspace edit approval was not provided".into()
+                },
+            });
+        }
+        self.append_model_event(
+            "model_action_started",
+            &format!("{step_id}:action_started"),
+            json!({"action_id": action.action_id, "tool_id": action.tool_id}),
+        )?;
+        let _action_output = match workspace_executor.execute(
+            registry,
+            workspace,
+            &self.goal,
+            ToolCallInput {
+                tool_id: action.tool_id.clone(),
+                arguments: action.parameters.clone(),
+            },
+            approved,
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                self.append_model_event(
+                    "model_action_failed",
+                    &format!("{step_id}:action_failed"),
+                    json!({"action_id": action.action_id, "tool_id": action.tool_id, "phase": "execute"}),
+                )?;
+                return Err(LoopControllerError::WorkspaceToolExecution(
+                    error.to_string(),
+                ));
+            }
+        };
+        self.append_model_event(
+            "file_change_recorded",
+            &format!("{step_id}:file_change_recorded"),
+            json!({"action_id": action.action_id, "tool_id": action.tool_id, "path": action.parameters.get("path").and_then(|value| value.as_str())}),
+        )?;
+        let verification_action = ModelActionEnvelope {
+            schema_version: action.schema_version,
+            action_id: action.action_id.clone(),
+            tool_id: action.verification.verifier_tool_id.clone(),
+            parameters: action.verification.parameters.clone(),
+            path_scope: action.path_scope.clone(),
+            verification: VerificationContract {
+                verifier_tool_id: action.verification.verifier_tool_id.clone(),
+                parameters: action.verification.parameters.clone(),
+            },
+        };
+        let verification_output = match self.execute_read_only_tool(
+            registry,
+            gate,
+            read_only_executor,
+            workspace,
+            ToolCallInput {
+                tool_id: verification_action.tool_id,
+                arguments: verification_action.parameters,
+            },
+            format!("{step_id}:verification"),
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                self.append_model_event(
+                    "model_action_failed",
+                    &format!("{step_id}:verification_failed"),
+                    json!({"action_id": action.action_id, "tool_id": action.tool_id, "phase": "verification"}),
+                )?;
+                return Err(error);
+            }
+        };
+        self.append_model_event(
+            "model_action_verified",
+            &format!("{step_id}:action_verified"),
+            json!({"action_id": action.action_id, "tool_id": action.tool_id, "verifier_tool_id": action.verification.verifier_tool_id}),
+        )?;
+        Ok(ToolCallOutput {
+            summary: format!(
+                "workspace edit completed; verification: {}",
+                verification_output.summary
+            ),
+            result: serde_json::json!({"action_id": action.action_id, "verified": true}),
+        })
     }
 
     fn execute_model_action_with_audit(

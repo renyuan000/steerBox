@@ -16,7 +16,7 @@ use steerbox::model_adapter::{
 use steerbox::model_contracts::{ActionPathScope, ModelActionEnvelope, VerificationContract};
 use steerbox::policy_gate::{PolicyDecision, PolicyGate};
 use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
-use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallInput};
+use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallInput, WorkspaceToolExecutor};
 use steerbox::tool_registry::ToolRegistry;
 use steerbox::user_command_inbox::{
     CommandDrainStopReason, CommandKind, CommandPollResult, CommandPoller, CommandRead,
@@ -173,6 +173,150 @@ fn controller_executes_model_action_through_policy_and_verification() {
     assert!(events
         .iter()
         .any(|event| event.event_type == "model_action_verified"));
+}
+
+fn workspace_edit_action(workspace: &std::path::Path) -> ModelActionEnvelope {
+    ModelActionEnvelope {
+        schema_version: steerbox::model_contracts::MODEL_ACTION_SCHEMA_VERSION,
+        action_id: "action-edit-markdown".into(),
+        tool_id: "edit_markdown".into(),
+        parameters: serde_json::json!({
+            "path": "README.md",
+            "expected": "before",
+            "replacement": "after"
+        }),
+        path_scope: ActionPathScope {
+            root: workspace.display().to_string(),
+            allowed_paths: vec!["README.md".into()],
+        },
+        verification: VerificationContract {
+            verifier_tool_id: "markdown_link_check".into(),
+            parameters: serde_json::json!({"path": "README.md"}),
+        },
+    }
+}
+
+#[test]
+fn controller_executes_approved_workspace_edit_and_verifies_it() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    fs::write(directory.join("README.md"), "before").expect("markdown fixture writes");
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let action = workspace_edit_action(&directory);
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-write",
+            "project-write",
+            "edit markdown",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-write",
+        "task-run-write",
+        LoopBudget::new(3, 0, 0, 1, 0, 4, 1, 1),
+    )
+    .expect("loop starts");
+
+    controller
+        .execute_workspace_edit_action(
+            &registry,
+            &gate,
+            &WorkspaceToolExecutor,
+            &ReadOnlyToolExecutor,
+            &directory,
+            &action,
+            "step-write",
+            true,
+        )
+        .expect("approved workspace edit succeeds");
+
+    assert_eq!(
+        fs::read_to_string(directory.join("README.md")).unwrap(),
+        "after"
+    );
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_started"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "file_change_recorded"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_verified"));
+    assert!(events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "model_action_started" | "file_change_recorded" | "model_action_verified"
+            )
+        })
+        .all(|event| {
+            let payload = event.payload.to_string();
+            !payload.contains("before") && !payload.contains("after")
+        }));
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn controller_rejects_unapproved_workspace_edit_without_writing_or_verifying() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    fs::write(directory.join("README.md"), "before").expect("markdown fixture writes");
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let action = workspace_edit_action(&directory);
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-write-denied",
+            "project-write-denied",
+            "edit markdown",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-write-denied",
+        "task-run-write-denied",
+        LoopBudget::new(2, 0, 0, 1, 0, 2, 1, 1),
+    )
+    .expect("loop starts");
+
+    assert!(matches!(
+        controller.execute_workspace_edit_action(
+            &registry,
+            &gate,
+            &WorkspaceToolExecutor,
+            &ReadOnlyToolExecutor,
+            &directory,
+            &action,
+            "step-write-denied",
+            false,
+        ),
+        Err(LoopControllerError::PolicyDenied { .. })
+    ));
+    assert_eq!(
+        fs::read_to_string(directory.join("README.md")).unwrap(),
+        "before"
+    );
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_action_failed"));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "model_action_verified"));
+    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
