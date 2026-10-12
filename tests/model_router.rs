@@ -337,3 +337,52 @@ fn empty_capability_and_wildcard_profile_are_valid_and_secret_free() {
     }
     decision.validate_secret_free().unwrap();
 }
+
+#[test]
+fn explain_returns_deterministic_secret_free_route_debug_data() {
+    let registry = Box::leak(Box::new(registry_fixture()));
+    let router = ModelRouter::new(
+        registry,
+        vec![
+            profile(
+                "cheap-fast",
+                RiskLevel::Critical,
+                PrivacyRequirement::Restricted,
+                0.01,
+                80,
+                55,
+                70,
+                false,
+            ),
+            profile(
+                "strong-safe",
+                RiskLevel::Critical,
+                PrivacyRequirement::Restricted,
+                0.50,
+                400,
+                95,
+                95,
+                true,
+            ),
+        ],
+    )
+    .unwrap();
+    let explanation = router.explain(&request(RiskLevel::Low)).unwrap();
+    assert_eq!(explanation.selected_model, "cheap-fast");
+    assert_eq!(
+        explanation.candidate_models,
+        vec!["cheap-fast", "strong-safe"]
+    );
+    assert!(explanation
+        .rejected_candidates
+        .iter()
+        .any(|candidate| candidate == "backup:missing_route_profile"));
+    assert_eq!(explanation.fallback_chain, vec!["strong-safe"]);
+    assert_eq!(explanation.estimated_cost, Some(0.01));
+    assert_eq!(explanation.estimated_latency_ms, Some(80));
+    assert!(!explanation.approval_required);
+    assert!(explanation.selection_reason.contains("low-risk"));
+    let encoded = serde_json::to_string(&explanation).unwrap();
+    assert!(!encoded.contains("auth"));
+    assert!(!encoded.contains("token"));
+}

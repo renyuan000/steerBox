@@ -81,6 +81,21 @@ pub struct ModelRouteProfile {
     pub fallback_priority: i32,
 }
 
+/// Deterministic, secret-free explanation of one routing decision. The
+/// timestamped route id is intentionally omitted so callers can diff or
+/// replay explanations without nondeterministic noise.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RouteExplanation {
+    pub selected_model: String,
+    pub candidate_models: Vec<String>,
+    pub rejected_candidates: Vec<String>,
+    pub selection_reason: String,
+    pub fallback_chain: Vec<String>,
+    pub estimated_cost: Option<f64>,
+    pub estimated_latency_ms: Option<u64>,
+    pub approval_required: bool,
+}
+
 #[derive(Debug, Error, PartialEq)]
 pub enum ModelRouterError {
     #[error("route request field must not be empty: {field}")]
@@ -220,6 +235,22 @@ impl<'a> ModelRouter<'a> {
             .validate_secret_free()
             .expect("router emits a secret-free RouteDecision");
         Ok(decision)
+    }
+
+    /// Return the same routing result as `route`, shaped for debug UIs and
+    /// audit explainers without exposing route timestamps or credentials.
+    pub fn explain(&self, request: &RouteRequest) -> Result<RouteExplanation, ModelRouterError> {
+        let decision = self.route(request)?;
+        Ok(RouteExplanation {
+            selected_model: decision.selected_model,
+            candidate_models: decision.candidate_models,
+            rejected_candidates: decision.rejected_candidates,
+            selection_reason: decision.selection_reason,
+            fallback_chain: decision.fallback_chain,
+            estimated_cost: decision.cost_estimate,
+            estimated_latency_ms: decision.latency_estimate_ms,
+            approval_required: decision.approval_required,
+        })
     }
 }
 
