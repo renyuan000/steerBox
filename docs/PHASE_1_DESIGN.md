@@ -433,3 +433,17 @@ create goal
 - 模型可替换但不可静默：模型、endpoint、路由理由和 prompt 版本必须进入 trace
 - secret 外置：模型注册表和运行记录只保存 auth_ref，不保存认证明文
 - 复杂能力占位：未来能力留接口，不进入第一阶段交付压力
+
+## 多 LLM／中转／调度扩展约束（2026-10-12）
+
+用户要求的多后端能力必须按可验收边界拆开，不能把静态 `RouteDecision` 或单一 provider adapter 误称为完整多模型 Agent：
+
+- **并行接入**：需要独立的并发执行器、每个模型独立的 `ModelCallRecord`、共享 TaskRun/Attempt 预算、聚合与取消语义；当前尚未实现并行 worker 或 quorum。
+- **中转平台**：需要显式 `TrustedRelay` endpoint contract，声明协议、请求路径、逻辑 provider/model 身份、独立 `auth_ref` 和健康/错误分类；不能仅凭 `base_url` 是否自定义来推断中转能力。
+- **自动切换**：fallback 必须创建新 Attempt，保留原失败 evidence、route/prompt/wire hash 和累计预算；当前 `next_fallback_model()` 仍只是纯规划函数，不能自动重试。
+- **策略调试**：每次选择要能解释输入特征、候选、拒绝原因、预算/成本/延迟边界和 revision；当前已提供 secret-free deterministic `RouteExplanation`，但还没有跨进程完整策略回放。
+- **能力／花费调度**：能力、风险、隐私、估算成本和延迟只能作为显式约束；真实 usage、成本结算、延迟反馈和 reliability feedback 仍需独立验收，不能用静态估算冒充实时计费。
+- **厂商差异**：OpenAI-compatible、Anthropic、其他后端必须保留独立 wire contract、headers、stream/finish/usage 语义和错误分类；统一层只接收经过验证的 provider-neutral response/action envelope。
+- **缓存与复用**：prompt cache 需要 provider capability、隔离的 cache key、TTL/失效、hit/miss/bypass 审计以及 project/goal 可见性边界；当前明确未实现 prompt cache，不得在真实账号验证前宣称支持缓存强化。
+
+真实 LLM 验证门槛：先完成上述离线 fake/localhost contract tests，再由用户提供专用测试账号或中转测试凭据；凭据只通过注入式 resolver 使用，不写入配置、事件、日志、测试 fixture 或提交。真实验证计划必须覆盖至少两个 provider/endpoint、并行或切换、能力/成本约束、厂商特殊请求格式和流式/非流式边界。
