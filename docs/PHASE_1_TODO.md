@@ -48,7 +48,7 @@
 
 - [x] 定义 EventEnvelope、event_id、sequence_no、correlation_id 和 causation_id
 - [ ] 定义 Portfolio、Project、Task 和 TaskDependency
-- [x] 定义 TaskRun／Attempt 的最小领域 schema、父关系和跨 Attempt 总预算校验（尚未接入 controller、持久化恢复或完整依赖投影）
+- [x] 定义 TaskRun／Attempt 的最小领域 schema、父关系和跨 Attempt 总预算校验（已接入 LoopController 的初始 Attempt、budget 同步、完成/失败回写和事件 attempt_id 关联；retry/fallback/resume/fork、持久化恢复和完整依赖投影仍待完成）
 - [x] 定义 Task 状态及合法迁移表
 - [x] 定义最小 BoardProjection / BoardTaskCard
 - [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 与最小 `tool_call_failed` 关联事件已有测试；独立 ToolCallRecord 持久化仍待接线）
@@ -64,7 +64,7 @@
 - [x] 定义 `TraceRecord`
 - [x] 定义 `ProviderProfile`、`EndpointProfile`、`ModelProfile`（已有注册/序列化及关联验证）
 - [x] 定义并测试 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`（静态 resolver 已验证 registry/provider/endpoint/model/role/task/version 绑定、审批阻断、低信任 user JSON 分层；resolved controller 审计路径已有 focused 验收）
-- [x] 定义 `RouteDecision` 和 `ModelCallRecord`（字段结构、最小语义校验及 resolved controller → ModelCallStore 的成功／失败审计已有测试；fallback、真实 provider 和恢复接线仍待完成）
+- [x] 定义 `RouteDecision` 和 `ModelCallRecord`（字段结构、最小语义校验及 resolved controller → ModelCallStore 的成功／失败审计已有测试；routed fixture/model-adapter fallback 已接线，真实 provider、Attempt lineage 和恢复接线仍待完成）
 
 验收：
 
@@ -145,7 +145,7 @@ Memory 最小实现：
 - [x] 实现 `single_agent_loop` skeleton（只读 observation loop；无模型、工具和文件副作用）
 - [x] 实现 `react_tool_loop` 的最小 step 流程（策略检查 + 受控只读 `git status` 执行）
 - [ ] 实现 `plan_execute_loop` 的最小阶段状态
-- [ ] 支持 step start / complete / fail
+- [ ] 支持统一的 step start / complete / fail（model step 已有 start/complete/fail 事件，observation path 只有 start/complete；plan_execute 和统一失败状态接线仍待完成）
 - [ ] 支持 stop condition
 - [ ] 支持失败后 reflection summary
 - [x] 实现 LoopBudget 与 NoProgressTracker 的领域级停止规则
@@ -153,7 +153,7 @@ Memory 最小实现：
 - [x] 增加注入式完整行 `CommandPoller`，并提供 poll → validate → submit → 下一安全边界 apply 的 controller API；真实 OS stdin、后台 polling 和 takeover 仍待完成
 - [ ] 实现 `GoalRevision` / `PlanRevision` 与旧计划失效
 - [ ] 实现 `InterruptRequest` 的安全边界和 `side_effect_uncertain` 分支
-- [x] 实现 `LoopBudget` 与 `NoProgressObservation`，达到上限后停止自动重试（model loop 已接入重复动作检测）
+- [x] 实现 `LoopBudget` 与 `NoProgressObservation`，达到上限后停止自动重试（fixture/resolved model step 已接入基于 `model_id + goal_id + observation` fingerprint 的重复请求检测；完整 action payload、plan revision、失败分类和跨进程恢复仍待完成）
 
 验收：
 
@@ -161,34 +161,34 @@ Memory 最小实现：
 - 能跑完一个有文件修改和验证的 dev loop
 - 每个 step 都有 event 和 trace
 - 插话不会清零 TaskRun budget、Attempt lineage、retry 或 no-progress counter
-- 重复动作、重复失败和重复计划能触发 `no_progress_detected`
+- [ ] 重复动作、重复失败和重复计划均能触发 `no_progress_detected`（当前仅已验证 model-step fingerprint 的重复请求检测；其余场景待实现）
 
 ### P7. RecoveryCheckpoint
 
 - [x] 实现 checkpoint metadata JSONL 写入
-- [ ] 记录 checkpoint 与 goal / loop / step 的关系
-- [ ] 记录 checkpoint 前后的文件 diff boundary
-- [ ] 记录 checkpoint 覆盖范围
-- [ ] 记录不可恢复 side effect 引用
+- [x] 记录 checkpoint 与 goal / loop / step 的关系（workspace-edit 路径写入三者标识）
+- [x] 记录 checkpoint 前后的文件 diff boundary（workspace-edit 路径记录 `before=sha256:<hash>;after=sha256:<hash>`；只保存边界 hash，不保存文件正文或实际 diff）
+- [x] 记录 checkpoint 覆盖范围（当前为 workspace-edit action 指定的相对文件路径，非通用多文件范围）
+- [x] 记录不可恢复 side effect 引用（当前写入 step 级 side_effect_ref；外部不可逆动作和 side_effect_uncertain 分支仍待完成）
 
 验收：
 
-- 文件修改前后能生成 checkpoint metadata
-- 能说明某次修改是否可恢复
-- checkpoint 不声称恢复未记录的外部动作
+- workspace-edit 修改前能生成 checkpoint metadata；修改后的 diff/验证 checkpoint 仍待完成
+- metadata 能记录声明的 recoverability，但当前不执行 restore/replay
+- checkpoint 不声称恢复未记录的外部动作；side_effect_uncertain 进入人工处理的分支仍待完成
 
 ### P8. SideEffectLedger
 
 - [x] 定义最小 side-effect record schema
-- [ ] 实现 tool call 到 side-effect event 的记录
-- [ ] 支持 read-only、本地可逆、部分可逆、可补偿、不可逆、人工处理分类
-- [ ] 高风险副作用要求 policy gate
+- [x] 实现 tool call 到 side-effect event 的记录（只读工具和 workspace-edit 执行路径已写入 TraceStore/SideEffectLedger；并非所有 tool-call registration 都自动产生 ledger record）
+- [ ] 支持 read-only、本地可逆、部分可逆、可补偿、不可逆、人工处理的完整分类与状态机（当前 ToolProfile 只有有限 side-effect class，缺少恢复/补偿状态语义）
+- [x] 高风险副作用要求 policy gate（workspace-write 已经过 PolicyGate，并在需要时走 approval/checkpoint；不可逆动作和 side_effect_uncertain 处理仍待完成）
 
 验收：
 
-- 每个 tool call 都有 side-effect 记录或明确 none
-- 不可逆动作默认不能自动执行
-- restore / replay 前能查询 side-effect boundary
+- 已接入的只读工具和 workspace-edit 执行路径有 side-effect 记录或明确 class；通用 tool-call registration 覆盖仍待完成
+- 当前未实现的不可逆动作默认不能自动执行；完整不可逆分类和人工处理状态仍待完成
+- checkpoint metadata 能查询当前记录的 side-effect boundary；restore/replay 前的完整边界协调仍待完成
 
 ### P9. GoalAlignmentCheck
 
@@ -234,8 +234,8 @@ Memory 最小实现：
 
 ### P12. Model Registry、Prompt Resolution 与规则路由
 
-- [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（注册及 registry JSON 反序列化重验标识/关联，prompt 版本/role/task 查询已有测试；模型路由已使用 registry，完整 prompt resolution 尚未接线）
-- [x] 建立 provider-neutral OpenAI-compatible adapter、fake transport 和严格错误分类；新增 non-stream HTTP transport、注入式 credential resolver、localhost 安全集成测试和显式 no-redirect/no-retry/response-limit 边界；完成 secret-free profile → provider adapter 绑定（focused 3 tests 通过；配置绑定不调用 resolver、不读取环境变量、不发起网络请求；非 `openai`/`openai-compatible` endpoint 会在 resolved bridge 发送前拒绝）
+- [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（注册及 registry JSON 反序列化重验标识/关联；`ModelRegistry`/`RuntimeConfig` 对 `auth_ref` opaque reference 和 endpoint URL 认证材料的 focused 回归已通过；prompt 版本/role/task 查询已有测试；模型路由已使用 registry，完整 prompt resolution 尚未接线）
+- [x] 建立 provider-neutral OpenAI-compatible adapter、fake transport 和严格错误分类；新增 non-stream HTTP transport、注入式 credential resolver、localhost 安全集成测试和显式 no-redirect/no-retry/response-limit 边界；完成 secret-free profile → provider adapter 绑定（focused 测试通过；配置绑定不调用 resolver、不读取环境变量、不发起网络请求；wire body 不包含 `auth_ref`，transport 只在出站边界解析引用并加入请求头；非 `openai`/`openai-compatible` endpoint 会在 resolved bridge 发送前拒绝）
 - [x] 增加独立 Anthropic non-stream protocol adapter（独立 `x-api-key` / `anthropic-version` envelope、状态分类、响应解析和 secret-free auth_ref 校验）；未接入真实 HTTP transport 或 live provider
 - [x] 建立 provider-to-`ModelAdapter` bridge（仅接受严格 `decision`/`summary` JSON envelope；固定输出契约放 system，用户目标与 observation 作为 JSON 编码数据放 user，不升格为 system/developer；fake transport 实际请求体已有回归，不代表完整 prompt 解析或提示注入防护）
 - [ ] 接入至少一个真实网络 model provider（HTTP transport 和 secret-free profile/auth_ref 绑定已通过 focused 回归；仍未完成获准 live 调用）
@@ -245,12 +245,18 @@ Memory 最小实现：
 - [x] 定义、校验并持久化 `RouteDecision` 到 EventLog；routed 模型调用的开始/成功/失败事件关联 route ID
 - [x] 实现按 prompt ID/version、role/task 的最小 prompt binding 查询
 - [x] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成可冻结的 `ResolvedPromptPack` 并由 opt-in resolved bridge 使用（fake/localhost 请求已验证模板实际进入最终 messages、logical model 与 wire model 分离、wire body hash 一致；resolved controller 审计路径已接线）
-- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（resolved controller 成功、provider 失败、审计写入失败和 binding/approval fail-closed 已有回归；真实 provider、fallback 和完整验证结果仍待完成）
-- [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；只读工具 raw output 已从 EventLog/TraceStore/SideEffectLedger 脱敏；文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
-- [ ] 实现能力兼容、非静默的 fallback 事件
-- [ ] 验证 registry、prompt、trace、event log 和 checkpoint 不保存认证明文
+- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（resolved controller 成功、provider 失败、审计写入失败和 binding/approval fail-closed 已有回归；真实 provider、Attempt lineage 和完整验证结果仍待完成）
+- [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider 的只读 action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；只读工具 raw output 已从 EventLog/TraceStore/SideEffectLedger 脱敏；文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
+- [x] 实现能力兼容、非静默的 fallback 事件（routed fixture/model-adapter 路径按声明顺序切换有限 fallback；retryable provider failure 才允许切换，切换写入 `model_route_fallback`；resolved provider、Attempt lineage 和跨进程恢复仍待完成）
+- [ ] 端到端验证 registry、prompt、provider request、trace、event log 和 checkpoint 均不保存认证明文（registry/config 的 auth_ref 与 endpoint 边界 focused 回归已通过；全链路审计脱敏仍未完成）
 
-最新验证记录（2026-10-11）：`loop_controller` 25 项、`provider_model_adapter` 7 项、`resolved_provider_model_adapter` 11 项、`model_call_controller_audit` 6 项 focused 测试通过；本轮 focused clippy 通过，构建产物写入 `/tmp/steerbox-phase1-target`。工作树中未审核的 acceptance/benchmark 变更仍阻断当前 `--all-targets` 的全量 fmt/clippy 门禁；该记录不等于 live provider、fallback、常驻 stdin/runtime、文件写入／Bash、跨进程恢复或完整 Phase 1 验收通过。
+历史验证记录（2026-10-11）：`loop_controller` 25 项、`provider_model_adapter` 7 项、`resolved_provider_model_adapter` 11 项、`model_call_controller_audit` 6 项 focused 测试通过；当轮 focused clippy 通过，构建产物写入 `/tmp/steerbox-phase1-target`。此记录不是当前工作树的完整验收。
+
+此前核验（2026-10-13）：master 独立执行 `CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --offline --tests --quiet`，退出码 0，所有测试目标通过；现有 acceptance 测试仍有 unused variable / unused mut 警告。该次执行包含 Anthropic 7 项、provider bridge 12 项、resolved provider 11 项、本地脱敏 14 项及审批接入 3 项；之后新增测试或修补须重新验收，不能沿用这次结果。该记录当时尚未覆盖后续 checkpoint hash、routed fallback 和 side-effect disposition 切片。
+
+本次 focused 复核（2026-10-13）：`model_registry` 6 项、`config_anthropic_binding` 8 项、`model_call_store` 23 项、`model_call_controller_audit` 18 项全部通过；该结果只证明当前 focused 切片，不替代全量 fmt/clippy、live provider、常驻 runtime、完整审计脱敏、fallback 或跨进程恢复验收。
+
+最新核验（2026-10-13）：`cargo fmt --all -- --check`、`CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --lib -- -D warnings`、`CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --tests --quiet` 和 `git diff --check` 均通过。新增 routed fallback、checkpoint before/after hash、side-effect disposition/status focused 测试通过；全量 acceptance 仍有既有 `ui_responsiveness_test.rs` 的 unused `mut` / unused variable 警告。该结果仍不代表 live provider、真实 credential store、resolved-provider fallback、Attempt lineage 恢复、后台常驻接管、文件写入/Bash 全工具面或完整 Phase 1 已完成。
 
 验收：
 

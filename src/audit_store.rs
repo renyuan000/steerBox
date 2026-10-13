@@ -1,3 +1,5 @@
+use crate::redaction::Redactor;
+use crate::tool_registry::{SideEffectClass, SideEffectDisposition};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -46,6 +48,52 @@ pub struct SideEffectRecord {
     pub status: String,
     pub summary: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SideEffectAuditStatus {
+    Planned,
+    Started,
+    Completed,
+    Failed,
+    Blocked,
+    Unknown,
+}
+
+impl std::fmt::Display for SideEffectAuditStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Planned => "planned",
+            Self::Started => "started",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+            Self::Unknown => "unknown",
+        };
+        formatter.write_str(label)
+    }
+}
+
+impl SideEffectRecord {
+    pub fn disposition(&self) -> SideEffectDisposition {
+        SideEffectClass::from_audit_label(&self.class).disposition()
+    }
+
+    pub fn audit_status(&self) -> SideEffectAuditStatus {
+        match self.status.trim().to_ascii_lowercase().as_str() {
+            "planned" => SideEffectAuditStatus::Planned,
+            "started" => SideEffectAuditStatus::Started,
+            "completed" => SideEffectAuditStatus::Completed,
+            "failed" | "verification_failed" => SideEffectAuditStatus::Failed,
+            "blocked" => SideEffectAuditStatus::Blocked,
+            _ => SideEffectAuditStatus::Unknown,
+        }
+    }
+
+    pub fn automatic_execution_allowed(&self) -> bool {
+        SideEffectClass::from_audit_label(&self.class).automatic_execution_allowed()
+            && !matches!(self.audit_status(), SideEffectAuditStatus::Unknown)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -101,7 +149,9 @@ impl TraceStore {
         Self { path: path.into() }
     }
     pub fn append(&self, record: &TraceRecord) -> Result<(), AuditStoreError> {
-        append_jsonl(&self.path, record)
+        let mut redacted = record.clone();
+        redacted.summary = Redactor::default().redact_text_fail_closed(&record.summary);
+        append_jsonl(&self.path, &redacted)
     }
     pub fn read_all(&self) -> Result<Vec<TraceRecord>, AuditStoreError> {
         read_jsonl(&self.path)
@@ -135,7 +185,9 @@ impl SideEffectLedger {
         Self { path: path.into() }
     }
     pub fn append(&self, record: &SideEffectRecord) -> Result<(), AuditStoreError> {
-        append_jsonl(&self.path, record)
+        let mut redacted = record.clone();
+        redacted.summary = Redactor::default().redact_text_fail_closed(&record.summary);
+        append_jsonl(&self.path, &redacted)
     }
     pub fn read_all(&self) -> Result<Vec<SideEffectRecord>, AuditStoreError> {
         read_jsonl(&self.path)

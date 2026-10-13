@@ -116,6 +116,19 @@ impl PolicyGate {
                 Some(profile.risk_level),
             );
         }
+        if request.human_steering_mode == HumanSteeringMode::AutonomousLoop
+            && profile.side_effect_class == SideEffectClass::WorkspaceWrite
+            && profile.risk_level == RiskLevel::Medium
+            && profile.recipe_ref.as_deref() == Some("markdown-edit-workspace")
+        {
+            return result(
+                request,
+                PolicyDecision::Allow,
+                "bounded workspace write is allowed in autonomous mode; checkpoint and verification remain required",
+                Some(profile.side_effect_class),
+                Some(profile.risk_level),
+            );
+        }
         if profile.side_effect_class != SideEffectClass::None
             || matches!(profile.risk_level, RiskLevel::High | RiskLevel::Critical)
         {

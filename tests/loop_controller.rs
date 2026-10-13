@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use steerbox::audit_store::{CheckpointStore, SideEffectLedger, TraceStore};
 use steerbox::domain::{
-    AttemptStatus, BudgetKind, GoalContract, LoopBudget, LoopStatus, TaskRunStatus,
+    AttemptStatus, BudgetKind, GoalContract, HumanSteeringMode, LoopBudget, LoopStatus,
+    TaskRunStatus,
 };
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{LoopControllerError, ModelActionRuntime, ReadOnlyLoopController};
@@ -106,6 +107,42 @@ fn controller_reports_safe_lifecycle_metadata_without_payloads() {
     assert!(events
         .iter()
         .all(|event| { event.summary.as_deref() != Some("secret observation must not stream") }));
+}
+
+#[test]
+fn observation_event_redacts_sensitive_text_before_event_log_persistence() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let event_path = directory.join("events.jsonl");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&event_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-observation-redaction",
+            "project-observation-redaction",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-observation-redaction",
+        "task-run-observation-redaction",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+
+    controller
+        .run_observation(
+            "step-observation-redaction",
+            "password=synthetic-password at https://alice:synthetic-url-secret@example.test",
+        )
+        .expect("observation succeeds");
+
+    let persisted = fs::read_to_string(event_path).expect("event log reads");
+    assert!(!persisted.contains("synthetic-password"));
+    assert!(!persisted.contains("synthetic-url-secret"));
+    assert!(persisted.contains("[REDACTED:PASSWORD]"));
+    assert!(persisted.contains("[REDACTED:URL_PASSWORD]"));
+    let _ = fs::remove_dir_all(directory);
 }
 
 #[test]
@@ -270,8 +307,16 @@ fn controller_executes_approved_workspace_edit_and_verifies_it() {
     let checkpoints = CheckpointStore::open(directory.join("checkpoints.jsonl"))
         .read_all()
         .expect("checkpoints read");
-    assert_eq!(checkpoints.len(), 1);
+    assert_eq!(checkpoints.len(), 2);
     assert_eq!(checkpoints[0].files, vec!["README.md"]);
+    assert!(checkpoints[0].diff_boundary.starts_with("before=sha256:"));
+    assert!(checkpoints[0].diff_boundary.ends_with(";after=pending"));
+    assert!(checkpoints[1].diff_boundary.starts_with("before=sha256:"));
+    assert!(checkpoints[1].diff_boundary.contains(";after=sha256:"));
+    assert_eq!(
+        checkpoints[1].recoverability,
+        "verified_local_workspace_restore_or_escalate"
+    );
     let side_effects = SideEffectLedger::open(directory.join("side-effects.jsonl"))
         .read_all()
         .expect("side effects read");
@@ -306,6 +351,7 @@ fn controller_rejects_semantically_failed_markdown_verification() {
         LoopBudget::new(3, 0, 0, 1, 0, 4, 1, 1),
     )
     .expect("loop starts")
+    .with_checkpoint_store(directory.join("checkpoints.jsonl"))
     .with_audit_stores(
         directory.join("traces.jsonl"),
         directory.join("side-effects.jsonl"),
@@ -336,6 +382,73 @@ fn controller_rejects_semantically_failed_markdown_verification() {
         .iter()
         .any(|event| event.event_type == "model_action_failed"));
     assert!(!events
+        .iter()
+        .any(|event| event.event_type == "model_action_verified"));
+    let checkpoints = CheckpointStore::open(directory.join("checkpoints.jsonl"))
+        .read_all()
+        .expect("checkpoints read");
+    assert_eq!(checkpoints.len(), 2);
+    assert!(checkpoints[1].diff_boundary.contains(";after=sha256:"));
+    assert_eq!(
+        checkpoints[1].recoverability,
+        "verification_failed_local_workspace_restore_or_escalate"
+    );
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn controller_executes_bounded_workspace_edit_in_autonomous_mode_without_prompt() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    fs::write(directory.join("README.md"), "before").expect("markdown fixture writes");
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let action = workspace_edit_action(&directory);
+    let mut goal = GoalContract::new(
+        "goal-auto-write",
+        "project-auto-write",
+        "edit bounded markdown automatically",
+        vec![".".into()],
+        Vec::new(),
+        vec!["completed".into()],
+    );
+    goal.allowed_tools = vec!["edit_markdown".into(), "markdown_link_check".into()];
+    goal.human_steering_mode = HumanSteeringMode::AutonomousLoop;
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        goal,
+        "loop-auto-write",
+        "task-run-auto-write",
+        LoopBudget::new(3, 0, 0, 1, 0, 4, 1, 1),
+    )
+    .expect("loop starts")
+    .with_checkpoint_store(directory.join("checkpoints.jsonl"));
+
+    controller
+        .execute_workspace_edit_action(
+            &registry,
+            &gate,
+            &WorkspaceToolExecutor,
+            &ReadOnlyToolExecutor,
+            &directory,
+            &action,
+            "step-auto-write",
+            false,
+        )
+        .expect("autonomous bounded workspace edit succeeds");
+
+    assert_eq!(
+        fs::read_to_string(directory.join("README.md")).unwrap(),
+        "after"
+    );
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events.iter().any(|event| {
+        event.event_type == "policy_decision" && event.payload["decision"] == "allow"
+    }));
+    assert!(events
         .iter()
         .any(|event| event.event_type == "model_action_verified"));
     let _ = fs::remove_dir_all(directory);

@@ -1,11 +1,13 @@
 use crate::model_adapter::{
     ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest, ModelResponse,
-    DECISION_SYSTEM_PROMPT,
+    ModelResponseWithAction, DECISION_SYSTEM_PROMPT,
 };
+use crate::model_contracts::ModelActionEnvelope;
 use crate::provider_adapter::{
     ProviderMessage, ProviderRequest, ProviderResponse, ProviderUsage, TransportResponse,
     MAX_TIMEOUT_MS,
 };
+use crate::redaction::Redactor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -244,12 +246,22 @@ impl<T: AnthropicTransport> AnthropicAdapter<T> {
         let mut messages = Vec::new();
         for message in &request.messages {
             match message.role.as_str() {
-                "system" => system_parts.push(message.content.clone()),
+                "system" => {
+                    system_parts.push(Redactor::default().redact_text(&message.content).map_err(
+                        |_| AnthropicAdapterError::InvalidRequest {
+                            reason: "message content redaction failed",
+                        },
+                    )?)
+                }
                 "user" | "assistant" => messages.push(AnthropicMessage {
                     role: message.role.clone(),
                     content: vec![AnthropicTextBlock {
                         kind: "text".into(),
-                        text: message.content.clone(),
+                        text: Redactor::default()
+                            .redact_text(&message.content)
+                            .map_err(|_| AnthropicAdapterError::InvalidRequest {
+                                reason: "message content redaction failed",
+                            })?,
                     }],
                 }),
                 _ => {
@@ -314,6 +326,39 @@ impl<T: AnthropicTransport> ModelAdapter for AnthropicAdapter<T> {
             })?;
         parse_decision(&response.text)
     }
+
+    fn complete_with_action(
+        &self,
+        request: ModelRequest,
+    ) -> Result<ModelResponseWithAction, ModelAdapterError> {
+        if request.model_id.trim().is_empty() {
+            return Err(ModelAdapterError::EmptyModelId);
+        }
+        if request.objective.trim().is_empty() {
+            return Err(ModelAdapterError::EmptyObjective);
+        }
+        let response = self
+            .complete(ProviderRequest {
+                model: request.model_id,
+                messages: vec![
+                    ProviderMessage::system(DECISION_SYSTEM_PROMPT),
+                    ProviderMessage::user(
+                        serde_json::json!({
+                            "objective": request.objective,
+                            "observation": request.observation,
+                        })
+                        .to_string(),
+                    ),
+                ],
+                auth_ref: self.auth_ref.clone(),
+                timeout_ms: self.timeout_ms,
+                stream: false,
+            })
+            .map_err(|error| ModelAdapterError::Provider {
+                class: error.class(),
+            })?;
+        parse_decision_with_action(&response.text)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -375,6 +420,15 @@ struct DecisionEnvelope {
     summary: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionEnvelopeWithAction {
+    decision: ModelDecision,
+    summary: String,
+    #[serde(default)]
+    action: Option<ModelActionEnvelope>,
+}
+
 fn parse_response(body: &str) -> Result<AnthropicResponse, AnthropicAdapterError> {
     let response = serde_json::from_str::<AnthropicResponse>(body)
         .map_err(|_| AnthropicAdapterError::ResponseParse)?;
@@ -393,7 +447,29 @@ fn parse_decision(text: &str) -> Result<ModelResponse, ModelAdapterError> {
     }
     Ok(ModelResponse {
         decision: envelope.decision,
-        summary: envelope.summary,
+        summary: Redactor::default()
+            .redact_text(&envelope.summary)
+            .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?,
+    })
+}
+
+fn parse_decision_with_action(text: &str) -> Result<ModelResponseWithAction, ModelAdapterError> {
+    let envelope = serde_json::from_str::<DecisionEnvelopeWithAction>(text)
+        .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?;
+    if envelope.summary.trim().is_empty() {
+        return Err(ModelAdapterError::ProviderTextUnmappable);
+    }
+    if let Some(action) = &envelope.action {
+        action
+            .validate()
+            .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?;
+    }
+    Ok(ModelResponseWithAction {
+        decision: envelope.decision,
+        summary: Redactor::default()
+            .redact_text(&envelope.summary)
+            .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?,
+        action: envelope.action,
     })
 }
 

@@ -4,9 +4,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use steerbox::domain::{GoalContract, LoopBudget};
+use steerbox::domain::{BudgetKind, GoalContract, LoopBudget};
 use steerbox::event_log::EventLog;
-use steerbox::loop_controller::{ModelActionRuntime, ReadOnlyLoopController};
+use steerbox::loop_controller::{LoopControllerError, ModelActionRuntime, ReadOnlyLoopController};
 use steerbox::model_adapter::ModelRequest;
 use steerbox::model_call_store::ModelCallStore;
 use steerbox::model_contracts::RouteDecision;
@@ -241,6 +241,25 @@ fn controller_with_allowed_tools(
     .expect("controller starts")
 }
 
+fn repeat_controller(directory: &TestDirectory) -> ReadOnlyLoopController {
+    let goal = GoalContract::new(
+        "goal-model-audit",
+        "project-model-audit",
+        "inspect the repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["model_result_recorded".into()],
+    );
+    ReadOnlyLoopController::start(
+        EventLog::open(directory.events()).expect("event log opens"),
+        goal,
+        "loop-model-audit-repeat",
+        "task-run-model-audit-repeat",
+        LoopBudget::new(2, 0, 2, 1, 0, 1, 2, 1),
+    )
+    .expect("controller starts")
+}
+
 #[test]
 fn successful_model_step_persists_complete_audit_identity_and_actual_output_reference() {
     let directory = TestDirectory::new();
@@ -310,6 +329,59 @@ fn successful_model_step_persists_complete_audit_identity_and_actual_output_refe
     assert!(record.input_context_hash.starts_with("sha256:"));
     assert!(record.output_artifact_ref.starts_with("trace://"));
     assert_eq!(record.verification_status, "not_run");
+}
+
+#[test]
+fn resolved_model_repeat_is_rejected_before_second_provider_call() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let mut controller = repeat_controller(&directory).with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let request = |step_id: &str| ModelRequest {
+        model_id: pack.model_id().into(),
+        goal_id: "goal-model-audit".into(),
+        loop_run_id: "loop-model-audit-repeat".into(),
+        step_id: step_id.into(),
+        objective: pack.objective().into(),
+        observation: pack.observation().into(),
+    };
+
+    controller
+        .run_resolved_model_step(
+            &adapter,
+            request("step-repeat-1"),
+            &pack,
+            &route,
+            "step-repeat-1",
+        )
+        .expect("first resolved call succeeds");
+    let error = controller
+        .run_resolved_model_step(
+            &adapter,
+            request("step-repeat-2"),
+            &pack,
+            &route,
+            "step-repeat-2",
+        )
+        .expect_err("repeated resolved observation must stop before provider call");
+
+    assert!(matches!(
+        error,
+        LoopControllerError::BudgetExhausted(BudgetKind::NoProgressSteps)
+            | LoopControllerError::BudgetExhausted(BudgetKind::SameActionRepetitions)
+    ));
+    assert_eq!(
+        sends.lock().expect("send capture lock").len(),
+        1,
+        "no-progress rejection must not repeat the provider side effect"
+    );
 }
 
 #[test]

@@ -228,6 +228,15 @@ fn next_fallback_model_skips_primary_even_if_it_was_not_attempted() {
 }
 
 #[test]
+fn next_fallback_model_skips_entries_outside_the_candidate_set() {
+    let router = router_fixture();
+    let mut decision = router.route(&request(RiskLevel::High)).unwrap();
+    decision.fallback_chain = vec!["unregistered-model".into(), "backup".into()];
+
+    assert_eq!(next_fallback_model(&decision, &[]), Some("backup"));
+}
+
+#[test]
 fn risk_and_privacy_bounds_remove_incompatible_candidates() {
     let registry = Box::leak(Box::new(registry_fixture()));
     let router = ModelRouter::new(

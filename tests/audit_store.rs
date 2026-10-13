@@ -1,7 +1,9 @@
 use std::fs;
 use steerbox::audit_store::{
-    append_jsonl, read_jsonl, CheckpointMetadata, RunSummary, TraceRecord,
+    append_jsonl, read_jsonl, CheckpointMetadata, RunSummary, SideEffectLedger, SideEffectRecord,
+    TraceRecord, TraceStore,
 };
+use steerbox::tool_registry::SideEffectDisposition;
 
 #[test]
 fn trace_and_checkpoint_records_round_trip_as_jsonl() {
@@ -64,4 +66,119 @@ fn run_summary_round_trips_as_json() {
         summary
     );
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn trace_and_side_effect_summaries_are_redacted_before_persistence() {
+    let root =
+        std::env::temp_dir().join(format!("steerbox-audit-redaction-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("audit directory creates");
+    let summary = "login failed password=synthetic-password at https://alice:synthetic-url-secret@example.test";
+
+    TraceStore::open(root.join("traces.jsonl"))
+        .append(&TraceRecord {
+            trace_id: "trace-redaction".into(),
+            goal_id: Some("goal".into()),
+            loop_run_id: Some("loop".into()),
+            step_id: Some("step".into()),
+            kind: "tool_failed".into(),
+            summary: summary.into(),
+            occurred_at: "2026-10-13T00:00:00Z".into(),
+        })
+        .expect("trace appends");
+    SideEffectLedger::open(root.join("side-effects.jsonl"))
+        .append(&SideEffectRecord {
+            side_effect_id: "effect-redaction".into(),
+            goal_id: "goal".into(),
+            loop_run_id: "loop".into(),
+            tool_id: "fixture-tool".into(),
+            class: "read_only".into(),
+            status: "failed".into(),
+            summary: summary.into(),
+            created_at: "2026-10-13T00:00:00Z".into(),
+        })
+        .expect("side effect appends");
+
+    let traces = fs::read_to_string(root.join("traces.jsonl")).expect("traces read");
+    let side_effects =
+        fs::read_to_string(root.join("side-effects.jsonl")).expect("side effects read");
+    for persisted in [traces, side_effects] {
+        assert!(!persisted.contains("synthetic-password"));
+        assert!(!persisted.contains("synthetic-url-secret"));
+        assert!(persisted.contains("[REDACTED:PASSWORD]"));
+        assert!(persisted.contains("[REDACTED:URL_PASSWORD]"));
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn side_effect_metadata_is_derived_without_changing_json_schema() {
+    let record = SideEffectRecord {
+        side_effect_id: "effect-unknown".into(),
+        goal_id: "goal".into(),
+        loop_run_id: "loop".into(),
+        tool_id: "fixture-tool".into(),
+        class: "unknown-external-class".into(),
+        status: "future-status".into(),
+        summary: "fixture summary".into(),
+        created_at: "2026-10-13T00:00:00Z".into(),
+    };
+
+    assert_eq!(record.disposition(), SideEffectDisposition::ManualRequired);
+    assert_eq!(record.audit_status().to_string(), "unknown");
+    assert!(!record.automatic_execution_allowed());
+
+    let json = serde_json::to_value(&record).expect("side effect record serializes");
+    let object = json.as_object().expect("side effect record is an object");
+    assert_eq!(object.len(), 8);
+    for field in [
+        "side_effect_id",
+        "goal_id",
+        "loop_run_id",
+        "tool_id",
+        "class",
+        "status",
+        "summary",
+        "created_at",
+    ] {
+        assert!(
+            object.contains_key(field),
+            "schema field {field} is present"
+        );
+    }
+    for derived_field in ["disposition", "audit_status", "automatic_execution_allowed"] {
+        assert!(
+            !object.contains_key(derived_field),
+            "derived field {derived_field} is not persisted"
+        );
+    }
+}
+
+#[test]
+fn side_effect_audit_status_maps_known_and_unknown_values() {
+    let record = |status: &str| SideEffectRecord {
+        side_effect_id: "effect-status".into(),
+        goal_id: "goal".into(),
+        loop_run_id: "loop".into(),
+        tool_id: "fixture-tool".into(),
+        class: "read_only".into(),
+        status: status.into(),
+        summary: "fixture summary".into(),
+        created_at: "2026-10-13T00:00:00Z".into(),
+    };
+
+    assert_eq!(record("planned").audit_status().to_string(), "planned");
+    assert_eq!(record("started").audit_status().to_string(), "started");
+    assert_eq!(record("completed").audit_status().to_string(), "completed");
+    assert_eq!(record("failed").audit_status().to_string(), "failed");
+    assert_eq!(
+        record("verification_failed").audit_status().to_string(),
+        "failed"
+    );
+    assert_eq!(record("blocked").audit_status().to_string(), "blocked");
+    assert_eq!(
+        record("future-status").audit_status().to_string(),
+        "unknown"
+    );
 }

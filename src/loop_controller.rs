@@ -1,3 +1,4 @@
+use crate::approval_contract::{ApprovalError, ApprovalRequest, ApprovalStatus, ApprovalStore};
 use crate::audit_store::{
     AuditStoreError, CheckpointMetadata, CheckpointStore, SideEffectLedger, SideEffectRecord,
     TraceRecord, TraceStore,
@@ -17,10 +18,13 @@ use crate::model_call_store::{ModelCallStore, ModelCallStoreError};
 use crate::model_contracts::{
     ModelActionEnvelope, ModelCallRecord, ModelContractError, RouteDecision, VerificationContract,
 };
-use crate::model_router::{ModelRouter, ModelRouterError, RouteRequest};
+use crate::model_router::{
+    next_fallback_model, ModelRouter, ModelRouterError, RiskLevel as RouteRiskLevel, RouteRequest,
+};
 use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequest};
-use crate::provider_adapter::ProviderTransport;
+use crate::provider_adapter::{ProviderErrorClass, ProviderTransport};
 use crate::provider_model_adapter::ProviderModelAdapter;
+use crate::redaction::{Redactor, FAIL_CLOSED_MARKER};
 use crate::resolved_prompt::ResolvedPromptPack;
 use crate::strategy_selector::{StrategyDecision, StrategySelectionError, StrategySelector};
 use crate::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
@@ -35,6 +39,7 @@ use crate::user_command_inbox::{
     UserCommandInbox, UserCommandInboxError,
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -80,6 +85,10 @@ pub enum LoopControllerError {
     },
     #[error("policy gate failed: {0}")]
     PolicyGate(#[from] PolicyGateError),
+    #[error("approval required: {request_id}")]
+    ApprovalRequired { request_id: String },
+    #[error("approval contract failed: {0}")]
+    ApprovalContract(#[from] ApprovalError),
     #[error("tool execution failed: {0}")]
     ToolExecution(#[from] ToolExecutionError),
     #[error("workspace tool execution failed: {0}")]
@@ -118,6 +127,7 @@ pub struct ReadOnlyLoopController {
     checkpoint_store: Option<CheckpointStore>,
     side_effect_ledger: Option<SideEffectLedger>,
     model_call_store: Option<ModelCallStore>,
+    approval_store: Option<ApprovalStore>,
     progress_sink: Option<ProgressSinkHolder>,
     command_inbox: Option<UserCommandInbox>,
     strategy: Option<StrategyDecision>,
@@ -243,6 +253,7 @@ impl ReadOnlyLoopController {
             checkpoint_store: None,
             side_effect_ledger: None,
             model_call_store: None,
+            approval_store: None,
             progress_sink: None,
             command_inbox: None,
             strategy: None,
@@ -418,6 +429,15 @@ impl ReadOnlyLoopController {
         self
     }
 
+    pub fn with_approval_store(mut self, store: ApprovalStore) -> Self {
+        self.approval_store = Some(store);
+        self
+    }
+
+    pub fn approval_store(&self) -> Option<&ApprovalStore> {
+        self.approval_store.as_ref()
+    }
+
     pub fn with_progress_sink<S: ProgressSink + 'static>(mut self, sink: S) -> Self {
         self.progress_sink = Some(ProgressSinkHolder {
             sink: Box::new(sink),
@@ -549,7 +569,7 @@ impl ReadOnlyLoopController {
             Some("step started"),
             None,
         )?;
-        let observation = observation.into();
+        let observation = redact_audit_text(&observation.into());
         step.complete(observation.clone());
         append_step_event(
             &mut self.event_log,
@@ -663,6 +683,7 @@ impl ReadOnlyLoopController {
             observation,
             None,
             Some(runtime),
+            true,
             |request| adapter.complete_with_action(request),
         )
     }
@@ -742,6 +763,34 @@ impl ReadOnlyLoopController {
             });
         }
         self.prepare_step_action()?;
+        let step_id = step_id.into();
+        let action_fingerprint = format!(
+            "{}\n{}\n{}",
+            request.model_id, self.goal.goal_id, request.observation
+        );
+        let repeated_action = self.next_step_no > 1;
+        if repeated_action && self.no_progress.observe(&action_fingerprint, false) {
+            self.append_model_event(
+                "no_progress_detected",
+                &format!("{step_id}:no_progress"),
+                json!({
+                    "no_progress_steps": self.no_progress.no_progress_steps,
+                    "same_action_repetitions": self.no_progress.same_action_repetitions,
+                }),
+            )?;
+            return Err(LoopControllerError::BudgetExhausted(
+                if self.no_progress.same_action_repetitions
+                    >= self.no_progress.max_same_action_repetitions
+                {
+                    BudgetKind::SameActionRepetitions
+                } else {
+                    BudgetKind::NoProgressSteps
+                },
+            ));
+        }
+        if !repeated_action {
+            self.no_progress.observe(&action_fingerprint, false);
+        }
         if let Err(kind) = self.budget.consume_step() {
             self.append_model_event(
                 "loop_budget_exhausted",
@@ -760,7 +809,6 @@ impl ReadOnlyLoopController {
             return Err(LoopControllerError::BudgetExhausted(kind));
         }
         self.sync_task_run_budget();
-        let step_id = step_id.into();
         let mut step = LoopStep::new(
             step_id.clone(),
             self.loop_run.loop_run_id.clone(),
@@ -810,7 +858,7 @@ impl ReadOnlyLoopController {
                 self.append_model_event(
                     "model_call_failed",
                     &format!("{step_id}:model_failed"),
-                    json!({"error": error.to_string(), "route_decision_id": route.route_decision_id}),
+                    json!({"error": redact_audit_text(&error.to_string()), "route_decision_id": route.route_decision_id}),
                 )?;
                 append_step_event(
                     &mut self.event_log,
@@ -819,7 +867,7 @@ impl ReadOnlyLoopController {
                     &step,
                     "step_failed",
                     &format!("{step_id}:failed"),
-                    json!({"summary": error.to_string()}),
+                    json!({"summary": redact_audit_text(&error.to_string())}),
                     self.task_run.current_attempt_id.clone(),
                 )?;
                 self.report_progress(
@@ -926,7 +974,7 @@ impl ReadOnlyLoopController {
                 "model_call_failed",
                 &format!("{step_id}:audit_failed"),
                 json!({
-                    "error": error.to_string(),
+                    "error": redact_audit_text(&error.to_string()),
                     "route_decision_id": route.route_decision_id,
                     "model_call_id": model_call_id,
                     "audit_failure": true,
@@ -939,7 +987,7 @@ impl ReadOnlyLoopController {
                 &step,
                 "step_failed",
                 &format!("{step_id}:audit_failed"),
-                json!({"summary": error.to_string(), "audit_failure": true}),
+                json!({"summary": redact_audit_text(&error.to_string()), "audit_failure": true}),
                 self.task_run.current_attempt_id.clone(),
             )?;
             self.report_progress(
@@ -964,7 +1012,7 @@ impl ReadOnlyLoopController {
                 &format!("{step_id}:action_failed"),
                 json!({
                     "action_id": resolved.response.action.as_ref().map(|action| &action.action_id),
-                    "error": error.to_string(),
+                    "error": redact_audit_text(&error.to_string()),
                     "verification_status": record.verification_status,
                 }),
             )?;
@@ -975,7 +1023,7 @@ impl ReadOnlyLoopController {
                 &step,
                 "step_failed",
                 &format!("{step_id}:action_failed"),
-                json!({"summary": error.to_string()}),
+                json!({"summary": redact_audit_text(&error.to_string())}),
                 self.task_run.current_attempt_id.clone(),
             )?;
             self.report_progress(
@@ -1056,6 +1104,7 @@ impl ReadOnlyLoopController {
             observation,
             route_decision_id,
             None,
+            true,
             |request| {
                 adapter
                     .complete(request)
@@ -1068,6 +1117,8 @@ impl ReadOnlyLoopController {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn run_model_step_with_route_and_action<F>(
         &mut self,
         model_id: impl Into<String>,
@@ -1075,6 +1126,7 @@ impl ReadOnlyLoopController {
         observation: impl Into<String>,
         route_decision_id: Option<&str>,
         action_context: Option<&ModelActionRuntime<'_>>,
+        check_no_progress: bool,
         complete: F,
     ) -> Result<ModelDecision, LoopControllerError>
     where
@@ -1103,7 +1155,7 @@ impl ReadOnlyLoopController {
         let observation = observation.into();
         let model_id = model_id.into();
         let action_fingerprint = format!("{model_id}\n{}\n{observation}", self.goal.goal_id);
-        let repeated_action = self.next_step_no > 1;
+        let repeated_action = check_no_progress && self.next_step_no > 1;
         if repeated_action && self.no_progress.observe(&action_fingerprint, false) {
             self.append_model_event(
                 "no_progress_detected",
@@ -1123,7 +1175,7 @@ impl ReadOnlyLoopController {
                 },
             ));
         }
-        if !repeated_action {
+        if check_no_progress && !repeated_action {
             self.no_progress.observe(&action_fingerprint, false);
         }
         let mut step = LoopStep::new(
@@ -1181,7 +1233,7 @@ impl ReadOnlyLoopController {
                 self.append_model_event(
                     "model_call_failed",
                     &format!("{step_id}:model_failed"),
-                    json!({"error": error.to_string(), "route_decision_id": route_decision_id}),
+                    json!({"error": redact_audit_text(&error.to_string()), "route_decision_id": route_decision_id}),
                 )?;
                 append_step_event(
                     &mut self.event_log,
@@ -1190,7 +1242,7 @@ impl ReadOnlyLoopController {
                     &step,
                     "step_failed",
                     &format!("{step_id}:failed"),
-                    json!({"summary": error.to_string()}),
+                    json!({"summary": redact_audit_text(&error.to_string())}),
                     self.task_run.current_attempt_id.clone(),
                 )?;
                 self.report_progress(
@@ -1243,7 +1295,7 @@ impl ReadOnlyLoopController {
                     json!({
                         "action_id": action.action_id,
                         "tool_id": action.tool_id,
-                        "error": error.to_string(),
+                        "error": redact_audit_text(&error.to_string()),
                     }),
                 )?;
                 append_step_event(
@@ -1253,7 +1305,7 @@ impl ReadOnlyLoopController {
                     &step,
                     "step_failed",
                     &format!("{step_id}:action_failed"),
-                    json!({"summary": error.to_string()}),
+                    json!({"summary": redact_audit_text(&error.to_string())}),
                     self.task_run.current_attempt_id.clone(),
                 )?;
                 self.report_progress(
@@ -1301,13 +1353,29 @@ impl ReadOnlyLoopController {
         &mut self,
         router: &ModelRouter<'_>,
         adapters: &ModelAdapterRegistry,
-        route_request: RouteRequest,
+        mut route_request: RouteRequest,
         step_id: impl Into<String>,
         observation: impl Into<String>,
     ) -> Result<ModelDecision, LoopControllerError> {
+        let step_id = step_id.into();
+        let observation = observation.into();
         self.prepare_step_action()?;
+        route_request.risk_level = max_route_risk(route_request.risk_level, self.goal.risk_level);
         let route_decision = router.route(&route_request)?;
         route_decision.validate()?;
+        if !self.goal.allowed_models.is_empty()
+            && !self
+                .goal
+                .allowed_models
+                .iter()
+                .any(|model_id| model_id == &route_decision.selected_model)
+        {
+            return Err(ModelRouterError::NoCompatibleModels {
+                task_id: route_request.task_id,
+                reasons: "selected model is outside goal allowed_models".into(),
+            }
+            .into());
+        }
         let route_payload = serde_json::to_value(&route_decision)
             .map_err(|error| LoopControllerError::RouteDecisionSerialization(error.to_string()))?;
         self.append_model_event(
@@ -1335,13 +1403,85 @@ impl ReadOnlyLoopController {
             .ok_or_else(|| {
                 LoopControllerError::ModelAdapterNotFound(route_decision.selected_model.clone())
             })?;
-        self.run_model_step_with_route(
+        let primary_model = route_decision.selected_model.clone();
+        let primary_result = self.run_model_step_with_route(
             adapter,
-            route_decision.selected_model,
-            step_id,
-            observation,
+            primary_model.clone(),
+            step_id.clone(),
+            observation.clone(),
             Some(&route_decision.route_decision_id),
-        )
+        );
+        let mut attempted_models = vec![primary_model];
+        let mut result = primary_result;
+        loop {
+            let Err(error) = result else {
+                return result;
+            };
+            if !is_retryable_model_error(&error) {
+                return Err(error);
+            }
+            let Some(fallback_model) = next_fallback_model(&route_decision, &attempted_models)
+            else {
+                return Err(error);
+            };
+            if !self.goal.allowed_models.is_empty()
+                && !self
+                    .goal
+                    .allowed_models
+                    .iter()
+                    .any(|allowed| allowed == fallback_model)
+            {
+                return Err(error);
+            }
+            let fallback_model = fallback_model.to_owned();
+            let fallback_adapter = adapters
+                .get(&fallback_model)
+                .ok_or_else(|| LoopControllerError::ModelAdapterNotFound(fallback_model.clone()))?;
+            let fallback_index = attempted_models.len();
+            let fallback_route_id = format!(
+                "{}:fallback:{}",
+                route_decision.route_decision_id, fallback_index
+            );
+            // A fallback is a bounded route transition, not ordinary task
+            // progress. Start a fresh transition fingerprint while keeping
+            // the no-progress guard armed for the next external step.
+            self.no_progress.reset_after_progress();
+            self.no_progress.observe(
+                format!("fallback\n{}\n{}", fallback_route_id, fallback_model),
+                false,
+            );
+            self.append_model_event(
+                "model_route_fallback",
+                &format!("{fallback_route_id}:selected"),
+                json!({
+                    "route_decision_id": route_decision.route_decision_id,
+                    "fallback_route_decision_id": fallback_route_id,
+                    "from_model": attempted_models.last(),
+                    "to_model": fallback_model,
+                    "attempted_models": attempted_models,
+                    "reason": "retryable_model_failure",
+                    "error": redact_audit_text(&error.to_string()),
+                }),
+            )?;
+            attempted_models.push(fallback_model.clone());
+            result = self.run_model_step_with_route_and_action(
+                fallback_model,
+                format!("{step_id}:fallback:{fallback_index}"),
+                observation.clone(),
+                Some(&fallback_route_id),
+                None,
+                false,
+                |request| {
+                    fallback_adapter
+                        .complete(request)
+                        .map(|response| ModelResponseWithAction {
+                            decision: response.decision,
+                            summary: response.summary,
+                            action: None,
+                        })
+                },
+            );
+        }
     }
 
     pub fn request_tool_call(
@@ -1368,17 +1508,21 @@ impl ReadOnlyLoopController {
         let result = gate.evaluate(registry, &self.goal, &request);
         gate.record_decision(&mut self.event_log, &request, &result)?;
         if result.decision != PolicyDecision::Allow {
-            self.report_progress(
-                ProgressSubject::Tool,
-                format!("{step_id}:{tool_id}"),
-                ProgressStatus::Failed,
-                Some("tool call denied by policy"),
-                None,
-            )?;
-            return Err(LoopControllerError::PolicyDenied {
-                decision: result.decision,
-                reason: result.reason,
-            });
+            if self.policy_approval_allows(&request, &result, false, "tool-call-registration")? {
+                // A previously approved scoped request authorized this call.
+            } else {
+                self.report_progress(
+                    ProgressSubject::Tool,
+                    format!("{step_id}:{tool_id}"),
+                    ProgressStatus::Failed,
+                    Some("tool call denied by policy"),
+                    None,
+                )?;
+                return Err(LoopControllerError::PolicyDenied {
+                    decision: result.decision,
+                    reason: result.reason,
+                });
+            }
         }
         if self.strategy.is_some() {
             if let Err(kind) = self.budget.consume_tool_call() {
@@ -1487,9 +1631,10 @@ impl ReadOnlyLoopController {
             .map_err(|failure| failure.error)
     }
 
-    /// Execute the registered Markdown workspace-edit recipe only after the
-    /// policy gate requests human approval and the caller supplies approval.
-    /// Verification remains read-only and all persisted payloads are metadata-only.
+    /// Execute the registered Markdown workspace-edit recipe after policy allows
+    /// it. Autonomous bounded edits may proceed without a human marker; higher
+    /// risk edits still require explicit approval. Verification remains read-only
+    /// and all persisted payloads are metadata-only.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_workspace_edit_action(
         &mut self,
@@ -1520,7 +1665,22 @@ impl ReadOnlyLoopController {
         };
         let decision = gate.evaluate(registry, &self.goal, &request);
         gate.record_decision(&mut self.event_log, &request, &decision)?;
-        if decision.decision != PolicyDecision::RequireHumanApproval || !approved {
+        // Bind authority to the complete validated action, not model summary text.
+        // Only the digest is persisted; the parameters never enter the approval log.
+        let action_bytes = serde_json::to_vec(action).map_err(|_| {
+            LoopControllerError::WorkspaceToolExecution("action binding failed".into())
+        })?;
+        let capability = format!("workspace-edit:{:x}", Sha256::digest(action_bytes));
+        let permitted = match decision.decision {
+            PolicyDecision::Allow => true,
+            PolicyDecision::RequireHumanApproval => {
+                self.policy_approval_allows(&request, &decision, approved, &capability)?
+            }
+            PolicyDecision::RequireCheckpoint | PolicyDecision::Warn | PolicyDecision::Block => {
+                false
+            }
+        };
+        if !permitted {
             self.append_model_event(
                 "model_action_failed",
                 &format!("{step_id}:action_failed"),
@@ -1528,13 +1688,14 @@ impl ReadOnlyLoopController {
             )?;
             return Err(LoopControllerError::PolicyDenied {
                 decision: decision.decision,
-                reason: if approved {
-                    "workspace edit must require human approval".into()
-                } else {
+                reason: if decision.decision == PolicyDecision::RequireHumanApproval {
                     "workspace edit approval was not provided".into()
+                } else {
+                    "workspace edit was denied by policy".into()
                 },
             });
         }
+        let execution_approved = permitted;
         let relative_path = action
             .parameters
             .get("path")
@@ -1542,6 +1703,7 @@ impl ReadOnlyLoopController {
             .ok_or_else(|| {
                 LoopControllerError::WorkspaceToolExecution("missing edit path".into())
             })?;
+        let before_hash = workspace_file_hash(workspace, relative_path)?;
         if let Some(store) = &self.checkpoint_store {
             store.append(&CheckpointMetadata {
                 checkpoint_id: format!("{step_id}:checkpoint:before-write"),
@@ -1549,7 +1711,7 @@ impl ReadOnlyLoopController {
                 loop_run_id: self.loop_run.loop_run_id.clone(),
                 step_id: Some(step_id.clone()),
                 files: vec![relative_path.to_owned()],
-                diff_boundary: "single_markdown_replacement_metadata_only".into(),
+                diff_boundary: format!("before={before_hash};after=pending"),
                 recoverability: "local_workspace_restore_or_escalate".into(),
                 side_effect_refs: vec![format!("{step_id}:side-effect")],
                 created_at: chrono::Utc::now().to_rfc3339(),
@@ -1575,7 +1737,7 @@ impl ReadOnlyLoopController {
                 tool_id: action.tool_id.clone(),
                 arguments: action.parameters.clone(),
             },
-            approved,
+            execution_approved,
         ) {
             Ok(output) => output,
             Err(error) => {
@@ -1591,11 +1753,27 @@ impl ReadOnlyLoopController {
                     &format!("{step_id}:action_failed"),
                     json!({"action_id": action.action_id, "tool_id": action.tool_id, "phase": "execute"}),
                 )?;
+                if let Some(store) = &self.checkpoint_store {
+                    let after_boundary = workspace_file_hash(workspace, relative_path)
+                        .unwrap_or_else(|_| "unavailable".into());
+                    store.append(&CheckpointMetadata {
+                        checkpoint_id: format!("{step_id}:checkpoint:write-failed"),
+                        goal_id: self.goal.goal_id.clone(),
+                        loop_run_id: self.loop_run.loop_run_id.clone(),
+                        step_id: Some(step_id.clone()),
+                        files: vec![relative_path.to_owned()],
+                        diff_boundary: format!("before={before_hash};after={after_boundary}"),
+                        recoverability: "write_failed_local_workspace_restore_or_escalate".into(),
+                        side_effect_refs: vec![format!("{step_id}:side-effect")],
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                    })?;
+                }
                 return Err(LoopControllerError::WorkspaceToolExecution(
                     error.to_string(),
                 ));
             }
         };
+        let after_hash = workspace_file_hash(workspace, relative_path)?;
         self.append_model_event(
             "file_change_recorded",
             &format!("{step_id}:file_change_recorded"),
@@ -1644,6 +1822,20 @@ impl ReadOnlyLoopController {
                     &format!("{step_id}:verification_failed"),
                     json!({"action_id": action.action_id, "tool_id": action.tool_id, "phase": "verification"}),
                 )?;
+                if let Some(store) = &self.checkpoint_store {
+                    store.append(&CheckpointMetadata {
+                        checkpoint_id: format!("{step_id}:checkpoint:verification-failed"),
+                        goal_id: self.goal.goal_id.clone(),
+                        loop_run_id: self.loop_run.loop_run_id.clone(),
+                        step_id: Some(step_id.clone()),
+                        files: vec![relative_path.to_owned()],
+                        diff_boundary: format!("before={before_hash};after={after_hash}"),
+                        recoverability: "verification_failed_local_workspace_restore_or_escalate"
+                            .into(),
+                        side_effect_refs: vec![format!("{step_id}:side-effect")],
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                    })?;
+                }
                 return Err(error);
             }
         };
@@ -1665,9 +1857,36 @@ impl ReadOnlyLoopController {
                 &format!("{step_id}:verification_failed"),
                 json!({"action_id": action.action_id, "tool_id": action.tool_id, "phase": "verification"}),
             )?;
+            if let Some(store) = &self.checkpoint_store {
+                store.append(&CheckpointMetadata {
+                    checkpoint_id: format!("{step_id}:checkpoint:verification-failed"),
+                    goal_id: self.goal.goal_id.clone(),
+                    loop_run_id: self.loop_run.loop_run_id.clone(),
+                    step_id: Some(step_id.clone()),
+                    files: vec![relative_path.to_owned()],
+                    diff_boundary: format!("before={before_hash};after={after_hash}"),
+                    recoverability: "verification_failed_local_workspace_restore_or_escalate"
+                        .into(),
+                    side_effect_refs: vec![format!("{step_id}:side-effect")],
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                })?;
+            }
             return Err(LoopControllerError::WorkspaceToolExecution(
                 "workspace edit verification reported missing local links".into(),
             ));
+        }
+        if let Some(store) = &self.checkpoint_store {
+            store.append(&CheckpointMetadata {
+                checkpoint_id: format!("{step_id}:checkpoint:after-write"),
+                goal_id: self.goal.goal_id.clone(),
+                loop_run_id: self.loop_run.loop_run_id.clone(),
+                step_id: Some(step_id.clone()),
+                files: vec![relative_path.to_owned()],
+                diff_boundary: format!("before={before_hash};after={after_hash}"),
+                recoverability: "verified_local_workspace_restore_or_escalate".into(),
+                side_effect_refs: vec![format!("{step_id}:side-effect")],
+                created_at: chrono::Utc::now().to_rfc3339(),
+            })?;
         }
         self.append_model_event(
             "model_action_verified",
@@ -1850,7 +2069,7 @@ impl ReadOnlyLoopController {
             event_type,
             &self.loop_run.loop_run_id,
             &self.loop_run.loop_run_id,
-            payload,
+            redact_audit_payload(payload),
         )?;
         event.project_id = Some(self.goal.project_id.clone());
         event.goal_id = Some(self.goal.goal_id.clone());
@@ -1941,6 +2160,65 @@ impl ReadOnlyLoopController {
                 Err(LoopControllerError::Terminal)
             }
         }
+    }
+
+    fn policy_approval_allows(
+        &mut self,
+        request: &PolicyRequest,
+        result: &crate::policy_gate::PolicyResult,
+        explicitly_approved: bool,
+        capability: &str,
+    ) -> Result<bool, LoopControllerError> {
+        if result.decision != PolicyDecision::RequireHumanApproval {
+            return Ok(false);
+        }
+        let Some(store) = &self.approval_store else {
+            return Ok(explicitly_approved);
+        };
+        let request_id = format!(
+            "{}:{}:{}:approval",
+            self.loop_run.loop_run_id, request.step_id, request.tool_id
+        );
+        let now = chrono::Utc::now();
+        let approval = ApprovalRequest::at(
+            request_id.clone(),
+            request.project_id.clone(),
+            self.loop_run.loop_run_id.clone(),
+            request.task_run_id.clone(),
+            request.tool_id.clone(),
+            capability,
+            "metadata_only",
+            "policy requires approval for a registered operation",
+            now,
+            now + chrono::Duration::minutes(15),
+        )?;
+        let is_new = store.latest(&request_id).is_none();
+        let record = store.submit(approval.clone())?;
+        if matches!(
+            record.status,
+            ApprovalStatus::Rejected | ApprovalStatus::Expired | ApprovalStatus::Consumed
+        ) {
+            return Err(LoopControllerError::PolicyDenied {
+                decision: PolicyDecision::RequireHumanApproval,
+                reason: "approval is rejected, expired, or already consumed".into(),
+            });
+        }
+        if store.consume(&approval)? {
+            return Ok(true);
+        }
+        if is_new {
+            self.append_model_event(
+                "human_intervention_required",
+                &format!("{request_id}:pending"),
+                json!({
+                    "approval_request_id": request_id,
+                    "status": "pending_human",
+                    "tool_id": request.tool_id,
+                    "reason": "policy requires approval",
+                }),
+            )?;
+        }
+        Err(LoopControllerError::ApprovalRequired { request_id })
     }
 
     fn prepare_step_action(&mut self) -> Result<(), LoopControllerError> {
@@ -2080,6 +2358,28 @@ impl ReadOnlyLoopController {
     }
 }
 
+fn max_route_risk(route_risk: RouteRiskLevel, goal_risk: RiskLevel) -> RouteRiskLevel {
+    let goal_risk = match goal_risk {
+        RiskLevel::Low => RouteRiskLevel::Low,
+        RiskLevel::Medium => RouteRiskLevel::Medium,
+        RiskLevel::High => RouteRiskLevel::High,
+        RiskLevel::Critical => RouteRiskLevel::Critical,
+    };
+    route_risk.max(goal_risk)
+}
+
+fn is_retryable_model_error(error: &LoopControllerError) -> bool {
+    matches!(
+        error,
+        LoopControllerError::ModelAdapter(ModelAdapterError::Provider {
+            class: ProviderErrorClass::RateLimit
+                | ProviderErrorClass::Timeout
+                | ProviderErrorClass::Transport
+                | ProviderErrorClass::Upstream,
+        })
+    )
+}
+
 fn with_goal_risk_floor(mut features: TaskFeatures, goal_risk: RiskLevel) -> TaskFeatures {
     features.risk_level = match (features.risk_level, goal_risk) {
         (RiskLevel::Critical, _) | (_, RiskLevel::Critical) => RiskLevel::Critical,
@@ -2113,7 +2413,7 @@ fn tool_failure_payload(
         "tool_id": tool_id,
         "tool_call_id": tool_call_id,
         "failure_category": category,
-        "summary": error.to_string(),
+        "summary": redact_audit_text(&error.to_string()),
         "lesson_candidate": {
             "candidate_id": format!("{tool_call_id}:lesson"),
             "source_event_ids": [failure_event_id],
@@ -2153,7 +2453,7 @@ fn append_loop_event(
         event_type,
         &loop_run.loop_run_id,
         &loop_run.loop_run_id,
-        payload,
+        redact_audit_payload(payload),
     )?;
     event.project_id = Some(goal.project_id.clone());
     event.goal_id = Some(goal.goal_id.clone());
@@ -2182,6 +2482,32 @@ fn model_action_error_class(error: &LoopControllerError) -> String {
     }
 }
 
+fn workspace_file_hash(
+    workspace: &std::path::Path,
+    relative_path: &str,
+) -> Result<String, LoopControllerError> {
+    let contents = std::fs::read(workspace.join(relative_path)).map_err(|error| {
+        LoopControllerError::WorkspaceToolExecution(format!(
+            "workspace file hash failed for {relative_path}: {error}"
+        ))
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(relative_path.as_bytes());
+    hasher.update([0]);
+    hasher.update(contents);
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+fn redact_audit_text(value: &str) -> String {
+    Redactor::default().redact_text_fail_closed(value)
+}
+
+fn redact_audit_payload(payload: serde_json::Value) -> serde_json::Value {
+    Redactor::default()
+        .redact_json_value(&payload)
+        .unwrap_or_else(|_| json!({"redaction": FAIL_CLOSED_MARKER}))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn append_step_event(
     event_log: &mut EventLog,
@@ -2199,7 +2525,7 @@ fn append_step_event(
         event_type,
         &step.step_id,
         &loop_run.loop_run_id,
-        payload,
+        redact_audit_payload(payload),
     )?;
     event.project_id = Some(goal.project_id.clone());
     event.goal_id = Some(goal.goal_id.clone());

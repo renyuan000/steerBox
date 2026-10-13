@@ -1,5 +1,6 @@
 use crate::anthropic_adapter::{AnthropicAdapter, AnthropicTransport};
 use crate::http_transport::{CredentialResolver, HttpAnthropicTransport, HttpProviderTransport};
+use crate::model_registry::{contains_url_authentication_material, is_opaque_auth_ref};
 use crate::provider_model_adapter::ProviderModelAdapter;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -24,6 +25,10 @@ pub enum ConfigError {
     InvalidDataRoot,
     #[error("model profile auth_ref cannot be empty")]
     EmptyAuthRef,
+    #[error("model profile auth_ref must be an opaque credential reference")]
+    InvalidAuthRef,
+    #[error("model profile endpoint must not contain authentication material")]
+    SensitiveEndpoint,
     #[error("model profile not found: {model_id}")]
     ModelProfileNotFound { model_id: String },
     #[error("HTTP provider transport could not be constructed")]
@@ -225,12 +230,18 @@ impl RuntimeConfig {
         if !is_valid_data_root(&self.data_root, &self.project_ref) {
             return Err(ConfigError::InvalidDataRoot);
         }
-        if self
-            .model_profiles
-            .iter()
-            .any(|profile| profile.auth_ref.as_deref() == Some(""))
-        {
-            return Err(ConfigError::EmptyAuthRef);
+        for profile in &self.model_profiles {
+            if let Some(auth_ref) = profile.auth_ref.as_deref() {
+                if auth_ref.is_empty() {
+                    return Err(ConfigError::EmptyAuthRef);
+                }
+                if !is_opaque_auth_ref(auth_ref) {
+                    return Err(ConfigError::InvalidAuthRef);
+                }
+            }
+            if contains_url_authentication_material(&profile.endpoint) {
+                return Err(ConfigError::SensitiveEndpoint);
+            }
         }
         Ok(())
     }

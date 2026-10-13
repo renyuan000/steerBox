@@ -16,6 +16,7 @@ use steerbox::model_registry::{EndpointProfile, ModelProfile, ModelRegistry, Pro
 use steerbox::model_router::{
     ModelRouteProfile, ModelRouter, PrivacyRequirement, RiskLevel, RouteRequest,
 };
+use steerbox::provider_adapter::ProviderErrorClass;
 use steerbox::state_store::StateStore;
 
 static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
@@ -66,6 +67,18 @@ impl ModelAdapter for CountingAdapter {
     }
 }
 
+struct RetryableAdapter {
+    calls: Arc<AtomicUsize>,
+    class: ProviderErrorClass,
+}
+
+impl ModelAdapter for RetryableAdapter {
+    fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelAdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Err(ModelAdapterError::Provider { class: self.class })
+    }
+}
+
 fn read_events(path: &Path) -> Vec<EventEnvelope> {
     EventLog::open(path)
         .expect("event log reopens")
@@ -91,6 +104,35 @@ fn registry() -> ModelRegistry {
                 "fixture",
                 "fixture-endpoint",
                 "fixture-model",
+                vec!["text".into()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    registry
+}
+
+fn fallback_registry() -> ModelRegistry {
+    let mut registry = registry();
+    registry
+        .register_model(
+            ModelProfile::new(
+                "backup-model",
+                "fixture",
+                "fixture-endpoint",
+                "backup-model",
+                vec!["text".into()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    registry
+        .register_model(
+            ModelProfile::new(
+                "last-model",
+                "fixture",
+                "fixture-endpoint",
+                "last-model",
                 vec!["text".into()],
             )
             .unwrap(),
@@ -128,6 +170,38 @@ fn route_profile() -> ModelRouteProfile {
         preferred_for_high_risk: false,
         fallback_priority: 0,
     }
+}
+
+fn fallback_profiles() -> Vec<ModelRouteProfile> {
+    vec![
+        route_profile(),
+        ModelRouteProfile {
+            model_id: "backup-model".into(),
+            supported_task_types: vec!["code_change".into()],
+            supported_agent_roles: vec!["implementer".into()],
+            max_risk_level: RiskLevel::Critical,
+            privacy_clearance: PrivacyRequirement::Restricted,
+            estimated_cost: 0.02,
+            estimated_latency_ms: 80,
+            quality_score: 70,
+            reliability_score: 80,
+            preferred_for_high_risk: false,
+            fallback_priority: -1,
+        },
+        ModelRouteProfile {
+            model_id: "last-model".into(),
+            supported_task_types: vec!["code_change".into()],
+            supported_agent_roles: vec!["implementer".into()],
+            max_risk_level: RiskLevel::Critical,
+            privacy_clearance: PrivacyRequirement::Restricted,
+            estimated_cost: 0.03,
+            estimated_latency_ms: 90,
+            quality_score: 60,
+            reliability_score: 70,
+            preferred_for_high_risk: false,
+            fallback_priority: -2,
+        },
+    ]
 }
 
 fn controller(events_path: &PathBuf) -> ReadOnlyLoopController {
@@ -372,6 +446,119 @@ fn restricted_privacy_route_requires_approval_without_invoking_adapter() {
 }
 
 #[test]
+fn goal_model_allowlist_rejects_excluded_selected_model_without_invoking_adapter() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = registry();
+    let router = ModelRouter::new(&registry, vec![route_profile()]).expect("router builds");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    adapters
+        .register(
+            "fixture-model",
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&calls),
+                fail: false,
+            }),
+        )
+        .expect("adapter registers");
+    let mut goal = GoalContract::new(
+        "goal-routing",
+        "project-routing",
+        "finish the task",
+        vec![".".into()],
+        Vec::new(),
+        vec!["manual_review".into()],
+    );
+    goal.allowed_models = vec!["allowed-model-only".into()];
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&events_path).expect("event log opens"),
+        goal,
+        "loop-routing",
+        "task-run-routing",
+        LoopBudget::new(1, 0, 1, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+    let result = controller.run_routed_model_step(
+        &router,
+        &adapters,
+        route_request(),
+        "step-routing",
+        "ready",
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(result.is_err(), "excluded model route must be rejected");
+    let events = read_events(&events_path);
+    for forbidden in ["step_started", "model_call_started", "loop_completed"] {
+        assert!(events.iter().all(|event| event.event_type != forbidden));
+    }
+}
+
+#[test]
+fn goal_high_risk_cannot_be_downgraded_by_low_route_request() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = registry();
+    let router = ModelRouter::new(&registry, vec![route_profile()]).expect("router builds");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    adapters
+        .register(
+            "fixture-model",
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&calls),
+                fail: false,
+            }),
+        )
+        .expect("adapter registers");
+    let mut goal = GoalContract::new(
+        "goal-routing",
+        "project-routing",
+        "finish the task",
+        vec![".".into()],
+        Vec::new(),
+        vec!["manual_review".into()],
+    );
+    goal.risk_level = steerbox::domain::RiskLevel::High;
+    goal.allowed_models = vec!["fixture-model".into()];
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&events_path).expect("event log opens"),
+        goal,
+        "loop-routing",
+        "task-run-routing",
+        LoopBudget::new(1, 0, 1, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+    let request = route_request();
+    assert_eq!(request.risk_level, RiskLevel::Low);
+    let result =
+        controller.run_routed_model_step(&router, &adapters, request, "step-routing", "ready");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let events = read_events(&events_path);
+    let route = events
+        .iter()
+        .find(|event| event.event_type == "model_route_decided")
+        .expect("goal-risk route decision is audited");
+    assert_eq!(route.payload["approval_required"], json!(true));
+    let route_id = route.payload["route_decision_id"]
+        .as_str()
+        .expect("route decision id exists");
+    assert!(matches!(
+        result,
+        Err(steerbox::loop_controller::LoopControllerError::ModelApprovalRequired {
+            route_decision_id,
+        }) if route_decision_id == route_id
+    ));
+    assert!(events.iter().any(|event| {
+        event.event_type == "human_intervention_required"
+            && event.payload["route_decision_id"].as_str() == Some(route_id)
+    }));
+    for forbidden in ["step_started", "model_call_started", "loop_completed"] {
+        assert!(events.iter().all(|event| event.event_type != forbidden));
+    }
+}
+
+#[test]
 fn failed_routed_adapter_records_step_failure_and_rebuilds_failed_state() {
     let directory = TestDirectory::new();
     let events_path = directory.join("events.jsonl");
@@ -429,4 +616,277 @@ fn failed_routed_adapter_records_step_failure_and_rebuilds_failed_state() {
     for forbidden in ["step_completed", "loop_completed"] {
         assert!(events.iter().all(|event| event.event_type != forbidden));
     }
+}
+
+#[test]
+fn retryable_routed_failure_uses_declared_fallback_and_records_switch() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = fallback_registry();
+    let router = ModelRouter::new(&registry, fallback_profiles()).expect("router builds");
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let backup_calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    adapters
+        .register(
+            "fixture-model",
+            Box::new(RetryableAdapter {
+                calls: Arc::clone(&primary_calls),
+                class: ProviderErrorClass::RateLimit,
+            }),
+        )
+        .expect("primary adapter registers");
+    adapters
+        .register(
+            "backup-model",
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&backup_calls),
+                fail: false,
+            }),
+        )
+        .expect("fallback adapter registers");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&events_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-routing",
+            "project-routing",
+            "finish the task",
+            vec![".".into()],
+            Vec::new(),
+            vec!["manual_review".into()],
+        ),
+        "loop-routing",
+        "task-run-routing",
+        LoopBudget::new(2, 0, 2, 1, 0, 2, 2, 2),
+    )
+    .expect("loop starts");
+
+    let decision = controller
+        .run_routed_model_step(&router, &adapters, route_request(), "step-routing", "ready")
+        .expect("fallback succeeds");
+
+    assert_eq!(decision, ModelDecision::CompleteLoop);
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backup_calls.load(Ordering::SeqCst), 1);
+    let events = read_events(&events_path);
+    let fallback = events
+        .iter()
+        .find(|event| event.event_type == "model_route_fallback")
+        .expect("fallback switch is audited");
+    assert_eq!(fallback.payload["from_model"], json!("fixture-model"));
+    assert_eq!(fallback.payload["to_model"], json!("backup-model"));
+    assert_eq!(fallback.payload["reason"], json!("retryable_model_failure"));
+    assert!(events.iter().any(|event| {
+        event.event_type == "model_call_started"
+            && event.payload["model_id"] == json!("backup-model")
+    }));
+}
+
+#[test]
+fn retryable_fallback_chain_is_finite_and_next_loop_step_hits_no_progress_guard() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = fallback_registry();
+    let router = ModelRouter::new(&registry, fallback_profiles()).expect("router builds");
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let backup_calls = Arc::new(AtomicUsize::new(0));
+    let last_calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    for (model_id, calls) in [
+        ("fixture-model", Arc::clone(&primary_calls)),
+        ("backup-model", Arc::clone(&backup_calls)),
+        ("last-model", Arc::clone(&last_calls)),
+    ] {
+        adapters
+            .register(
+                model_id,
+                Box::new(RetryableAdapter {
+                    calls,
+                    class: ProviderErrorClass::Upstream,
+                }),
+            )
+            .expect("retryable adapter registers");
+    }
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&events_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-routing",
+            "project-routing",
+            "finish the task",
+            vec![".".into()],
+            Vec::new(),
+            vec!["manual_review".into()],
+        ),
+        "loop-routing",
+        "task-run-routing",
+        LoopBudget::new(6, 0, 6, 1, 0, 1, 3, 1),
+    )
+    .expect("loop starts");
+
+    let first = controller.run_routed_model_step(
+        &router,
+        &adapters,
+        route_request(),
+        "step-routing",
+        "ready",
+    );
+    assert!(matches!(
+        first,
+        Err(
+            steerbox::loop_controller::LoopControllerError::ModelAdapter(
+                ModelAdapterError::Provider {
+                    class: ProviderErrorClass::Upstream
+                }
+            )
+        )
+    ));
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backup_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(last_calls.load(Ordering::SeqCst), 1);
+
+    let second = controller.run_routed_model_step(
+        &router,
+        &adapters,
+        route_request(),
+        "step-routing-again",
+        "ready",
+    );
+    assert!(matches!(
+        second,
+        Err(
+            steerbox::loop_controller::LoopControllerError::BudgetExhausted(
+                steerbox::domain::BudgetKind::NoProgressSteps
+            )
+        )
+    ));
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backup_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(last_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        read_events(&events_path)
+            .iter()
+            .filter(|event| event.event_type == "model_route_fallback")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn non_retryable_routed_failure_does_not_use_fallback() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = fallback_registry();
+    let router = ModelRouter::new(&registry, fallback_profiles()).expect("router builds");
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let backup_calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    adapters
+        .register(
+            "fixture-model",
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&primary_calls),
+                fail: true,
+            }),
+        )
+        .expect("primary adapter registers");
+    adapters
+        .register(
+            "backup-model",
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&backup_calls),
+                fail: false,
+            }),
+        )
+        .expect("fallback adapter registers");
+    let result = controller(&events_path).run_routed_model_step(
+        &router,
+        &adapters,
+        route_request(),
+        "step-routing",
+        "ready",
+    );
+
+    assert!(matches!(
+        result,
+        Err(
+            steerbox::loop_controller::LoopControllerError::ModelAdapter(
+                ModelAdapterError::EmptyObjective
+            )
+        )
+    ));
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backup_calls.load(Ordering::SeqCst), 0);
+    assert!(read_events(&events_path)
+        .iter()
+        .all(|event| event.event_type != "model_route_fallback"));
+}
+
+#[test]
+fn fallback_cannot_escape_goal_allowed_models() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = fallback_registry();
+    let router = ModelRouter::new(&registry, fallback_profiles()).expect("router builds");
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let backup_calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    adapters
+        .register(
+            "fixture-model",
+            Box::new(RetryableAdapter {
+                calls: Arc::clone(&primary_calls),
+                class: ProviderErrorClass::Transport,
+            }),
+        )
+        .expect("primary adapter registers");
+    adapters
+        .register(
+            "backup-model",
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&backup_calls),
+                fail: false,
+            }),
+        )
+        .expect("fallback adapter registers");
+    let mut goal = GoalContract::new(
+        "goal-routing",
+        "project-routing",
+        "finish the task",
+        vec![".".into()],
+        Vec::new(),
+        vec!["manual_review".into()],
+    );
+    goal.allowed_models = vec!["fixture-model".into()];
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&events_path).expect("event log opens"),
+        goal,
+        "loop-routing",
+        "task-run-routing",
+        LoopBudget::new(2, 0, 2, 1, 0, 2, 2, 2),
+    )
+    .expect("loop starts");
+
+    let result = controller.run_routed_model_step(
+        &router,
+        &adapters,
+        route_request(),
+        "step-routing",
+        "ready",
+    );
+
+    assert!(matches!(
+        result,
+        Err(
+            steerbox::loop_controller::LoopControllerError::ModelAdapter(
+                ModelAdapterError::Provider {
+                    class: ProviderErrorClass::Transport
+                }
+            )
+        )
+    ));
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backup_calls.load(Ordering::SeqCst), 0);
+    assert!(read_events(&events_path)
+        .iter()
+        .all(|event| event.event_type != "model_route_fallback"));
 }

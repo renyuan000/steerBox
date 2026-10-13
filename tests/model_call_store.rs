@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 use steerbox::model_call_store::{ModelCallStore, ModelCallStoreError};
 use steerbox::model_contracts::ModelCallRecord;
@@ -82,6 +84,134 @@ fn append_and_read_all_preserve_append_only_order() {
     assert_eq!(records, vec![record("call-1"), record("call-2")]);
     let lines = fs::read_to_string(&file).expect("jsonl exists");
     assert_eq!(lines.lines().count(), 2);
+}
+
+#[test]
+fn append_of_an_identical_model_call_id_is_idempotent_and_does_not_add_a_line() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let store = ModelCallStore::open(&file).expect("store opens");
+    let first = record("call-idempotent");
+
+    store.append(&first).expect("first append");
+    let bytes_after_first = fs::read(&file).expect("first snapshot exists");
+    store.append(&first).expect("identical retry is idempotent");
+
+    assert_eq!(
+        fs::read(&file).expect("snapshot remains readable"),
+        bytes_after_first
+    );
+    assert_eq!(store.read_all().expect("records read"), vec![first]);
+}
+
+#[test]
+fn append_of_same_model_call_id_with_different_content_fails_closed_without_echoing_body() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let store = ModelCallStore::open(&file).expect("store opens");
+    let first = record("call-conflict");
+    store.append(&first).expect("first append");
+    let bytes_after_first = fs::read(&file).expect("first snapshot exists");
+
+    let mut conflict = first.clone();
+    conflict.output_artifact_ref = "trace://synthetic-private-record-body/output".into();
+    let error = store
+        .append(&conflict)
+        .expect_err("same id with changed content must fail closed");
+
+    assert!(error.to_string().contains("duplicate model call id"));
+    assert!(!error.to_string().contains("synthetic-private-record-body"));
+    assert!(!format!("{error:?}").contains("synthetic-private-record-body"));
+    assert_eq!(
+        fs::read(&file).expect("snapshot remains readable"),
+        bytes_after_first
+    );
+    assert_eq!(store.read_all().expect("records read"), vec![first]);
+}
+
+#[test]
+fn a_successful_append_is_visible_after_reopening_the_store() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let first = record("call-durable");
+    ModelCallStore::open(&file)
+        .expect("store opens")
+        .append(&first)
+        .expect("append succeeds");
+
+    let reopened = ModelCallStore::open(&file).expect("reopened store opens");
+    assert_eq!(
+        reopened.read_all().expect("reopened records read"),
+        vec![first]
+    );
+}
+
+#[test]
+fn concurrent_stores_append_one_identical_record_only_once() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let barrier = Arc::new(Barrier::new(8));
+    let mut handles = Vec::new();
+
+    for _ in 0..8 {
+        let barrier = Arc::clone(&barrier);
+        let file = file.clone();
+        handles.push(thread::spawn(move || {
+            let store = ModelCallStore::open(file).expect("store opens");
+            barrier.wait();
+            store
+                .append(&record("call-concurrent"))
+                .expect("append is serialized");
+        }));
+    }
+    for handle in handles {
+        handle.join().expect("append thread joins");
+    }
+
+    let store = ModelCallStore::open(&file).expect("store reopens");
+    assert_eq!(store.read_all().expect("records read").len(), 1);
+}
+
+#[test]
+fn concurrent_stores_with_same_id_and_different_content_have_one_winner() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let barrier = Arc::new(Barrier::new(2));
+    let mut handles = Vec::new();
+
+    for suffix in ["a", "b"] {
+        let barrier = Arc::clone(&barrier);
+        let file = file.clone();
+        handles.push(thread::spawn(move || {
+            let store = ModelCallStore::open(file).expect("store opens");
+            let mut candidate = record("call-concurrent-conflict");
+            candidate.output_artifact_ref = format!("trace://conflict-{suffix}/output");
+            barrier.wait();
+            store.append(&candidate)
+        }));
+    }
+
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("append thread joins"))
+        .collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .filter(|error| error.to_string().contains("duplicate model call id"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        ModelCallStore::open(&file)
+            .expect("store reopens")
+            .read_all()
+            .expect("records read")
+            .len(),
+        1
+    );
 }
 
 #[test]

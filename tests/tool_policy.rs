@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use steerbox::domain::{GoalContract, HumanSteeringMode, RiskLevel};
 use steerbox::event_log::EventLog;
 use steerbox::policy_gate::{PolicyDecision, PolicyGate, PolicyRequest};
-use steerbox::tool_registry::{SideEffectClass, ToolProfile, ToolRegistry};
+use steerbox::tool_registry::{SideEffectClass, SideEffectDisposition, ToolProfile, ToolRegistry};
 
 fn test_data_dir(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -30,6 +30,10 @@ fn goal(allowed_tools: Vec<&str>, forbidden_tools: Vec<&str>) -> GoalContract {
 }
 
 fn request(tool_id: &str) -> PolicyRequest {
+    request_in_mode(tool_id, HumanSteeringMode::HumanSteerableLoop)
+}
+
+fn request_in_mode(tool_id: &str, human_steering_mode: HumanSteeringMode) -> PolicyRequest {
     PolicyRequest {
         policy_event_id: format!("policy-event-{tool_id}"),
         tool_id: tool_id.into(),
@@ -39,7 +43,7 @@ fn request(tool_id: &str) -> PolicyRequest {
         loop_run_id: "loop-policy".into(),
         step_id: "step-policy".into(),
         correlation_id: "correlation-policy".into(),
-        human_steering_mode: HumanSteeringMode::HumanSteerableLoop,
+        human_steering_mode,
     }
 }
 
@@ -57,6 +61,70 @@ fn baseline_registry_exposes_read_only_recipes() {
         assert_eq!(profile.risk_level, RiskLevel::Low);
         assert_eq!(profile.recipe_ref.as_deref(), Some(recipe_ref));
     }
+}
+
+#[test]
+fn side_effect_classes_have_conservative_dispositions() {
+    assert_eq!(
+        SideEffectClass::None.disposition(),
+        SideEffectDisposition::ReadOnly
+    );
+    assert_eq!(
+        SideEffectClass::WorkspaceRead.disposition(),
+        SideEffectDisposition::ReadOnly
+    );
+    assert_eq!(
+        SideEffectClass::WorkspaceWrite.disposition(),
+        SideEffectDisposition::Reversible
+    );
+    assert!(SideEffectClass::None.automatic_execution_allowed());
+    assert!(SideEffectClass::WorkspaceRead.automatic_execution_allowed());
+    assert!(SideEffectClass::WorkspaceWrite.automatic_execution_allowed());
+}
+
+#[test]
+fn external_and_unknown_side_effects_fail_closed() {
+    for class in [
+        SideEffectClass::ExternalNetwork,
+        SideEffectClass::ExternalSystem,
+        SideEffectClass::Unknown,
+    ] {
+        assert_eq!(class.disposition(), SideEffectDisposition::ManualRequired);
+        assert!(!class.automatic_execution_allowed());
+    }
+}
+
+#[test]
+fn side_effect_labels_accept_existing_debug_and_snake_case_values() {
+    for label in ["none", "read_only", "readonly"] {
+        assert_eq!(
+            SideEffectClass::from_audit_label(label),
+            SideEffectClass::None,
+            "label {label} should be read-only"
+        );
+    }
+    for label in ["workspace_read", "workspaceread"] {
+        assert_eq!(
+            SideEffectClass::from_audit_label(label),
+            SideEffectClass::WorkspaceRead,
+            "label {label} should be a workspace read"
+        );
+    }
+    for label in [
+        "workspace_write",
+        "workspacewrite",
+        "reversible_local_change",
+    ] {
+        assert_eq!(
+            SideEffectClass::from_audit_label(label),
+            SideEffectClass::WorkspaceWrite,
+            "label {label} should be a workspace write"
+        );
+    }
+    assert_eq!(
+        SideEffectClass::from_audit_label("future-external-class"),
+        SideEffectClass::Unknown
+    );
 }
 
 #[test]
@@ -169,6 +237,61 @@ fn policy_gate_requires_human_approval_for_workspace_write() {
     );
     assert_eq!(decision.decision, PolicyDecision::RequireHumanApproval);
     assert!(decision.reason.contains("approval"));
+}
+
+#[test]
+fn autonomous_mode_allows_scoped_medium_workspace_write() {
+    let mut registry = ToolRegistry::new();
+    registry
+        .register(ToolProfile {
+            tool_id: "edit_markdown".into(),
+            name: "edit_markdown".into(),
+            description: "edit a bounded workspace Markdown file".into(),
+            input_schema: serde_json::json!({"path": "string", "expected": "string", "replacement": "string"}),
+            output_schema: serde_json::json!({"changed": "boolean"}),
+            side_effect_class: SideEffectClass::WorkspaceWrite,
+            risk_level: RiskLevel::Medium,
+            allowed_in_modes: vec![HumanSteeringMode::AutonomousLoop],
+            recipe_ref: Some("markdown-edit-workspace".into()),
+            version: 1,
+        })
+        .expect("workspace edit registers");
+
+    let decision = PolicyGate::new().evaluate(
+        &registry,
+        &goal(vec!["edit_markdown"], Vec::new()),
+        &request_in_mode("edit_markdown", HumanSteeringMode::AutonomousLoop),
+    );
+
+    assert_eq!(decision.decision, PolicyDecision::Allow);
+    assert!(decision.reason.contains("autonomous"));
+}
+
+#[test]
+fn autonomous_mode_still_requires_approval_for_high_risk_write() {
+    let mut registry = ToolRegistry::new();
+    registry
+        .register(ToolProfile {
+            tool_id: "write_file".into(),
+            name: "write_file".into(),
+            description: "write a file".into(),
+            input_schema: serde_json::json!({"path": "string"}),
+            output_schema: serde_json::json!({"changed": "boolean"}),
+            side_effect_class: SideEffectClass::WorkspaceWrite,
+            risk_level: RiskLevel::High,
+            allowed_in_modes: vec![HumanSteeringMode::AutonomousLoop],
+            recipe_ref: Some("file-write-verification".into()),
+            version: 1,
+        })
+        .expect("high-risk write registers");
+
+    let decision = PolicyGate::new().evaluate(
+        &registry,
+        &goal(vec!["write_file"], Vec::new()),
+        &request_in_mode("write_file", HumanSteeringMode::AutonomousLoop),
+    );
+
+    assert_eq!(decision.decision, PolicyDecision::RequireHumanApproval);
 }
 
 #[test]

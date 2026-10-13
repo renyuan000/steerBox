@@ -112,3 +112,43 @@ fn builds_http_anthropic_adapter_without_resolving_credentials_eagerly() {
     assert_eq!(adapter.provider_id(), "anthropic");
     assert_eq!(adapter.base_url(), "https://fixture.example.test/v1");
 }
+
+#[test]
+fn runtime_config_rejects_non_opaque_auth_ref_and_authenticated_endpoint() {
+    for (auth_ref, endpoint) in [
+        (
+            "env:password=fixture-value",
+            "https://fixture.example.test/v1",
+        ),
+        (
+            "env:ANTHROPIC_API_KEY",
+            "https://user:fixture@example.test/v1",
+        ),
+        (
+            "env:ANTHROPIC_API_KEY",
+            "https://fixture.example.test/v1?token=fixture-value",
+        ),
+        (
+            "env:ANTHROPIC_API_KEY",
+            "https://fixture.example.test/v1#secret=fixture-value",
+        ),
+    ] {
+        let config = serde_json::json!({
+            "schema_version": 1,
+            "project_ref": "anthropic-boundary-fixture",
+            "data_root": "/temp/steerbox/anthropic-boundary-fixture",
+            "model_profiles": [{
+                "model_id": "claude-fixture",
+                "provider": "anthropic",
+                "endpoint": endpoint,
+                "auth_ref": auth_ref,
+                "capabilities": ["text"]
+            }]
+        });
+        let result = RuntimeConfig::from_json_str(&config.to_string());
+        assert!(result.is_err(), "unsafe provider profile must be rejected");
+        if let Err(error) = result {
+            assert!(!error.to_string().contains("fixture-value"));
+        }
+    }
+}

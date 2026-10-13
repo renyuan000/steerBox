@@ -296,6 +296,34 @@ fn model_registry_json_rejects_cross_provider_endpoint() {
     assert!(serde_json::from_value::<ModelRegistry>(encoded).is_err());
 }
 
+#[test]
+fn provider_rejects_credential_body_from_auth_ref() {
+    for auth_ref in [
+        "env:password=fixture-value",
+        "env:-----BEGIN PRIVATE KEY-----",
+        "env:https://user:fixture@example.test/key",
+    ] {
+        assert!(
+            ProviderProfile::new("fixture", "Fixture", Some(auth_ref.into())).is_err(),
+            "credential body must not be accepted as auth_ref: {auth_ref}"
+        );
+    }
+}
+
+#[test]
+fn endpoint_rejects_authentication_material_in_url() {
+    for base_url in [
+        "https://user:fixture@example.test/v1",
+        "https://example.test/v1?api_key=fixture-value",
+        "https://example.test/v1#secret=fixture-value",
+    ] {
+        assert!(
+            EndpointProfile::new("fixture-endpoint", "fixture", base_url, "https").is_err(),
+            "authentication material must not be accepted in base_url: {base_url}"
+        );
+    }
+}
+
 fn prompt_registry_fixture() -> PromptRegistry {
     let mut registry = PromptRegistry::default();
     registry

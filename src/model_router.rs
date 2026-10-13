@@ -266,6 +266,10 @@ pub fn next_fallback_model<'a>(
 ) -> Option<&'a str> {
     route.fallback_chain.iter().find_map(|candidate| {
         if candidate == &route.selected_model
+            || !route
+                .candidate_models
+                .iter()
+                .any(|model| model == candidate)
             || attempted_models
                 .iter()
                 .any(|attempted| attempted == candidate)

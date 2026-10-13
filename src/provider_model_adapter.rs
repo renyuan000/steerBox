@@ -7,6 +7,7 @@ use crate::provider_adapter::{
     OpenAiCompatibleAdapter, ProviderMessage, ProviderRequest, ProviderResponse,
     ProviderStreamEvent, ProviderTransport,
 };
+use crate::redaction::Redactor;
 use crate::resolved_prompt::ResolvedPromptPack;
 use serde::Deserialize;
 use std::fmt;
@@ -299,7 +300,9 @@ fn parse_decision_with_action(text: &str) -> Result<ModelResponseWithAction, Mod
     }
     Ok(ModelResponseWithAction {
         decision: envelope.decision,
-        summary: envelope.summary,
+        summary: Redactor::default()
+            .redact_text(&envelope.summary)
+            .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?,
         action: envelope.action,
     })
 }

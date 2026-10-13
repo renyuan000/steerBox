@@ -89,6 +89,52 @@ fn strict_provider_decision_envelope_maps_to_existing_model_response() {
 }
 
 #[test]
+fn provider_model_summary_is_redacted_for_legacy_and_action_entry_points() {
+    let content = r#"{"decision":"continue_observation","summary":"ready password=synthetic-provider-password"}"#;
+    let adapter = adapter_for_content(content);
+    let response =
+        ModelAdapter::complete_with_action(&adapter, request()).expect("valid decision envelope");
+    assert!(response.summary.starts_with("ready "));
+    assert!(!response.summary.contains("synthetic-provider-password"));
+    assert!(response.summary.contains("[REDACTED:"));
+    assert!(response.action.is_none());
+
+    let legacy = ModelAdapter::complete(&adapter, request()).expect("legacy decision envelope");
+    assert_eq!(legacy.summary, response.summary);
+}
+
+#[test]
+fn provider_model_summary_redaction_preserves_valid_structured_action() {
+    let content = r#"{"decision":"continue_observation","summary":"inspect password=synthetic-action-password","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"workspace"},"path_scope":{"root":"/tmp/workspace","allowed_paths":["workspace"]},"verification":{"verifier_tool_id":"git_status_verify","parameters":{"path":"workspace"}}}}"#;
+    let response = adapter_for_content(content)
+        .complete_with_action(request())
+        .expect("valid structured action envelope");
+    assert!(!response.summary.contains("synthetic-action-password"));
+    assert!(response.summary.contains("[REDACTED:"));
+    let action = response.action.expect("action retained");
+    assert_eq!(action.tool_id, "git_status");
+    assert_eq!(action.parameters, serde_json::json!({"path": "workspace"}));
+}
+
+#[test]
+fn provider_model_summary_over_limit_fails_closed_for_both_entry_points() {
+    let content = serde_json::json!({
+        "decision": "continue_observation",
+        "summary": "x".repeat(steerbox::redaction::DEFAULT_MAX_INPUT_BYTES + 1),
+    })
+    .to_string();
+    let adapter = adapter_for_content(&content);
+    assert!(matches!(
+        ModelAdapter::complete_with_action(&adapter, request()),
+        Err(ModelAdapterError::ProviderTextUnmappable)
+    ));
+    assert!(matches!(
+        ModelAdapter::complete(&adapter, request()),
+        Err(ModelAdapterError::ProviderTextUnmappable)
+    ));
+}
+
+#[test]
 fn structured_provider_response_requires_action_capable_entry_point() {
     let content = r#"{"decision":"continue_observation","summary":"inspect workspace","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"workspace"},"path_scope":{"root":"/tmp/workspace","allowed_paths":["workspace"]},"verification":{"verifier_tool_id":"git_status_verify","parameters":{"path":"workspace"}}}}"#;
     let adapter = adapter_for_content(content);

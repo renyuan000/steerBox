@@ -14,6 +14,62 @@ pub enum SideEffectClass {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SideEffectDisposition {
+    ReadOnly,
+    Reversible,
+    Compensatable,
+    Irreversible,
+    ManualRequired,
+}
+
+impl SideEffectClass {
+    pub const fn disposition(self) -> SideEffectDisposition {
+        match self {
+            Self::None | Self::WorkspaceRead => SideEffectDisposition::ReadOnly,
+            Self::WorkspaceWrite => SideEffectDisposition::Reversible,
+            Self::ExternalNetwork | Self::ExternalSystem | Self::Unknown => {
+                SideEffectDisposition::ManualRequired
+            }
+        }
+    }
+
+    pub const fn automatic_execution_allowed(self) -> bool {
+        matches!(
+            self.disposition(),
+            SideEffectDisposition::ReadOnly
+                | SideEffectDisposition::Reversible
+                | SideEffectDisposition::Compensatable
+        )
+    }
+
+    pub const fn audit_label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::WorkspaceRead => "workspace_read",
+            Self::WorkspaceWrite => "workspace_write",
+            Self::ExternalNetwork => "external_network",
+            Self::ExternalSystem => "external_system",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_audit_label(label: &str) -> Self {
+        match label.trim().to_ascii_lowercase().as_str() {
+            "none" | "read_only" | "readonly" => Self::None,
+            "workspace_read" | "workspaceread" => Self::WorkspaceRead,
+            "workspace_write" | "workspacewrite" | "reversible_local_change" => {
+                Self::WorkspaceWrite
+            }
+            "external_network" | "externalnetwork" => Self::ExternalNetwork,
+            "external_system" | "externalsystem" => Self::ExternalSystem,
+            "unknown" => Self::Unknown,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolProfile {
     pub tool_id: String,
@@ -136,6 +192,7 @@ fn workspace_write_profile(
         side_effect_class: SideEffectClass::WorkspaceWrite,
         risk_level: RiskLevel::Medium,
         allowed_in_modes: vec![
+            HumanSteeringMode::AutonomousLoop,
             HumanSteeringMode::HumanSteerableLoop,
             HumanSteeringMode::HumanInTheLoop,
             HumanSteeringMode::ManualTakeover,

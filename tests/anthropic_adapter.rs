@@ -87,6 +87,70 @@ fn request() -> ProviderRequest {
 }
 
 #[test]
+fn request_messages_are_redacted_before_anthropic_transport() {
+    let transport = FakeTransport::response(&response_body(
+        r#"{"decision":"complete_loop","summary":"done"}"#,
+    ));
+    let captured = transport.captured.clone();
+    let adapter = AnthropicAdapter::new(
+        "anthropic",
+        "https://fixture.example.test/v1",
+        transport,
+        Some("keychain:anthropic".into()),
+    );
+    adapter
+        .complete(ProviderRequest {
+            model: "claude-fixture".into(),
+            messages: vec![
+                ProviderMessage::system("system contract"),
+                ProviderMessage::user("password=synthetic-anthropic-secret"),
+            ],
+            auth_ref: Some("keychain:request".into()),
+            timeout_ms: 30_000,
+            stream: false,
+        })
+        .expect("fixture response succeeds");
+    let captured_request = captured
+        .lock()
+        .expect("capture lock")
+        .clone()
+        .expect("captured request");
+    let body = captured_request.body;
+    assert!(!body.contains("synthetic-anthropic-secret"));
+    assert!(body.contains("[REDACTED:PASSWORD]"));
+    assert!(body.contains("system contract"));
+    assert!(!body.contains("keychain:request"));
+}
+
+#[test]
+fn oversized_anthropic_message_fails_before_transport() {
+    let transport = FakeTransport::response(&response_body("unused"));
+    let captured = transport.captured.clone();
+    let adapter = AnthropicAdapter::new(
+        "anthropic",
+        "https://fixture.example.test/v1",
+        transport,
+        Some("keychain:anthropic".into()),
+    );
+    let error = adapter
+        .complete(ProviderRequest {
+            model: "claude-fixture".into(),
+            messages: vec![ProviderMessage::user(
+                "x".repeat(steerbox::redaction::DEFAULT_MAX_INPUT_BYTES + 1),
+            )],
+            auth_ref: None,
+            timeout_ms: 30_000,
+            stream: false,
+        })
+        .expect_err("oversized message must fail closed");
+    assert!(matches!(
+        error,
+        AnthropicAdapterError::InvalidRequest { .. }
+    ));
+    assert!(captured.lock().expect("capture lock").is_none());
+}
+
+#[test]
 fn builds_anthropic_envelope_with_independent_auth_header_reference() {
     let transport = FakeTransport::response(&response_body(
         r#"{"decision":"complete_loop","summary":"done"}"#,
@@ -161,6 +225,77 @@ fn model_adapter_parses_only_the_decision_envelope() {
     .expect("model adapter succeeds");
     assert_eq!(response.decision, ModelDecision::RequestHuman);
     assert_eq!(response.summary, "manual review");
+}
+
+#[test]
+fn model_adapter_action_entry_point_preserves_valid_action_and_rejects_unsafe_shapes() {
+    let valid = r#"{"decision":"continue_observation","summary":"inspect","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"README.md"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]},"verification":{"verifier_tool_id":"markdown_link_check","parameters":{"path":"README.md"}}}}"#;
+    let adapter = AnthropicAdapter::new(
+        "anthropic",
+        "http://localhost:4318",
+        FakeTransport::response(&response_body(valid)),
+        None,
+    );
+    let request = ModelRequest {
+        model_id: "claude-fixture".into(),
+        goal_id: "goal-1".into(),
+        loop_run_id: "loop-1".into(),
+        step_id: "step-1".into(),
+        objective: "inspect repository".into(),
+        observation: "read-only evidence".into(),
+    };
+    let response = adapter
+        .complete_with_action(request.clone())
+        .expect("valid structured action response");
+    assert_eq!(response.decision, ModelDecision::ContinueObservation);
+    assert_eq!(response.summary, "inspect");
+    assert_eq!(
+        response.action.expect("action retained").tool_id,
+        "git_status"
+    );
+
+    let unsafe_cases = [
+        r#"{"decision":"continue_observation","summary":"bad","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"command":"git status"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]},"verification":{"verifier_tool_id":"markdown_link_check","parameters":{"path":"README.md"}}}}"#,
+        r#"{"decision":"continue_observation","summary":"bad","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"README.md"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]}}}"#,
+        r#"{"decision":"continue_observation","summary":"bad","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"README.md"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]},"verification":{"verifier_tool_id":"markdown_link_check","parameters":{"path":"README.md"}},"unexpected":true}}"#,
+    ];
+    for content in unsafe_cases {
+        let adapter = AnthropicAdapter::new(
+            "anthropic",
+            "http://localhost:4318",
+            FakeTransport::response(&response_body(content)),
+            None,
+        );
+        assert!(adapter.complete_with_action(request.clone()).is_err());
+    }
+}
+
+#[test]
+fn anthropic_model_summary_is_redacted_before_returning_to_controller() {
+    let content = r#"{"decision":"continue_observation","summary":"ready password=synthetic-anthropic-password"}"#;
+    let adapter = AnthropicAdapter::new(
+        "anthropic",
+        "http://localhost:4318",
+        FakeTransport::response(&response_body(content)),
+        None,
+    );
+    let request = ModelRequest {
+        model_id: "claude-fixture".into(),
+        goal_id: "goal-1".into(),
+        loop_run_id: "loop-1".into(),
+        step_id: "step-1".into(),
+        objective: "inspect repository".into(),
+        observation: "read-only evidence".into(),
+    };
+    let response = adapter
+        .complete_with_action(request.clone())
+        .expect("valid decision envelope");
+    assert!(response.summary.starts_with("ready "));
+    assert!(!response.summary.contains("synthetic-anthropic-password"));
+    assert!(response.summary.contains("[REDACTED:"));
+
+    let legacy = ModelAdapter::complete(&adapter, request).expect("legacy decision envelope");
+    assert_eq!(legacy.summary, response.summary);
 }
 
 #[test]

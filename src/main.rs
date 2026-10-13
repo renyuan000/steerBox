@@ -387,10 +387,21 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
             let relative_path = args.next().ok_or("missing relative markdown path")?;
             let expected = args.next().ok_or("missing expected content")?;
             let replacement = args.next().ok_or("missing replacement content")?;
-            let approval = args.next().ok_or("missing approval marker")?;
-            if approval != "approved" {
-                return Err("dev markdown requires explicit approval marker: approved".into());
-            }
+            let interaction_mode = args
+                .next()
+                .ok_or("missing interaction mode (auto|ask|approved)")?;
+            let (human_steering_mode, approved) = match interaction_mode.as_str() {
+                "auto" => (HumanSteeringMode::AutonomousLoop, true),
+                "approved" => (HumanSteeringMode::HumanSteerableLoop, true),
+                "ask" => {
+                    return Err("ask mode requires an interactive approval resolver; use auto for bounded Markdown edits or approved for an explicit approval marker".into());
+                }
+                _ => {
+                    return Err(
+                        "dev markdown interaction mode must be one of: auto, ask, approved".into(),
+                    );
+                }
+            };
             let config = RuntimeConfig::load(config_path)?;
             let mut log = EventLog::open(config.events_path())?;
             let mut goal = GoalContract::new(
@@ -433,9 +444,20 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 input_schema: serde_json::json!({"path":"string","content":"string"}),
                 output_schema: serde_json::json!({"changed":"boolean"}),
                 side_effect_class: SideEffectClass::WorkspaceWrite,
-                risk_level: RiskLevel::High,
-                allowed_in_modes: vec![HumanSteeringMode::HumanSteerableLoop],
-                recipe_ref: Some("file-write-verification".into()),
+                risk_level: if human_steering_mode == HumanSteeringMode::AutonomousLoop {
+                    RiskLevel::Medium
+                } else {
+                    RiskLevel::High
+                },
+                allowed_in_modes: vec![human_steering_mode],
+                recipe_ref: Some(
+                    if human_steering_mode == HumanSteeringMode::AutonomousLoop {
+                        "markdown-edit-workspace"
+                    } else {
+                        "file-write-verification"
+                    }
+                    .into(),
+                ),
                 version: 1,
             })?;
             let request = PolicyRequest {
@@ -447,12 +469,17 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 loop_run_id: loop_run_id.clone(),
                 step_id: step_id.clone(),
                 correlation_id: loop_run_id.clone(),
-                human_steering_mode: HumanSteeringMode::HumanSteerableLoop,
+                human_steering_mode,
             };
             let policy = PolicyGate::new();
             let decision = policy.evaluate(&registry, &goal, &request);
             policy.record_decision(&mut log, &request, &decision)?;
-            if decision.decision != PolicyDecision::RequireHumanApproval {
+            let expected_decision = if human_steering_mode == HumanSteeringMode::AutonomousLoop {
+                PolicyDecision::Allow
+            } else {
+                PolicyDecision::RequireHumanApproval
+            };
+            if decision.decision != expected_decision {
                 return Err(format!("write policy denied: {:?}", decision.decision).into());
             }
 
@@ -486,7 +513,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 &relative_path,
                 &expected,
                 &replacement,
-                true,
+                approved,
             )?;
             let side_effect_id = format!("{step_id}:side-effect");
             SideEffectLedger::open(config.side_effects_path()).append(&SideEffectRecord {
@@ -650,7 +677,7 @@ fn print_usage() {
     eprintln!("  steerbox board list <config.json>");
     eprintln!("  steerbox loop readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <objective> <observation>");
     eprintln!("  steerbox loop fixture <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> [continue_observation|complete_loop|request_human] <observation> [summary]");
-    eprintln!("  steerbox dev markdown <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <path> <expected> <replacement> approved");
+    eprintln!("  steerbox dev markdown <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <path> <expected> <replacement> <auto|ask|approved>");
 }
 
 #[allow(clippy::too_many_arguments)]

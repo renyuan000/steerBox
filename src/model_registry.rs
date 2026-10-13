@@ -37,6 +37,10 @@ pub enum ModelRegistryError {
     EmptyId { entity: &'static str },
     #[error("{field} must not be empty")]
     EmptyField { field: &'static str },
+    #[error("auth_ref must be an opaque credential reference")]
+    InvalidAuthRef,
+    #[error("base_url must not contain authentication material")]
+    SensitiveBaseUrl,
     #[error("provider already registered: {0}")]
     DuplicateProvider(String),
     #[error("endpoint already registered: {0}")]
@@ -75,6 +79,9 @@ impl ProviderProfile {
         validate_field(&self.display_name, "display_name")?;
         if let Some(auth_ref) = &self.auth_ref {
             validate_field(auth_ref, "auth_ref")?;
+            if !is_opaque_auth_ref(auth_ref) {
+                return Err(ModelRegistryError::InvalidAuthRef);
+            }
         }
         Ok(())
     }
@@ -101,6 +108,9 @@ impl EndpointProfile {
         validate_id(&self.endpoint_id, "endpoint")?;
         validate_id(&self.provider_id, "provider")?;
         validate_field(&self.base_url, "base_url")?;
+        if contains_url_authentication_material(&self.base_url) {
+            return Err(ModelRegistryError::SensitiveBaseUrl);
+        }
         validate_field(&self.protocol, "protocol")
     }
 }
@@ -277,4 +287,85 @@ fn validate_field(value: &str, field: &'static str) -> Result<(), ModelRegistryE
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn is_opaque_auth_ref(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 200
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return false;
+    }
+
+    let body = if let Some((prefix, body)) = value.split_once(':') {
+        if !matches!(prefix, "env" | "keychain" | "secret-ref") || body.is_empty() {
+            return false;
+        }
+        body
+    } else {
+        if !value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
+        }) {
+            return false;
+        }
+        value
+    };
+
+    let lower = body.to_ascii_lowercase();
+    let credential_prefix = ["sk-", "pk-", "rk-", "bearer "]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix));
+    !body.contains(['=', '@', '?', '#'])
+        && !lower.contains("-----begin")
+        && !lower.contains("private key")
+        && !lower.contains("://")
+        && !credential_prefix
+}
+
+pub(crate) fn contains_url_authentication_material(value: &str) -> bool {
+    if let Some((_, authority_and_suffix)) = value.split_once("://") {
+        let authority_end = authority_and_suffix
+            .find(['/', '?', '#'])
+            .unwrap_or(authority_and_suffix.len());
+        if authority_and_suffix[..authority_end].contains('@') {
+            return true;
+        }
+    }
+
+    for component in value.split(['?', '#']).skip(1) {
+        if url_component_contains_authentication_material(component) {
+            return true;
+        }
+    }
+    false
+}
+
+fn url_component_contains_authentication_material(component: &str) -> bool {
+    component.split(['&', ';']).any(|pair| {
+        let key = pair
+            .split_once('=')
+            .map(|(key, _)| key)
+            .unwrap_or(pair)
+            .trim()
+            .to_ascii_lowercase();
+        let normalized = key.replace('-', "_");
+        normalized == "key"
+            || normalized == "api_key"
+            || normalized == "apikey"
+            || normalized == "token"
+            || normalized == "access_token"
+            || normalized == "session_token"
+            || normalized == "authorization"
+            || normalized == "bearer"
+            || normalized == "password"
+            || normalized == "secret"
+            || normalized == "client_secret"
+            || normalized == "credential"
+            || normalized == "private_key"
+            || normalized.ends_with("_token")
+            || normalized.ends_with("_secret")
+            || normalized.ends_with("_password")
+    })
 }

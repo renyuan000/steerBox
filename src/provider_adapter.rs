@@ -1,3 +1,4 @@
+use crate::redaction::Redactor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -348,9 +349,23 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
         stream: bool,
     ) -> Result<String, ProviderAdapterError> {
         validate_request(request)?;
+        let messages = request
+            .messages
+            .iter()
+            .map(|message| {
+                Ok(ProviderMessage {
+                    role: message.role.clone(),
+                    content: Redactor::default()
+                        .redact_text(&message.content)
+                        .map_err(|_| ProviderAdapterError::InvalidRequest {
+                            reason: "message content redaction failed",
+                        })?,
+                })
+            })
+            .collect::<Result<Vec<_>, ProviderAdapterError>>()?;
         let wire_request = WireRequest {
             model: &request.model,
-            messages: &request.messages,
+            messages: &messages,
             stream,
         };
         serde_json::to_string(&wire_request).map_err(|_| ProviderAdapterError::ResponseParse)

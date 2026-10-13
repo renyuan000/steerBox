@@ -533,6 +533,31 @@ fn fixture_cli_request_human_reports_intervention_without_claiming_pause_or_comp
 }
 
 #[test]
+fn dev_markdown_cli_explains_that_ask_mode_needs_a_resolver() {
+    let binary = env!("CARGO_BIN_EXE_steerbox");
+    let run = Command::new(binary)
+        .args([
+            "dev",
+            "markdown",
+            "/temp/steerbox/missing-config.json",
+            "project-ask",
+            "goal-ask",
+            "loop-ask",
+            "task-ask",
+            "step-ask",
+            "README.md",
+            "before",
+            "after",
+            "ask",
+        ])
+        .output()
+        .expect("ask mode starts");
+
+    assert!(!run.status.success());
+    assert!(String::from_utf8_lossy(&run.stderr).contains("interactive approval resolver"));
+}
+
+#[test]
 fn dev_markdown_cli_runs_guarded_edit_and_persists_verification() {
     let project_ref = project_ref();
     let config = RuntimeConfig::default_for_project(project_ref.clone()).expect("config builds");
@@ -665,7 +690,7 @@ fn dev_markdown_cli_completes_and_writes_run_summary_when_verification_passes() 
             "README.md",
             "See [guide](guide.md).\n",
             "See [guide](guide.md) and [guide2](guide.md).\n",
-            "approved",
+            "auto",
         ])
         .output()
         .expect("dev loop starts");

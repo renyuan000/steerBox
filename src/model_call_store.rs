@@ -18,6 +18,8 @@ pub enum ModelCallStoreError {
         line: usize,
         source: ModelContractError,
     },
+    #[error("duplicate model call id with different record content")]
+    DuplicateModelCallId,
     #[error("model call record serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
 }
@@ -40,16 +42,36 @@ impl ModelCallStore {
     /// creation. This does not scan arbitrary string values for credentials.
     pub fn append(&self, record: &ModelCallRecord) -> Result<(), ModelCallStoreError> {
         record.validate()?;
+        let _lock = self.acquire_lock()?;
+        let mut identical_match = false;
+        for existing in self.read_all_unlocked()? {
+            if existing.model_call_id == record.model_call_id {
+                if existing == *record {
+                    identical_match = true;
+                    continue;
+                }
+                return Err(ModelCallStoreError::DuplicateModelCallId);
+            }
+        }
+        if identical_match {
+            return Ok(());
+        }
         let encoded = serde_json::to_string(record)?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
         writeln!(file, "{encoded}")?;
+        file.sync_data()?;
         Ok(())
     }
 
     pub fn read_all(&self) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
+        let _lock = self.acquire_lock()?;
+        self.read_all_unlocked()
+    }
+
+    fn read_all_unlocked(&self) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
@@ -82,6 +104,15 @@ impl ModelCallStore {
 
     /// Read a bounded page of non-blank JSONL records without loading the full log.
     pub fn read_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
+        let _lock = self.acquire_lock()?;
+        self.read_page_unlocked(offset, limit)
+    }
+
+    fn read_page_unlocked(
         &self,
         offset: usize,
         limit: usize,
@@ -122,5 +153,18 @@ impl ModelCallStore {
         }
 
         Ok(records)
+    }
+
+    fn acquire_lock(&self) -> Result<File, ModelCallStoreError> {
+        let mut lock_path = self.path.as_os_str().to_os_string();
+        lock_path.push(".lock");
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(PathBuf::from(lock_path))?;
+        lock_file.lock()?;
+        Ok(lock_file)
     }
 }

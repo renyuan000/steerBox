@@ -235,3 +235,54 @@ fn malformed_stream_chunks_fail_closed_when_required_fields_are_missing() {
         .expect_err("missing model must fail");
     assert_eq!(error.class(), ProviderErrorClass::ResponseParse);
 }
+
+#[test]
+fn request_messages_are_redacted_before_openai_transport() {
+    let transport = FakeTransport::complete(
+        r#"{"id":"chatcmpl-redact","model":"fixture-model","choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}"#,
+    );
+    let calls = Arc::clone(&transport.calls);
+    let adapter = OpenAiCompatibleAdapter::new("provider-a", "https://example.test/v1", transport);
+    adapter
+        .complete(ProviderRequest {
+            model: "fixture-model".into(),
+            messages: vec![
+                ProviderMessage::system("system contract"),
+                ProviderMessage::user("password=synthetic-request-secret"),
+            ],
+            auth_ref: Some("keychain:provider-a".into()),
+            timeout_ms: 30_000,
+            stream: false,
+        })
+        .expect("fixture response succeeds");
+    let body = &calls.lock().expect("calls lock")[0].2;
+    assert!(!body.contains("synthetic-request-secret"));
+    assert!(body.contains("[REDACTED:PASSWORD]"));
+    assert!(body.contains("system contract"));
+    assert!(!body.contains("keychain:provider-a"));
+}
+
+#[test]
+fn oversized_openai_message_fails_before_transport() {
+    let transport = FakeTransport::complete(
+        r#"{"id":"chatcmpl-redact","model":"fixture-model","choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}"#,
+    );
+    let calls = Arc::clone(&transport.calls);
+    let adapter = OpenAiCompatibleAdapter::new("provider-a", "https://example.test/v1", transport);
+    let error = adapter
+        .complete(ProviderRequest {
+            model: "fixture-model".into(),
+            messages: vec![ProviderMessage::user(
+                "x".repeat(steerbox::redaction::DEFAULT_MAX_INPUT_BYTES + 1),
+            )],
+            auth_ref: None,
+            timeout_ms: 30_000,
+            stream: false,
+        })
+        .expect_err("oversized message must fail closed");
+    assert!(matches!(
+        error,
+        steerbox::provider_adapter::ProviderAdapterError::InvalidRequest { .. }
+    ));
+    assert!(calls.lock().expect("calls lock").is_empty());
+}
