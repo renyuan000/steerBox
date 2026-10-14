@@ -271,6 +271,201 @@ impl GoalContract {
     }
 }
 
+pub const REVISION_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RevisionStatus {
+    Active,
+    Invalidated,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RevisionError {
+    #[error("unsupported revision schema version")]
+    InvalidSchemaVersion,
+    #[error("revision field must not be empty: {field}")]
+    EmptyField { field: &'static str },
+    #[error("revision number must be greater than zero")]
+    InvalidRevisionNumber,
+    #[error("parent revision must be earlier than the current revision")]
+    ParentRevisionNotEarlier,
+    #[error("goal revision number must be greater than zero")]
+    InvalidGoalRevisionNumber,
+    #[error("revision number overflow")]
+    RevisionOverflow,
+    #[error("revision is already invalidated")]
+    AlreadyInvalidated,
+}
+
+/// Versioned identity for a goal contract. This is metadata only; it does not
+/// authorize execution, re-planning, or takeover.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GoalRevision {
+    pub schema_version: u32,
+    pub project_id: String,
+    pub goal_id: String,
+    pub revision: u64,
+    pub parent_revision: Option<u64>,
+    pub status: RevisionStatus,
+}
+
+impl GoalRevision {
+    pub fn initial(project_id: impl Into<String>, goal_id: impl Into<String>) -> Self {
+        Self {
+            schema_version: REVISION_SCHEMA_VERSION,
+            project_id: project_id.into(),
+            goal_id: goal_id.into(),
+            revision: 1,
+            parent_revision: None,
+            status: RevisionStatus::Active,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), RevisionError> {
+        if self.schema_version != REVISION_SCHEMA_VERSION {
+            return Err(RevisionError::InvalidSchemaVersion);
+        }
+        validate_revision_identifier("project_id", &self.project_id)?;
+        validate_revision_identifier("goal_id", &self.goal_id)?;
+        validate_revision_number(self.revision)?;
+        validate_parent_revision(self.parent_revision, self.revision)
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.status == RevisionStatus::Active
+    }
+
+    pub fn invalidate(&mut self) -> Result<(), RevisionError> {
+        self.validate()?;
+        if !self.is_active() {
+            return Err(RevisionError::AlreadyInvalidated);
+        }
+        self.status = RevisionStatus::Invalidated;
+        Ok(())
+    }
+
+    pub fn supersede(&mut self) -> Result<Self, RevisionError> {
+        self.validate()?;
+        if !self.is_active() {
+            return Err(RevisionError::AlreadyInvalidated);
+        }
+        let next_revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(RevisionError::RevisionOverflow)?;
+        let mut next = self.clone();
+        next.revision = next_revision;
+        next.parent_revision = Some(self.revision);
+        self.status = RevisionStatus::Invalidated;
+        Ok(next)
+    }
+}
+
+/// Versioned identity for a plan associated with one goal revision. This is a
+/// local stale-plan boundary; it does not execute or automatically replace a
+/// plan when the goal changes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PlanRevision {
+    pub schema_version: u32,
+    pub plan_id: String,
+    pub goal_id: String,
+    pub goal_revision: u64,
+    pub revision: u64,
+    pub parent_revision: Option<u64>,
+    pub status: RevisionStatus,
+}
+
+impl PlanRevision {
+    pub fn initial(
+        plan_id: impl Into<String>,
+        goal_id: impl Into<String>,
+        goal_revision: u64,
+    ) -> Self {
+        Self {
+            schema_version: REVISION_SCHEMA_VERSION,
+            plan_id: plan_id.into(),
+            goal_id: goal_id.into(),
+            goal_revision,
+            revision: 1,
+            parent_revision: None,
+            status: RevisionStatus::Active,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), RevisionError> {
+        if self.schema_version != REVISION_SCHEMA_VERSION {
+            return Err(RevisionError::InvalidSchemaVersion);
+        }
+        validate_revision_identifier("plan_id", &self.plan_id)?;
+        validate_revision_identifier("goal_id", &self.goal_id)?;
+        if self.goal_revision == 0 {
+            return Err(RevisionError::InvalidGoalRevisionNumber);
+        }
+        validate_revision_number(self.revision)?;
+        validate_parent_revision(self.parent_revision, self.revision)
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.status == RevisionStatus::Active
+    }
+
+    pub fn is_valid_for_goal_revision(&self, goal_revision: u64) -> bool {
+        self.is_active() && self.goal_revision == goal_revision && self.validate().is_ok()
+    }
+
+    pub fn invalidate(&mut self) -> Result<(), RevisionError> {
+        self.validate()?;
+        if !self.is_active() {
+            return Err(RevisionError::AlreadyInvalidated);
+        }
+        self.status = RevisionStatus::Invalidated;
+        Ok(())
+    }
+
+    pub fn supersede(&mut self) -> Result<Self, RevisionError> {
+        self.validate()?;
+        if !self.is_active() {
+            return Err(RevisionError::AlreadyInvalidated);
+        }
+        let next_revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(RevisionError::RevisionOverflow)?;
+        let mut next = self.clone();
+        next.revision = next_revision;
+        next.parent_revision = Some(self.revision);
+        self.status = RevisionStatus::Invalidated;
+        Ok(next)
+    }
+}
+
+fn validate_revision_identifier(field: &'static str, value: &str) -> Result<(), RevisionError> {
+    if value.trim().is_empty() {
+        return Err(RevisionError::EmptyField { field });
+    }
+    Ok(())
+}
+
+fn validate_revision_number(revision: u64) -> Result<(), RevisionError> {
+    if revision == 0 {
+        return Err(RevisionError::InvalidRevisionNumber);
+    }
+    Ok(())
+}
+
+fn validate_parent_revision(
+    parent_revision: Option<u64>,
+    revision: u64,
+) -> Result<(), RevisionError> {
+    if parent_revision.is_some_and(|parent| parent == 0 || parent >= revision) {
+        return Err(RevisionError::ParentRevisionNotEarlier);
+    }
+    Ok(())
+}
+
 // Scope is a portable workspace-relative path, never an absolute or traversing path.
 fn scope_path(path: &str) -> Option<String> {
     if path.is_empty() || path.contains('\\') || path.contains(':') {

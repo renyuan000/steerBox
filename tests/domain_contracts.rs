@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use steerbox::domain::{
     BoardColumn, BudgetKind, EventEnvelope, EventEnvelopeError, FailureCategory, GoalContract,
-    HumanSteeringMode, LessonCandidate, LoopBudget, LoopRun, LoopStep, NoProgressTracker,
-    RiskLevel, Task, TaskState, ToolCallRecord, ToolUseErrorEvent,
+    GoalRevision, HumanSteeringMode, LessonCandidate, LoopBudget, LoopRun, LoopStep,
+    NoProgressTracker, PlanRevision, RevisionError, RevisionStatus, RiskLevel, Task, TaskState,
+    ToolCallRecord, ToolUseErrorEvent,
 };
 use steerbox::event_log::EventLog;
 use steerbox::runtime_config::{ConfigError, RuntimeConfig};
@@ -131,6 +132,83 @@ fn goal_contract_requires_explicit_scope_and_verification() {
     );
     assert!(goal.is_within_scope("src/lib.rs"));
     assert!(!goal.is_within_scope("secrets/prod.env"));
+}
+
+#[test]
+fn goal_and_plan_revisions_are_serializable_and_validate_stably() {
+    let goal_revision = GoalRevision::initial("project-1", "goal-1");
+    assert_eq!(goal_revision.validate(), Ok(()));
+    let encoded = serde_json::to_string(&goal_revision).expect("goal revision serializes");
+    let decoded: GoalRevision = serde_json::from_str(&encoded).expect("goal revision decodes");
+    assert_eq!(decoded, goal_revision);
+
+    let mut unknown = serde_json::to_value(&goal_revision).expect("goal revision becomes JSON");
+    unknown["unexpected"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<GoalRevision>(unknown).is_err());
+
+    let mut invalid = goal_revision.clone();
+    invalid.revision = 0;
+    assert_eq!(
+        invalid.validate(),
+        Err(RevisionError::InvalidRevisionNumber)
+    );
+
+    let plan_revision = PlanRevision::initial("plan-1", "goal-1", goal_revision.revision);
+    assert_eq!(plan_revision.validate(), Ok(()));
+    let plan_encoded = serde_json::to_string(&plan_revision).expect("plan revision serializes");
+    let plan_decoded: PlanRevision =
+        serde_json::from_str(&plan_encoded).expect("plan revision decodes");
+    assert_eq!(plan_decoded, plan_revision);
+}
+
+#[test]
+fn superseding_revisions_invalidates_only_the_old_revision() {
+    let mut old_goal = GoalRevision::initial("project-1", "goal-1");
+    let new_goal = old_goal
+        .supersede()
+        .expect("active goal revision supersedes");
+    assert_eq!(old_goal.status, RevisionStatus::Invalidated);
+    assert_eq!(new_goal.status, RevisionStatus::Active);
+    assert!(!old_goal.is_active());
+    assert!(new_goal.is_active());
+
+    let mut old_plan = PlanRevision::initial("plan-1", "goal-1", old_goal.revision);
+    let new_plan = old_plan
+        .supersede()
+        .expect("active plan revision supersedes");
+    assert_eq!(old_plan.status, RevisionStatus::Invalidated);
+    assert_eq!(new_plan.status, RevisionStatus::Active);
+    assert!(!old_plan.is_valid_for_goal_revision(new_goal.revision));
+    assert!(new_plan.is_valid_for_goal_revision(old_goal.revision));
+
+    assert_eq!(
+        old_plan
+            .supersede()
+            .expect_err("invalidated plan cannot supersede"),
+        RevisionError::AlreadyInvalidated
+    );
+}
+
+#[test]
+fn revision_links_and_plan_validity_fail_closed() {
+    let mut invalid_goal = GoalRevision::initial("project-1", "goal-1");
+    invalid_goal.parent_revision = Some(invalid_goal.revision);
+    assert_eq!(
+        invalid_goal.validate(),
+        Err(RevisionError::ParentRevisionNotEarlier)
+    );
+
+    let invalid_plan = PlanRevision::initial("plan-1", "goal-1", 0);
+    assert_eq!(
+        invalid_plan.validate(),
+        Err(RevisionError::InvalidGoalRevisionNumber)
+    );
+
+    let mut plan = PlanRevision::initial("plan-1", "goal-1", 2);
+    assert!(!plan.is_valid_for_goal_revision(1));
+    assert!(plan.is_valid_for_goal_revision(2));
+    plan.invalidate().expect("active plan invalidates");
+    assert!(!plan.is_valid_for_goal_revision(2));
 }
 
 #[test]
