@@ -38,6 +38,128 @@ pub struct CheckpointMetadata {
     pub created_at: String,
 }
 
+/// A recovery recommendation derived only from recorded checkpoint metadata.
+/// This does not prove current workspace contents or authorize or perform a restore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryAction {
+    NoAction,
+    RestoreRequired,
+    ManualIntervention,
+}
+
+impl std::fmt::Display for RecoveryAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::NoAction => "no_action",
+            Self::RestoreRequired => "restore_required",
+            Self::ManualIntervention => "manual_intervention",
+        };
+        formatter.write_str(label)
+    }
+}
+
+/// A read-only interpretation of a checkpoint's recorded hashes and recovery status.
+/// No workspace files are read, rehashed, or restored, and no restore snapshot is validated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryCheckpoint {
+    pub metadata: CheckpointMetadata,
+    pub before_hash: Option<String>,
+    pub after_hash: Option<String>,
+    pub action: RecoveryAction,
+    hash_metadata_consistent: bool,
+}
+
+impl RecoveryCheckpoint {
+    pub fn from_metadata(metadata: CheckpointMetadata) -> Self {
+        let parsed = parse_hash_boundary(&metadata.diff_boundary);
+        let hash_metadata_consistent =
+            parsed.consistent && (!parsed.explicit_no_workspace_write || metadata.files.is_empty());
+        let action = if !hash_metadata_consistent {
+            RecoveryAction::ManualIntervention
+        } else if parsed.explicit_no_workspace_write || parsed.before_hash == parsed.after_hash {
+            RecoveryAction::NoAction
+        } else {
+            match metadata.recoverability.as_str() {
+                "write_failed_local_workspace_restore_or_escalate"
+                | "verification_failed_local_workspace_restore_or_escalate" => {
+                    RecoveryAction::RestoreRequired
+                }
+                "verified_local_workspace_restore_or_escalate" => RecoveryAction::NoAction,
+                _ => RecoveryAction::ManualIntervention,
+            }
+        };
+        Self {
+            metadata,
+            before_hash: parsed.before_hash,
+            after_hash: parsed.after_hash,
+            action,
+            hash_metadata_consistent,
+        }
+    }
+
+    /// Whether the recorded boundary has valid, unambiguous SHA-256 metadata,
+    /// or a recognized no-write marker with an empty file list.
+    /// This does not compare the recorded hashes with the current workspace.
+    pub fn hash_metadata_consistent(&self) -> bool {
+        self.hash_metadata_consistent
+    }
+}
+
+#[derive(Debug, Default)]
+struct ParsedHashBoundary {
+    before_hash: Option<String>,
+    after_hash: Option<String>,
+    consistent: bool,
+    explicit_no_workspace_write: bool,
+}
+
+fn parse_hash_boundary(diff_boundary: &str) -> ParsedHashBoundary {
+    if diff_boundary.trim() == "no_workspace_write_fixture_loop"
+        || diff_boundary.trim() == "no_workspace_write"
+    {
+        return ParsedHashBoundary {
+            consistent: true,
+            explicit_no_workspace_write: true,
+            ..ParsedHashBoundary::default()
+        };
+    }
+
+    let mut before_hash = None;
+    let mut after_hash = None;
+    let mut malformed = false;
+    for component in diff_boundary.split(';') {
+        let Some((key, value)) = component.split_once('=') else {
+            malformed = true;
+            continue;
+        };
+        let value = value.trim();
+        match key.trim() {
+            "before" if before_hash.is_none() && is_sha256_hash(value) => {
+                before_hash = Some(value.to_owned());
+            }
+            "after" if after_hash.is_none() && is_sha256_hash(value) => {
+                after_hash = Some(value.to_owned());
+            }
+            _ => malformed = true,
+        }
+    }
+    ParsedHashBoundary {
+        consistent: !malformed && before_hash.is_some() && after_hash.is_some(),
+        before_hash,
+        after_hash,
+        explicit_no_workspace_write: false,
+    }
+}
+
+fn is_sha256_hash(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SideEffectRecord {
     pub side_effect_id: String,
@@ -173,6 +295,34 @@ impl CheckpointStore {
     pub fn read_all(&self) -> Result<Vec<CheckpointMetadata>, AuditStoreError> {
         read_jsonl(&self.path)
     }
+
+    /// Interprets the last appended matching checkpoint without reading workspace files.
+    /// A missing step filter matches any step, including records without a step ID.
+    /// Scans the full JSONL log, retaining only the latest match and propagating any
+    /// malformed record, even one outside the requested loop or step.
+    pub fn latest_for(
+        &self,
+        loop_run_id: &str,
+        step_id: Option<&str>,
+    ) -> Result<Option<RecoveryCheckpoint>, AuditStoreError> {
+        let mut latest = None;
+        for_each_jsonl(&self.path, |checkpoint: CheckpointMetadata| {
+            if checkpoint.loop_run_id == loop_run_id
+                && step_id.is_none_or(|expected| checkpoint.step_id.as_deref() == Some(expected))
+            {
+                latest = Some(checkpoint);
+            }
+        })?;
+        Ok(latest.map(RecoveryCheckpoint::from_metadata))
+    }
+
+    pub fn latest_for_loop_step(
+        &self,
+        loop_run_id: &str,
+        step_id: &str,
+    ) -> Result<Option<RecoveryCheckpoint>, AuditStoreError> {
+        self.latest_for(loop_run_id, Some(step_id))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -217,8 +367,17 @@ pub fn append_jsonl<T: Serialize>(
 pub fn read_jsonl<T: for<'de> Deserialize<'de>>(
     path: impl AsRef<Path>,
 ) -> Result<Vec<T>, AuditStoreError> {
+    let mut records = Vec::new();
+    for_each_jsonl(path, |record| records.push(record))?;
+    Ok(records)
+}
+
+fn for_each_jsonl<T: for<'de> Deserialize<'de>>(
+    path: impl AsRef<Path>,
+    mut visit: impl FnMut(T),
+) -> Result<(), AuditStoreError> {
     if !path.as_ref().exists() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let reader = BufReader::new(File::open(path).map_err(io_error)?);
     reader
@@ -236,11 +395,39 @@ pub fn read_jsonl<T: for<'de> Deserialize<'de>>(
             }
             Err(error) => Some(Err(io_error(error))),
         })
-        .collect()
+        .try_for_each(|record| {
+            visit(record?);
+            Ok(())
+        })
 }
 
 fn io_error(error: std::io::Error) -> AuditStoreError {
     AuditStoreError::Io {
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jsonl_records_are_visited_before_a_later_decode_error() {
+        let path = std::env::temp_dir().join(format!(
+            "steerbox-jsonl-streaming-{}.jsonl",
+            std::process::id()
+        ));
+        fs::write(&path, "1\nnot-json\n").expect("streaming fixture writes");
+        let mut visited = Vec::new();
+
+        let error = for_each_jsonl::<u64>(&path, |record| visited.push(record))
+            .expect_err("invalid JSON must fail");
+
+        fs::remove_file(path).expect("streaming fixture removes");
+        assert_eq!(visited, vec![1]);
+        assert!(matches!(
+            error,
+            AuditStoreError::InvalidJson { line: 2, .. }
+        ));
     }
 }
