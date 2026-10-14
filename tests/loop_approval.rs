@@ -26,6 +26,8 @@ fn controller(root: &std::path::Path) -> ReadOnlyLoopController {
         LoopBudget::new(20, 0, 0, 1, 0, 20, 1, 1),
     )
     .unwrap()
+    .with_checkpoint_store(root.join("checkpoints.jsonl"))
+    .with_audit_stores(root.join("traces.jsonl"), root.join("side-effects.jsonl"))
     .with_approval_store(ApprovalStore::open(root.join("approvals.jsonl")))
 }
 

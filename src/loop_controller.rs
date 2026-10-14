@@ -1901,7 +1901,8 @@ impl ReadOnlyLoopController {
     /// Execute the registered Markdown workspace-edit recipe after policy allows
     /// it. Autonomous bounded edits may proceed without a human marker; higher
     /// risk edits still require explicit approval. Verification remains read-only
-    /// and all persisted payloads are metadata-only.
+    /// and all persisted payloads are metadata-only. Checkpoint and side-effect
+    /// stores must be configured; pre-mutation audit errors prevent the edit.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_workspace_edit_action(
         &mut self,
@@ -1914,6 +1915,7 @@ impl ReadOnlyLoopController {
         step_id: impl Into<String>,
         approved: bool,
     ) -> Result<ToolCallOutput, LoopControllerError> {
+        self.prepare_action()?;
         action.validate()?;
         workspace_executor
             .map_action(registry, workspace, action)
@@ -1962,6 +1964,18 @@ impl ReadOnlyLoopController {
                 },
             });
         }
+        // Authorization alone cannot make an unaudited mutation safe. Keep
+        // these requirements local to workspace edits, not read-only tools.
+        let checkpoint_store = self.checkpoint_store.as_ref().ok_or_else(|| {
+            LoopControllerError::WorkspaceToolExecution(
+                "workspace edit requires a checkpoint store".into(),
+            )
+        })?;
+        if self.side_effect_ledger.is_none() {
+            return Err(LoopControllerError::WorkspaceToolExecution(
+                "workspace edit requires a side-effect ledger".into(),
+            ));
+        }
         let execution_approved = permitted;
         let relative_path = action
             .parameters
@@ -1971,19 +1985,17 @@ impl ReadOnlyLoopController {
                 LoopControllerError::WorkspaceToolExecution("missing edit path".into())
             })?;
         let before_hash = workspace_file_hash(workspace, relative_path)?;
-        if let Some(store) = &self.checkpoint_store {
-            store.append(&CheckpointMetadata {
-                checkpoint_id: format!("{step_id}:checkpoint:before-write"),
-                goal_id: self.goal.goal_id.clone(),
-                loop_run_id: self.loop_run.loop_run_id.clone(),
-                step_id: Some(step_id.clone()),
-                files: vec![relative_path.to_owned()],
-                diff_boundary: format!("before={before_hash};after=pending"),
-                recoverability: "local_workspace_restore_or_escalate".into(),
-                side_effect_refs: vec![format!("{step_id}:side-effect")],
-                created_at: chrono::Utc::now().to_rfc3339(),
-            })?;
-        }
+        checkpoint_store.append(&CheckpointMetadata {
+            checkpoint_id: format!("{step_id}:checkpoint:before-write"),
+            goal_id: self.goal.goal_id.clone(),
+            loop_run_id: self.loop_run.loop_run_id.clone(),
+            step_id: Some(step_id.clone()),
+            files: vec![relative_path.to_owned()],
+            diff_boundary: format!("before={before_hash};after=pending"),
+            recoverability: "local_workspace_restore_or_escalate".into(),
+            side_effect_refs: vec![format!("{step_id}:side-effect")],
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })?;
         self.append_model_event(
             "model_action_started",
             &format!("{step_id}:action_started"),

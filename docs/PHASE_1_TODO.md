@@ -128,7 +128,7 @@ Memory 最小实现：
 ### P5. PolicyGate
 
 - [x] 实现工具调用前 policy check（LoopController 先通过 PolicyGate，才调用只读执行器）
-- [ ] 实现文件写入前 policy check（Markdown CLI 已有最小审批切片；统一 controller 写动作尚未接线）
+- [ ] 实现文件写入前 policy check（bounded Markdown controller 已接入 policy、生命周期安全边界及强制 checkpoint/ledger 审计门禁；通用模型驱动文件写入仍未完成，保留整体待办）
 - [x] 实现高风险动作升级到 human approval
 - [x] 实现 forbidden tool 阻断
 - [x] 实现 policy decision event 记录
@@ -174,7 +174,7 @@ Memory 最小实现：
 
 验收：
 
-- workspace-edit 修改前生成 checkpoint metadata，修改后记录 before/after hash 和验证结果；不保存文件正文或恢复快照
+- bounded Markdown controller 修改前强制 checkpoint/ledger 配置与审计成功，policy Allow/approved 不能绕过；修改后记录 before/after hash 和验证结果。不保存恢复快照，不保证后置审计故障自动 rollback
 - `CheckpointStore::latest_for` / `latest_for_loop_step` 可按 loop/step 流式查询最后追加的 checkpoint，解释已记录 hash 和 recoverability，给出 `NoAction` / `RestoreRequired` / `ManualIntervention`；非法或歧义 hash、未知 changed-hash 恢复状态和矛盾的 no-write 标记不自动放行
 - 查询不重算当前 workspace hash、不校验恢复快照、不执行 restore/replay；仍全日志扫描，单条记录大小仍影响内存
 - checkpoint 不声称恢复未记录的外部动作；side_effect_uncertain 进入人工处理的分支仍待完成

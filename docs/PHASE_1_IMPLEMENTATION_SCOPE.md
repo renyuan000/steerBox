@@ -31,6 +31,8 @@
 
 已实现的本地切片包括 Rust/Cargo 骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、JSONL `EventLog`、只读 observation loop、`LocalFixtureModelAdapter`，以及接入 `LoopController` 的 `ToolRegistry` / `PolicyGate`。受控只读执行器支持固定 argv 的 git status、固定字符串搜索、有界文件读取和 Markdown 链接检查；结构化动作不接受任意 shell 字符串。受审批的 Markdown 修改另有 workspace-edit 路径，记录修改前后 hash、验证结果和副作用；开发 CLI 生成 `RunSummary`，验证失败返回非零。
 
+controller 的 `execute_workspace_edit_action()` 必须先配置 `with_checkpoint_store(...)` 与 `with_audit_stores(trace_path, side_effect_path)`；policy Allow/显式 approval 不替代审计前置条件。接口先处理生命周期和待处理命令，缺 store、Paused/terminal 或 mutation 前审计错误时不调用写执行器。低风险自主模式仍可不询问人类；此保证不覆盖 mutation 后故障自动撤销、恢复快照或跨进程恢复，也不自动扩展到所有 writer/CLI。
+
 OpenAI-compatible 与 Anthropic non-stream adapter、注入式 HTTP transport、本地 credential resolver 边界、冻结的 `ResolvedPromptPack` 和 opt-in `ModelCallStore` 审计已有 fake/localhost 测试，不等于完成获准的真实帐号/live provider 验收。`UserCommandInbox` 在 controller 安全边界应用 pause/resume/cancel，但同步模型调用期间不读取命令。后台 worker / 运行中接管、修订恢复、任意文件写入 / Bash、完整记忆和实际 restore/replay 均未完成；当前不能称为完整可用的模型连接型开发 Agent。
 
 ### 长期运行目标与 Phase 1 实现边界

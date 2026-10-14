@@ -59,9 +59,9 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V3 ToolRegistry/PolicyGate | 已验证切片 | `tests/tool_policy.rs`、`tests/loop_controller.rs` |
 | V4 EventLog | 已验证切片 | EventLog append/reopen 测试 |
 | V5 Trace 可读性 | 已验证切片 | `tests/loop_controller.rs`、`tests/runtime_cli.rs`；完整回放工具仍未实现 |
-| V6 文件修改与 diff boundary | 已验证切片 | `tests/dev_vertical_slice.rs`、`tests/runtime_cli.rs` |
+| V6 文件修改与 diff boundary | 已验证切片 | `tests/dev_vertical_slice.rs`、`tests/runtime_cli.rs`、`tests/workspace_edit_audit_gates.rs`；bounded Markdown controller 缺 checkpoint/ledger、pending pause/cancel、终态及前置审计故障均不修改原始字节；不保证后置故障自动 rollback |
 | V7 RecoveryCheckpoint metadata | 已验证写入与只读解释切片 | `tests/audit_store.rs`、`tests/dev_vertical_slice.rs`；覆盖 loop/step 最新追加查询、hash 格式/歧义、未知恢复状态、no-write 矛盾、日志错误行号及查询不修改文件；不重算 workspace hash、不验证快照、不执行 restore/replay |
-| V8 SideEffectLedger | 已验证记录与基础派生解释切片 | `tests/loop_controller.rs`、`tests/dev_vertical_slice.rs`、`tests/audit_store.rs`；disposition/status 是 metadata 派生解释，不改变 JSONL schema、不构成执行授权或完整恢复/补偿状态机 |
+| V8 SideEffectLedger | 已验证记录与基础派生解释切片 | `tests/loop_controller.rs`、`tests/dev_vertical_slice.rs`、`tests/audit_store.rs`、`tests/workspace_edit_audit_gates.rs`；ledger 缺失或 mutation 前 append 故障阻止 controller Markdown 写入。disposition/status 是 metadata 派生解释，不改变 JSONL schema、不构成执行授权或完整恢复/补偿状态机 |
 | V9 GoalAlignmentCheck | 已验证切片 | `tests/drift_guard.rs`；结果写入完整 loop 仍待接线 |
 | V10 DriftGuard | 已验证切片 | `tests/drift_guard.rs` |
 | V11 Human Steering Mode | 已验证最小运行时切片 | `tests/user_command_inbox.rs`、`tests/loop_controller.rs`、`tests/state_store.rs`；已覆盖 Inbox 幂等、pause/resume/cancel 安全边界和状态重建，takeover、后台 worker、控制面仍未实现 |
@@ -199,6 +199,10 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 
 ### V6. 文件修改与 diff boundary
 
+前置门禁验收：在 policy Allow 与显式 approval 两条路径分别缺少 checkpoint、ledger 或两者；提交 pending pause/cancel 或使 loop completed/failed；使 policy EventLog、checkpoint、trace、ledger 的 mutation 前写入失败。目标原始字节必须保持，不能产生 `file_change_recorded`/`model_action_verified`。trace/ledger 故障可留下前置 started 事件，不承诺审计原子性。首次 policy append 故障已有测试，第二次 action_started append 尚无独立故障注入。
+
+Focused 命令：`CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --test workspace_edit_audit_gates --test loop_controller --test loop_approval`。
+
 步骤：
 
 1. 修改一个低风险文件
@@ -249,6 +253,7 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 - 当前持久化 class 经派生解释后，`None/WorkspaceRead → ReadOnly`，`WorkspaceWrite → Reversible`；后者不证明已有恢复快照或 restore 能力
 - 外部/未知 class 派生为 `ManualRequired`；未知 audit status 不允许 metadata 自动执行判断。这些仅是 metadata 解释，不新增执行授权或完整恢复/补偿状态机
 - 不可逆外部动作被阻断或要求 human approval
+- 即使自主模式 policy Allow 或人工 approved，controller Markdown 写入缺 checkpoint/ledger 仍拒绝；前置审计失败不执行 mutation，不声称后置故障自动 rollback
 
 ### V9. GoalAlignmentCheck
 

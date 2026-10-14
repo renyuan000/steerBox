@@ -781,7 +781,11 @@ fn controller_executes_bounded_workspace_edit_in_autonomous_mode_without_prompt(
         LoopBudget::new(3, 0, 0, 1, 0, 4, 1, 1),
     )
     .expect("loop starts")
-    .with_checkpoint_store(directory.join("checkpoints.jsonl"));
+    .with_checkpoint_store(directory.join("checkpoints.jsonl"))
+    .with_audit_stores(
+        directory.join("traces.jsonl"),
+        directory.join("side-effects.jsonl"),
+    );
 
     controller
         .execute_workspace_edit_action(

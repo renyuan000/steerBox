@@ -8,7 +8,11 @@
 
 188 项及此前 focused/build/fmt/all-targets 结果仅为历史证据，不覆盖当前基线。2026-10-14 `e754d07` 的实际重跑记录见本文末尾；未跟踪 benchmark 和历史资料不计入验收。本轮未调用 live provider，不能据本地/fake/localhost 回归宣称真实帐号或完整 Phase 1 通过。
 
-当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、bounded `read_file`、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。controller workspace-edit 路径支持可选的 mutation 前 `CheckpointStore`、`SideEffectLedger` 的 started/completed/failed/verification_failed metadata 记录，并会把缺失 Markdown 链接视为验证失败，禁止写入 `model_action_verified`；已记录 before/after hash，但不确定副作用状态、恢复快照与实际 restore/replay、真实模型 E2E 仍未完成。ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 deterministic `RouteExplanation`；routed fixture/model-adapter fallback 已有 child Attempt 和共享预算，这不等于 resolved-provider/live fallback、并行调用、代理/中转健康路由或 prompt cache。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 支持 action/progress、非法进度拒绝、逐事件 flush，并可把已验证 provider delta 序列转换为不暴露正文的 lifecycle 进度；command submit/show CLI 只返回 metadata 并把 command 持久化到 inbox。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的修改／链接验证切片。当前不能作为任意 coding Agent 交付，也不能声明完整 Phase 1 已完成。
+当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、bounded `read_file`、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。
+
+在 `e754d07` 基线之后，controller `execute_workspace_edit_action()` 已收紧为强制配置 `CheckpointStore` 与 `SideEffectLedger`，先应用生命周期/命令安全边界，再执行 policy 与 mutation 前审计。缺 store、待处理 pause/cancel、终态或 mutation 前审计写入错误均阻止修改，不增加低风险自主模式的审批请求。已有 started/completed/failed/verification_failed metadata 和 before/after hash；缺失 Markdown 链接不产生 verified 成功事件。此保证限定为该 controller API，不提供 snapshot、mutation 后自动 rollback 或完整恢复；不确定副作用状态和真实模型 E2E 仍未完成。
+
+ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 deterministic `RouteExplanation`；routed fixture/model-adapter fallback 已有 child Attempt 和共享预算，这不等于 resolved-provider/live fallback、并行调用、代理/中转健康路由或 prompt cache。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 支持 action/progress、非法进度拒绝、逐事件 flush，并可把已验证 provider delta 序列转换为不暴露正文的 lifecycle 进度；command submit/show CLI 只返回 metadata 并把 command 持久化到 inbox。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的修改／链接验证切片。当前不能作为任意 coding Agent 交付，也不能声明完整 Phase 1 已完成。
 
 ## 六个交付包
 
@@ -151,5 +155,7 @@
 每包交接记录应给出代码基线、实际执行命令、结果／退出码、产物位置与证据引用、已验证范围及未通过项。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
 
 2026-10-14 `e754d07` 基线重新执行了 `CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --tests --quiet`（507 passed、0 failed）和 `cargo clippy --locked --offline --lib --bins --tests -- -D warnings`（退出码 0）。这是本地/fake/localhost 回归，不包括 live provider 或完整 Phase 1 验收；后续源码变化须重新执行。项目原有 `target/` 目录仍存在，本轮构建输出在 `/tmp`，没有删除用户既有产物。
+
+同日 bounded Markdown controller 前置门禁修补由 master 测试先行验收：修补前 `workspace_edit_audit_gates` 为 4 passed/10 failed，失败证实缺审计或停态仍会修改文件；修补后 14 passed，连同 `loop_controller` 37 项与 `loop_approval` 4 项通过。最终 master 全量 `cargo test --locked --offline --tests --quiet` 为 51 targets、521 passed、0 failed；`cargo clippy --locked --offline --lib --bins --tests -- -D warnings`、`cargo build --locked --offline --lib --bins`、`cargo fmt --all -- --check`、`git diff --check` 均退出 0。编译/测试统一使用上述 `/tmp` target 和 jobs=2。代码及测试经独立审核，修补只覆盖 mutation 前拒绝，不提供 post-mutation rollback 或完整 Phase 1 验收。
 
 这六包不新增 SQLite 迁移、多 agent、TUI/Web、分布式 worker、向量／图数据库或无审批自动进化的交付要求。现有 JSONL／JSON 切片应先闭合规范要求，存储迁移不能替代真实模型闭环。CCG 和其他参考项目仅提供可核查的设计线索，不作为已证明最优的性能 benchmark，也不改变 Phase 1 正式范围。
