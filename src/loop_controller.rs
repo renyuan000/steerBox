@@ -597,13 +597,18 @@ impl ReadOnlyLoopController {
             .current_attempt_id()
             .ok_or_else(|| AttemptLineageError::AttemptNotFound("current_attempt_id".into()))?
             .to_owned();
+        let evidence_refs = self
+            .task_run
+            .attempt(&attempt_id)
+            .map(|attempt| attempt.evidence_refs.clone())
+            .unwrap_or_default();
         self.finish_task_run(
             &attempt_id,
             AttemptStatus::Succeeded,
             TaskRunStatus::Succeeded,
             "passed",
             Vec::new(),
-            Vec::new(),
+            evidence_refs,
         )?;
         self.loop_run.complete();
         append_loop_event(
@@ -1418,10 +1423,17 @@ impl ReadOnlyLoopController {
                 return result;
             };
             if !is_retryable_model_error(&error) {
+                if matches!(
+                    error,
+                    LoopControllerError::ModelAdapter(_) | LoopControllerError::BudgetExhausted(_)
+                ) {
+                    self.close_failed_routed_run()?;
+                }
                 return Err(error);
             }
             let Some(fallback_model) = next_fallback_model(&route_decision, &attempted_models)
             else {
+                self.close_failed_routed_run()?;
                 return Err(error);
             };
             if !self.goal.allowed_models.is_empty()
@@ -1431,25 +1443,62 @@ impl ReadOnlyLoopController {
                     .iter()
                     .any(|allowed| allowed == fallback_model)
             {
+                self.close_failed_routed_run()?;
                 return Err(error);
             }
             let fallback_model = fallback_model.to_owned();
-            let fallback_adapter = adapters
-                .get(&fallback_model)
-                .ok_or_else(|| LoopControllerError::ModelAdapterNotFound(fallback_model.clone()))?;
+            let Some(fallback_adapter) = adapters.get(&fallback_model) else {
+                self.close_failed_routed_run()?;
+                return Err(LoopControllerError::ModelAdapterNotFound(fallback_model));
+            };
             let fallback_index = attempted_models.len();
             let fallback_route_id = format!(
                 "{}:fallback:{}",
                 route_decision.route_decision_id, fallback_index
             );
-            // A fallback is a bounded route transition, not ordinary task
-            // progress. Start a fresh transition fingerprint while keeping
-            // the no-progress guard armed for the next external step.
-            self.no_progress.reset_after_progress();
-            self.no_progress.observe(
-                format!("fallback\n{}\n{}", fallback_route_id, fallback_model),
-                false,
+            let fallback_step_id = format!("{step_id}:fallback:{fallback_index}");
+            let parent_attempt_id =
+                self.task_run.current_attempt_id.clone().ok_or_else(|| {
+                    AttemptLineageError::AttemptNotFound("current_attempt_id".into())
+                })?;
+            let parent_evidence_refs = self
+                .task_run
+                .attempt(&parent_attempt_id)
+                .map(|attempt| attempt.evidence_refs.clone())
+                .unwrap_or_default();
+            self.task_run.finish_attempt(
+                &parent_attempt_id,
+                AttemptStatus::Failed,
+                "model_retryable_failure",
+                Vec::new(),
+                parent_evidence_refs,
+            )?;
+            let child_attempt_id = format!(
+                "{}:attempt:fallback:{}",
+                self.loop_run.loop_run_id,
+                self.task_run.attempts.len()
             );
+            let child_attempt = match self.task_run.start_attempt(
+                child_attempt_id,
+                AttemptReason::Fallback,
+                Some(parent_attempt_id),
+            ) {
+                Ok(attempt) => attempt,
+                Err(error) => {
+                    self.close_failed_routed_run()?;
+                    return Err(error.into());
+                }
+            };
+            self.budget = self.task_run.budget.clone();
+            if let Some(attempt) = self
+                .task_run
+                .attempts
+                .iter_mut()
+                .find(|attempt| attempt.attempt_id == child_attempt.attempt_id)
+            {
+                attempt.route_decision_id = Some(fallback_route_id.clone());
+                self.task_run.object_version += 1;
+            }
             self.append_model_event(
                 "model_route_fallback",
                 &format!("{fallback_route_id}:selected"),
@@ -1466,7 +1515,7 @@ impl ReadOnlyLoopController {
             attempted_models.push(fallback_model.clone());
             result = self.run_model_step_with_route_and_action(
                 fallback_model,
-                format!("{step_id}:fallback:{fallback_index}"),
+                fallback_step_id,
                 observation.clone(),
                 Some(&fallback_route_id),
                 None,
@@ -1482,6 +1531,40 @@ impl ReadOnlyLoopController {
                 },
             );
         }
+    }
+
+    fn close_failed_routed_run(&mut self) -> Result<(), LoopControllerError> {
+        let attempt_id = self
+            .task_run
+            .current_attempt_id
+            .clone()
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound("current_attempt_id".into()))?;
+        self.append_model_event(
+            "loop_failed",
+            &format!("{}:failed", self.loop_run.loop_run_id),
+            json!({"status": "failed", "summary": "routed model step failed"}),
+        )?;
+        let attempt = self
+            .task_run
+            .attempt(&attempt_id)
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound(attempt_id.clone()))?;
+        if !attempt.status.is_terminal() {
+            self.task_run.finish_attempt(
+                &attempt_id,
+                AttemptStatus::Failed,
+                "model_step_failed",
+                Vec::new(),
+                attempt.evidence_refs.clone(),
+            )?;
+        }
+        let finished_at = chrono::Utc::now().to_rfc3339();
+        self.task_run.status = TaskRunStatus::Failed;
+        self.task_run.finished_at = Some(finished_at.clone());
+        self.sync_task_run_budget();
+        self.loop_run.status = LoopStatus::Failed;
+        self.loop_run.finished_at = Some(finished_at);
+        self.loop_run.object_version += 1;
+        Ok(())
     }
 
     pub fn request_tool_call(
@@ -2076,7 +2159,42 @@ impl ReadOnlyLoopController {
         event.task_run_id = Some(self.loop_run.task_run_id.clone());
         event.attempt_id = self.task_run.current_attempt_id.clone();
         event.loop_run_id = Some(self.loop_run.loop_run_id.clone());
-        Ok(self.event_log.append(event)?)
+        let route_decision_id = (event_type == "model_route_decided")
+            .then(|| {
+                event.payload["route_decision_id"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .flatten();
+        let sequence = self.event_log.append(event)?;
+        if matches!(
+            event_type,
+            "model_route_decided"
+                | "model_route_fallback"
+                | "model_call_started"
+                | "model_call_failed"
+                | "model_call_completed"
+                | "loop_budget_exhausted"
+                | "no_progress_detected"
+                | "loop_failed"
+        ) {
+            if let Some(attempt) = self.task_run.attempts.iter_mut().find(|attempt| {
+                Some(attempt.attempt_id.as_str()) == self.task_run.current_attempt_id.as_deref()
+            }) {
+                if let Some(route_decision_id) = route_decision_id {
+                    attempt.route_decision_id = Some(route_decision_id);
+                }
+                if !attempt
+                    .evidence_refs
+                    .iter()
+                    .any(|reference| reference == event_id)
+                {
+                    attempt.evidence_refs.push(event_id.to_owned());
+                }
+                self.task_run.object_version += 1;
+            }
+        }
+        Ok(sequence)
     }
 
     pub fn status(&self) -> LoopStatus {

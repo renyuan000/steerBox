@@ -5,9 +5,12 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
-use steerbox::domain::{EventEnvelope, GoalContract, LoopBudget, LoopStepStatus};
+use steerbox::domain::{
+    AttemptLineageError, AttemptReason, AttemptStatus, EventEnvelope, GoalContract, LoopBudget,
+    LoopStatus, LoopStepStatus, TaskRunStatus,
+};
 use steerbox::event_log::EventLog;
-use steerbox::loop_controller::ReadOnlyLoopController;
+use steerbox::loop_controller::{LoopControllerError, ReadOnlyLoopController};
 use steerbox::model_adapter::{
     LocalFixtureModelAdapter, ModelAdapter, ModelAdapterError, ModelAdapterRegistry, ModelDecision,
     ModelRequest, ModelResponse,
@@ -70,6 +73,20 @@ impl ModelAdapter for CountingAdapter {
 struct RetryableAdapter {
     calls: Arc<AtomicUsize>,
     class: ProviderErrorClass,
+}
+
+struct ObservingAdapter {
+    calls: Arc<AtomicUsize>,
+}
+
+impl ModelAdapter for ObservingAdapter {
+    fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelAdapterError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ModelResponse {
+            decision: ModelDecision::ContinueObservation,
+            summary: "keep observing".into(),
+        })
+    }
 }
 
 impl ModelAdapter for RetryableAdapter {
@@ -296,6 +313,12 @@ fn routed_model_step_records_route_decision_before_model_call() {
     let route_id = events[route_index].payload["route_decision_id"]
         .as_str()
         .expect("route decision id exists");
+    assert_eq!(
+        controller.task_run().attempts[0]
+            .route_decision_id
+            .as_deref(),
+        Some(route_id)
+    );
     for event_type in ["model_call_started", "model_call_completed"] {
         let call = events
             .iter()
@@ -657,7 +680,7 @@ fn retryable_routed_failure_uses_declared_fallback_and_records_switch() {
         ),
         "loop-routing",
         "task-run-routing",
-        LoopBudget::new(2, 0, 2, 1, 0, 2, 2, 2),
+        LoopBudget::new(2, 0, 2, 2, 0, 2, 2, 2),
     )
     .expect("loop starts");
 
@@ -676,10 +699,56 @@ fn retryable_routed_failure_uses_declared_fallback_and_records_switch() {
     assert_eq!(fallback.payload["from_model"], json!("fixture-model"));
     assert_eq!(fallback.payload["to_model"], json!("backup-model"));
     assert_eq!(fallback.payload["reason"], json!("retryable_model_failure"));
+    let fallback_route_id = fallback.payload["fallback_route_decision_id"]
+        .as_str()
+        .expect("fallback route decision id exists");
+    let primary_failure = events
+        .iter()
+        .find(|event| event.event_type == "model_call_failed")
+        .expect("primary failure is audited");
+    let backup_started = events
+        .iter()
+        .find(|event| {
+            event.event_type == "model_call_started"
+                && event.payload["model_id"] == json!("backup-model")
+        })
+        .expect("fallback model call is audited");
+    assert_eq!(controller.task_run().attempts.len(), 2);
+    let initial_attempt = &controller.task_run().attempts[0];
+    let fallback_attempt = &controller.task_run().attempts[1];
+    assert_eq!(initial_attempt.reason, AttemptReason::Initial);
+    assert_eq!(initial_attempt.status, AttemptStatus::Failed);
+    assert_eq!(fallback_attempt.reason, AttemptReason::Fallback);
+    assert_eq!(fallback_attempt.status, AttemptStatus::Succeeded);
+    assert_eq!(
+        fallback_attempt.parent_attempt_id.as_deref(),
+        Some(initial_attempt.attempt_id.as_str())
+    );
+    assert_eq!(
+        fallback_attempt.route_decision_id.as_deref(),
+        Some(fallback_route_id)
+    );
+    assert!(initial_attempt
+        .evidence_refs
+        .iter()
+        .any(|reference| reference == &primary_failure.event_id));
+    assert!(fallback_attempt
+        .evidence_refs
+        .iter()
+        .any(|reference| reference == &fallback.event_id));
+    assert!(fallback_attempt
+        .evidence_refs
+        .iter()
+        .any(|reference| reference == &backup_started.event_id));
     assert!(events.iter().any(|event| {
         event.event_type == "model_call_started"
             && event.payload["model_id"] == json!("backup-model")
+            && event.attempt_id.as_deref() == Some(fallback_attempt.attempt_id.as_str())
     }));
+    assert_eq!(
+        primary_failure.attempt_id.as_deref(),
+        Some(initial_attempt.attempt_id.as_str())
+    );
 }
 
 #[test]
@@ -695,7 +764,6 @@ fn retryable_fallback_chain_is_finite_and_next_loop_step_hits_no_progress_guard(
     for (model_id, calls) in [
         ("fixture-model", Arc::clone(&primary_calls)),
         ("backup-model", Arc::clone(&backup_calls)),
-        ("last-model", Arc::clone(&last_calls)),
     ] {
         adapters
             .register(
@@ -707,6 +775,14 @@ fn retryable_fallback_chain_is_finite_and_next_loop_step_hits_no_progress_guard(
             )
             .expect("retryable adapter registers");
     }
+    adapters
+        .register(
+            "last-model",
+            Box::new(ObservingAdapter {
+                calls: Arc::clone(&last_calls),
+            }),
+        )
+        .expect("observing adapter registers");
     let mut controller = ReadOnlyLoopController::start(
         EventLog::open(&events_path).expect("event log opens"),
         GoalContract::new(
@@ -719,7 +795,7 @@ fn retryable_fallback_chain_is_finite_and_next_loop_step_hits_no_progress_guard(
         ),
         "loop-routing",
         "task-run-routing",
-        LoopBudget::new(6, 0, 6, 1, 0, 1, 3, 1),
+        LoopBudget::new(6, 0, 6, 3, 0, 1, 3, 1),
     )
     .expect("loop starts");
 
@@ -730,16 +806,7 @@ fn retryable_fallback_chain_is_finite_and_next_loop_step_hits_no_progress_guard(
         "step-routing",
         "ready",
     );
-    assert!(matches!(
-        first,
-        Err(
-            steerbox::loop_controller::LoopControllerError::ModelAdapter(
-                ModelAdapterError::Provider {
-                    class: ProviderErrorClass::Upstream
-                }
-            )
-        )
-    ));
+    assert!(matches!(first, Ok(ModelDecision::ContinueObservation)));
     assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
     assert_eq!(backup_calls.load(Ordering::SeqCst), 1);
     assert_eq!(last_calls.load(Ordering::SeqCst), 1);
@@ -889,4 +956,253 @@ fn fallback_cannot_escape_goal_allowed_models() {
     assert!(read_events(&events_path)
         .iter()
         .all(|event| event.event_type != "model_route_fallback"));
+}
+
+fn fallback_controller(events_path: &Path, budget: LoopBudget) -> ReadOnlyLoopController {
+    ReadOnlyLoopController::start(
+        EventLog::open(events_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-routing",
+            "project-routing",
+            "finish the task",
+            vec![".".into()],
+            Vec::new(),
+            vec!["manual_review".into()],
+        ),
+        "loop-routing",
+        "task-run-routing",
+        budget,
+    )
+    .expect("loop starts")
+}
+
+#[test]
+fn attempt_budget_exhaustion_stops_before_fallback_and_closes_failed_run() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = fallback_registry();
+    let router = ModelRouter::new(&registry, fallback_profiles()).unwrap();
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let backup_calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    adapters
+        .register(
+            "fixture-model",
+            Box::new(RetryableAdapter {
+                calls: Arc::clone(&primary_calls),
+                class: ProviderErrorClass::RateLimit,
+            }),
+        )
+        .unwrap();
+    adapters
+        .register(
+            "backup-model",
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&backup_calls),
+                fail: false,
+            }),
+        )
+        .unwrap();
+    let mut controller = fallback_controller(&events_path, LoopBudget::new(3, 0, 3, 1, 0, 3, 3, 1));
+
+    assert!(matches!(
+        controller.run_routed_model_step(&router, &adapters, route_request(), "first", "ready"),
+        Err(LoopControllerError::TaskRun(
+            AttemptLineageError::AttemptBudgetExhausted
+        ))
+    ));
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backup_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(controller.budget().attempts_used, 1);
+    assert_eq!(controller.task_run().attempts.len(), 1);
+    assert_eq!(
+        controller.task_run().attempts[0].status,
+        AttemptStatus::Failed
+    );
+    assert_eq!(controller.task_run().status, TaskRunStatus::Failed);
+    assert_eq!(controller.status(), LoopStatus::Failed);
+    let events = read_events(&events_path);
+    assert!(events
+        .iter()
+        .all(|event| event.event_type != "model_route_fallback"));
+    assert!(controller.task_run().attempts[0]
+        .evidence_refs
+        .iter()
+        .all(|reference| events.iter().any(|event| &event.event_id == reference)));
+    assert!(matches!(
+        controller.complete(),
+        Err(LoopControllerError::Terminal)
+    ));
+    assert!(matches!(
+        controller.run_routed_model_step(&router, &adapters, route_request(), "again", "ready"),
+        Err(LoopControllerError::Terminal)
+    ));
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backup_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn failed_fallbacks_keep_only_real_events_for_each_generation() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = fallback_registry();
+    let router = ModelRouter::new(&registry, fallback_profiles()).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    for model in ["fixture-model", "backup-model", "last-model"] {
+        adapters
+            .register(
+                model,
+                Box::new(RetryableAdapter {
+                    calls: Arc::clone(&calls),
+                    class: ProviderErrorClass::Upstream,
+                }),
+            )
+            .unwrap();
+    }
+    let mut controller = fallback_controller(&events_path, LoopBudget::new(3, 0, 3, 3, 0, 3, 3, 1));
+    assert!(matches!(
+        controller.run_routed_model_step(&router, &adapters, route_request(), "failed", "ready"),
+        Err(LoopControllerError::ModelAdapter(_))
+    ));
+    let events = read_events(&events_path);
+    assert_eq!(controller.task_run().attempts.len(), 3);
+    assert_eq!(controller.budget().attempts_used, 3);
+    for attempt in &controller.task_run().attempts {
+        assert!(
+            attempt
+                .evidence_refs
+                .iter()
+                .all(|reference| events.iter().any(|event| &event.event_id == reference)),
+            "all refs must identify appended events: {:?}",
+            attempt.evidence_refs
+        );
+        assert_eq!(attempt.status, AttemptStatus::Failed);
+        assert!(attempt
+            .evidence_refs
+            .iter()
+            .any(
+                |reference| events.iter().any(|event| &event.event_id == reference
+                    && event.event_type == "model_call_failed"
+                    && event.attempt_id.as_deref() == Some(attempt.attempt_id.as_str()))
+            ));
+        assert!(attempt
+            .evidence_refs
+            .iter()
+            .all(|reference| !reference.ends_with(":model_completed")));
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert_eq!(controller.status(), LoopStatus::Failed);
+    assert_eq!(controller.task_run().status, TaskRunStatus::Failed);
+    assert!(matches!(
+        controller.complete(),
+        Err(LoopControllerError::Terminal)
+    ));
+    assert!(matches!(
+        controller.run_routed_model_step(&router, &adapters, route_request(), "again", "ready"),
+        Err(LoopControllerError::Terminal)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn fallback_budget_rejection_does_not_invent_model_lifecycle_events() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = fallback_registry();
+    let router = ModelRouter::new(&registry, fallback_profiles()).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    for model in ["fixture-model", "backup-model"] {
+        adapters
+            .register(
+                model,
+                Box::new(RetryableAdapter {
+                    calls: Arc::clone(&calls),
+                    class: ProviderErrorClass::Upstream,
+                }),
+            )
+            .unwrap();
+    }
+    let mut controller = fallback_controller(&events_path, LoopBudget::new(2, 0, 1, 2, 0, 3, 3, 1));
+    assert!(matches!(
+        controller.run_routed_model_step(&router, &adapters, route_request(), "budget", "ready"),
+        Err(LoopControllerError::BudgetExhausted(
+            steerbox::domain::BudgetKind::ModelCalls
+        ))
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let events = read_events(&events_path);
+    let child = &controller.task_run().attempts[1];
+    assert!(child
+        .evidence_refs
+        .iter()
+        .all(|reference| events.iter().any(|event| &event.event_id == reference)));
+    assert!(child
+        .evidence_refs
+        .iter()
+        .all(|reference| !reference.ends_with(":model_started")
+            && !reference.ends_with(":model_completed")));
+    assert_eq!(child.status, AttemptStatus::Failed);
+    assert_eq!(controller.status(), LoopStatus::Failed);
+    assert!(matches!(
+        controller.complete(),
+        Err(LoopControllerError::Terminal)
+    ));
+}
+
+#[test]
+fn fallback_ids_and_attempt_budget_are_shared_across_external_steps() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = fallback_registry();
+    let router = ModelRouter::new(&registry, fallback_profiles()).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    adapters
+        .register(
+            "fixture-model",
+            Box::new(RetryableAdapter {
+                calls: Arc::clone(&calls),
+                class: ProviderErrorClass::RateLimit,
+            }),
+        )
+        .unwrap();
+    adapters
+        .register(
+            "backup-model",
+            Box::new(LocalFixtureModelAdapter::new(
+                ModelDecision::ContinueObservation,
+                "keep observing",
+            )),
+        )
+        .unwrap();
+    let mut controller = fallback_controller(&events_path, LoopBudget::new(6, 0, 6, 3, 0, 6, 6, 1));
+    for step in ["first", "second"] {
+        assert_eq!(
+            controller
+                .run_routed_model_step(&router, &adapters, route_request(), step, "ready")
+                .unwrap(),
+            ModelDecision::ContinueObservation
+        );
+    }
+    let attempts = &controller.task_run().attempts;
+    assert_eq!(attempts.len(), 3);
+    assert_ne!(attempts[1].attempt_id, attempts[2].attempt_id);
+    assert_eq!(
+        attempts[2].parent_attempt_id.as_deref(),
+        Some(attempts[1].attempt_id.as_str())
+    );
+    assert_eq!(controller.budget().attempts_used, 3);
+    assert_eq!(controller.task_run().budget.attempts_used, 3);
+    assert!(matches!(
+        controller.run_routed_model_step(&router, &adapters, route_request(), "third", "ready"),
+        Err(LoopControllerError::TaskRun(
+            AttemptLineageError::AttemptBudgetExhausted
+        ))
+    ));
+    assert_eq!(controller.task_run().attempts.len(), 3);
+    assert_eq!(controller.budget().attempts_used, 3);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert_eq!(controller.status(), LoopStatus::Failed);
 }
