@@ -10,6 +10,7 @@ pub mod execution_query;
 pub mod execution_strategy;
 pub mod http_transport;
 pub mod loop_controller;
+pub mod memory;
 pub mod model_adapter;
 pub mod model_call_store;
 pub mod model_contracts;
