@@ -48,7 +48,7 @@
 
 - [x] 定义 EventEnvelope、event_id、sequence_no、correlation_id 和 causation_id
 - [ ] 定义 Portfolio、Project、Task 和 TaskDependency
-- [x] 定义 TaskRun／Attempt 的最小领域 schema、父关系和跨 Attempt 总预算校验（已接入 LoopController 的初始 Attempt、budget 同步、完成/失败回写和事件 attempt_id 关联；retry/fallback/resume/fork、持久化恢复和完整依赖投影仍待完成）
+- [x] 定义 TaskRun／Attempt 的最小领域 schema、父关系和跨 Attempt 总预算校验（初始 Attempt、routed fixture/model-adapter fallback 子 Attempt、父链、累计预算与事件证据已接入 controller；retry/resume/fork、resolved provider fallback、持久化恢复和完整依赖投影仍待完成）
 - [x] 定义 Task 状态及合法迁移表
 - [x] 定义最小 BoardProjection / BoardTaskCard
 - [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 与最小 `tool_call_failed` 关联事件已有测试；独立 ToolCallRecord 持久化仍待接线）
@@ -64,7 +64,7 @@
 - [x] 定义 `TraceRecord`
 - [x] 定义 `ProviderProfile`、`EndpointProfile`、`ModelProfile`（已有注册/序列化及关联验证）
 - [x] 定义并测试 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`（静态 resolver 已验证 registry/provider/endpoint/model/role/task/version 绑定、审批阻断、低信任 user JSON 分层；resolved controller 审计路径已有 focused 验收）
-- [x] 定义 `RouteDecision` 和 `ModelCallRecord`（字段结构、最小语义校验及 resolved controller → ModelCallStore 的成功／失败审计已有测试；routed fixture/model-adapter fallback 已接线，真实 provider、Attempt lineage 和恢复接线仍待完成）
+- [x] 定义 `RouteDecision` 和 `ModelCallRecord`（字段结构、最小语义校验及 resolved controller → ModelCallStore 的成功／失败审计已有测试；routed fallback 的 Attempt lineage 已接线，live provider、resolved provider fallback 和恢复仍待完成）
 
 验收：
 
@@ -91,8 +91,8 @@ Memory 最小实现：
 
 - [ ] 定义 `MemoryRecord`、`MemoryCandidate`、`MemoryPromotion` 的 Phase 1 子集
 - [ ] 定义 `WorkingMemory` 与 project-scoped candidate 的可见性边界
-- [ ] 实现 candidate 的 provenance、confidence、lifecycle state 和 source event refs
-- [ ] 实现按 project / goal / task 的确定性 metadata retrieval
+- [x] 实现 candidate 的 provenance、confidence、lifecycle state 和 source event refs（MemoryCandidate 最小领域子集；promotion 与 EventLog 接线仍待完成）
+- [x] 实现按 project / goal / task 的确定性 metadata retrieval（MemoryCatalog 只查询 candidate metadata，先做 project/scope/lifecycle 过滤并稳定排序；不是 trusted/active memory，不自动注入上下文或授予访问权；PolicyGate 接线仍待完成）
 - [ ] 将 memory 写入、检索和 promotion decision 写入 EventLog
 - [ ] 明确 Phase 1 不启用 vector index、graph index、global auto-promotion 或 cross-project implicit visibility
 - [ ] 定义 `EvidencePack`、`WikiPage`、`WikiRevision` 的 Phase 1 子集
@@ -105,7 +105,7 @@ Memory 最小实现：
 - 写入一轮 fake loop 后，event/state/trace 都能查询
 - 进程重启后能读取 current state
 - trace 文件可被 `tail` / `rg` 阅读
-- candidate 可从 source event 反查，且 project scope 过滤不会返回其他项目的记录
+- candidate 可用 `validate_source_events` 对调用方已授权事件集合做引用唯一性与 project/goal/task 身份校验；不是 EventLog 自动接线或来源真实性证明，insert 不自动执行该校验；project scope 检索不会返回其他项目的候选
 - memory candidate 不会自动变为 global policy、skill 或 model routing
 - Wiki 页面可以反查 EvidencePack/source ref，过期页面不会直接支撑高风险动作
 
@@ -173,15 +173,16 @@ Memory 最小实现：
 
 验收：
 
-- workspace-edit 修改前能生成 checkpoint metadata；修改后的 diff/验证 checkpoint 仍待完成
-- metadata 能记录声明的 recoverability，但当前不执行 restore/replay
+- workspace-edit 修改前生成 checkpoint metadata，修改后记录 before/after hash 和验证结果；不保存文件正文或恢复快照
+- `CheckpointStore::latest_for` / `latest_for_loop_step` 可按 loop/step 流式查询最后追加的 checkpoint，解释已记录 hash 和 recoverability，给出 `NoAction` / `RestoreRequired` / `ManualIntervention`；非法或歧义 hash、未知 changed-hash 恢复状态和矛盾的 no-write 标记不自动放行
+- 查询不重算当前 workspace hash、不校验恢复快照、不执行 restore/replay；仍全日志扫描，单条记录大小仍影响内存
 - checkpoint 不声称恢复未记录的外部动作；side_effect_uncertain 进入人工处理的分支仍待完成
 
 ### P8. SideEffectLedger
 
 - [x] 定义最小 side-effect record schema
 - [x] 实现 tool call 到 side-effect event 的记录（只读工具和 workspace-edit 执行路径已写入 TraceStore/SideEffectLedger；并非所有 tool-call registration 都自动产生 ledger record）
-- [ ] 支持 read-only、本地可逆、部分可逆、可补偿、不可逆、人工处理的完整分类与状态机（当前 ToolProfile 只有有限 side-effect class，缺少恢复/补偿状态语义）
+- [ ] 支持 read-only、本地可逆、部分可逆、可补偿、不可逆、人工处理的完整分类与状态机（已有基础 `SideEffectDisposition` 派生映射与 `SideEffectAuditStatus` 解析；部分可逆、补偿、不可逆动作的完整恢复/补偿状态机及执行协调仍未实现）
 - [x] 高风险副作用要求 policy gate（workspace-write 已经过 PolicyGate，并在需要时走 approval/checkpoint；不可逆动作和 side_effect_uncertain 处理仍待完成）
 
 验收：
@@ -240,14 +241,14 @@ Memory 最小实现：
 - [x] 建立 provider-to-`ModelAdapter` bridge（仅接受严格 `decision`/`summary` JSON envelope；固定输出契约放 system，用户目标与 observation 作为 JSON 编码数据放 user，不升格为 system/developer；fake transport 实际请求体已有回归，不代表完整 prompt 解析或提示注入防护）
 - [ ] 接入至少一个真实网络 model provider（HTTP transport 和 secret-free profile/auth_ref 绑定已通过 focused 回归；仍未完成获准 live 调用）
 - [x] 接入 secret-free `LocalFixtureModelAdapter`，并记录结构化 model decision 事件
-- [ ] 配置 cheap/fast、strong/slow、specialized、evaluator 或 local profile fixture
+- [x] 配置 cheap/fast、strong/slow、specialized、evaluator 和 local profile fixture（`tests/fixtures/model_roles.json`；`tests/model_role_fixtures.rs` 验证角色/能力、风险、预算/延迟、隐私及 fallback 候选过滤；均为虚构配置，非实测模型能力/价格或 live provider 验收）
 - [x] 实现按 task type、agent role、能力、风险、成本和延迟过滤与排序的规则式路由，并通过 `ModelAdapterRegistry` 接入 LoopController（需审批时 fail-closed；审批恢复尚未实现）
 - [x] 定义、校验并持久化 `RouteDecision` 到 EventLog；routed 模型调用的开始/成功/失败事件关联 route ID
 - [x] 实现按 prompt ID/version、role/task 的最小 prompt binding 查询
 - [x] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成可冻结的 `ResolvedPromptPack` 并由 opt-in resolved bridge 使用（fake/localhost 请求已验证模板实际进入最终 messages、logical model 与 wire model 分离、wire body hash 一致；resolved controller 审计路径已接线）
-- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（resolved controller 成功、provider 失败、审计写入失败和 binding/approval fail-closed 已有回归；真实 provider、Attempt lineage 和完整验证结果仍待完成）
+- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（resolved controller 成功、provider 失败、审计写入失败和 binding/approval fail-closed 已有回归；live provider、resolved fallback Attempt 和完整验证结果仍待完成）
 - [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider 的只读 action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；只读工具 raw output 已从 EventLog/TraceStore/SideEffectLedger 脱敏；文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
-- [x] 实现能力兼容、非静默的 fallback 事件（routed fixture/model-adapter 路径按声明顺序切换有限 fallback；retryable provider failure 才允许切换，切换写入 `model_route_fallback`；resolved provider、Attempt lineage 和跨进程恢复仍待完成）
+- [x] 实现能力兼容、非静默的 fallback 事件（routed fixture/model-adapter 路径仅对 retryable provider failure 按声明顺序切换；新建父链可追踪的 Attempt，只引用实际追加的事件，累计预算与 no-progress 不因 fallback 重置；不可恢复失败/额度耗尽后关闭运行；resolved provider fallback 和跨进程恢复仍待完成）
 - [ ] 端到端验证 registry、prompt、provider request、trace、event log 和 checkpoint 均不保存认证明文（registry/config 的 auth_ref 与 endpoint 边界 focused 回归已通过；全链路审计脱敏仍未完成）
 
 历史验证记录（2026-10-11）：`loop_controller` 25 项、`provider_model_adapter` 7 项、`resolved_provider_model_adapter` 11 项、`model_call_controller_audit` 6 项 focused 测试通过；当轮 focused clippy 通过，构建产物写入 `/tmp/steerbox-phase1-target`。此记录不是当前工作树的完整验收。

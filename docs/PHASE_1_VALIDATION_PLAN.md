@@ -60,13 +60,13 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V4 EventLog | 已验证切片 | EventLog append/reopen 测试 |
 | V5 Trace 可读性 | 已验证切片 | `tests/loop_controller.rs`、`tests/runtime_cli.rs`；完整回放工具仍未实现 |
 | V6 文件修改与 diff boundary | 已验证切片 | `tests/dev_vertical_slice.rs`、`tests/runtime_cli.rs` |
-| V7 RecoveryCheckpoint metadata | 已验证切片 | `tests/audit_store.rs`、`tests/dev_vertical_slice.rs` |
-| V8 SideEffectLedger | 已验证切片 | `tests/loop_controller.rs`、`tests/dev_vertical_slice.rs` |
+| V7 RecoveryCheckpoint metadata | 已验证写入与只读解释切片 | `tests/audit_store.rs`、`tests/dev_vertical_slice.rs`；覆盖 loop/step 最新追加查询、hash 格式/歧义、未知恢复状态、no-write 矛盾、日志错误行号及查询不修改文件；不重算 workspace hash、不验证快照、不执行 restore/replay |
+| V8 SideEffectLedger | 已验证记录与基础派生解释切片 | `tests/loop_controller.rs`、`tests/dev_vertical_slice.rs`、`tests/audit_store.rs`；disposition/status 是 metadata 派生解释，不改变 JSONL schema、不构成执行授权或完整恢复/补偿状态机 |
 | V9 GoalAlignmentCheck | 已验证切片 | `tests/drift_guard.rs`；结果写入完整 loop 仍待接线 |
 | V10 DriftGuard | 已验证切片 | `tests/drift_guard.rs` |
 | V11 Human Steering Mode | 已验证最小运行时切片 | `tests/user_command_inbox.rs`、`tests/loop_controller.rs`、`tests/state_store.rs`；已覆盖 Inbox 幂等、pause/resume/cancel 安全边界和状态重建，takeover、后台 worker、控制面仍未实现 |
 | V12 Baseline Tool Recipes | 部分验证 | registry/recipe 边界已有；`tool_call_failed` 已记录 tool_call_id、failure category 和最小 LessonCandidate，recipe candidate、shell quoting 和 link-check recipe 仍未实现 |
-| V13 Model Routing | 已验证本地路由、冻结请求和静态 prompt/resolved bridge 切片；实际调用审计仍待完成 | `tests/model_registry.rs`、`tests/model_contracts.rs`、`tests/model_adapter_registry.rs`、`tests/model_router.rs`、`tests/loop_model_routing.rs`、`tests/model_call_store.rs`、`tests/provider_adapter.rs`、`tests/provider_model_adapter.rs`、`tests/prepared_provider_request.rs`、`tests/resolved_prompt.rs`、`tests/resolved_provider_model_adapter.rs`；本轮定向回归为 6+7+5+17+9 项通过，覆盖 registry 绑定、审批阻断、逻辑/wire model、provider/endpoint/protocol 错配零发送、实际 body hash、模板层级、usage/finish_reason 保留和 JSONL 校验；真实网络 transport、fallback 执行、ResolvedPromptPack/ModelCallRecord 的 LoopController 实际写入接线仍未完成；字段结构校验不等于自由文本 DLP |
+| V13 Model Routing | 已验证本地路由、冻结请求、non-stream adapter 与库审计接线切片 | `tests/model_registry.rs`、`tests/model_router.rs`、`tests/model_role_fixtures.rs`、`tests/loop_model_routing.rs`、`tests/model_call_controller_audit.rs`、`tests/model_call_store.rs`、`tests/resolved_prompt.rs`、provider/Anthropic 与 localhost HTTP transport 测试；覆盖 binding/approval fail-closed、wire body hash、usage/finish_reason、resolved controller 审计、routed fixture fallback 的新 Attempt/真实事件证据/总预算及失败终态；真实帐号/live provider、resolved provider fallback 与跨进程恢复未完成；虚构 fixture 数值不是实测模型能力/成本/性能，脱敏也不等于通用 DLP |
 | V18 StreamReporter | 已验证 CLI 接入切片 | `tests/stream_reporter.rs`、`tests/runtime_cli.rs`；支持 lifecycle/progress/disable/writer error/redaction，readonly/fixture 生命周期输出与事件和状态一致；ContinueObservation/RequestHuman 不伪报 loop completed；尚未接入 LoopController 内部工具/模型 streaming |
 | V19 Execution History Query | 已验证最小只读切片 | `tests/execution_query.rs`、`tests/runtime_cli.rs`；EventLog 事实源、StateStore 当前状态投影、metadata-only `execution list/show/page` 和 detached snapshot 分页；覆盖非法参数、空页、越界和未知 loop；底层仍依赖 `read_all()`，live worker/control plane 未实现 |
 | V14 Run Summary | 已验证最小切片 | `tests/audit_store.rs`、`tests/runtime_cli.rs`；完整 task/attempt/evidence 反查仍待实现 |
@@ -74,6 +74,9 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V16 BoardProjection | 已验证最小切片 | `tests/board_projection.rs`、`tests/runtime_cli.rs`；依赖和完整 Attempt 投影仍待实现 |
 | V17 Command 幂等与版本冲突 | 已验证最小切片 | `tests/user_command_inbox.rs` 验证 command_id 幂等、冲突拒绝和状态去重；expected_object_version 冲突处理仍未实现 |
 | V20 Execution Strategy | 已验证最小库接线切片 | `tests/strategy_selector.rs`、`tests/budget_calculator.rs`、`tests/loop_strategy.rs`、`tests/loop_strategy_controls.rs`、`tests/strategy_audit_failure.rs`；纯选择/输入拒绝、审批前零动作、授权 clamp、同实例计数/重复历史保留、工具额度、pause/resume不解除审批及主审计失败不改变策略/预算/revision；补充审批事件写入失败尚无独立注入测试；验证频率仅需求元数据，自定义配置、审批解析、协作执行及策略恢复尚未实现 |
+| V21 Memory candidate metadata | 已验证最小领域切片 | `tests/memory.rs`：schema、scope/provenance、重复 refs、摘要脱敏/超限拒绝、跨 project/goal/task 隔离、稳定排序及 rejected/superseded 排除；显式来源校验检查已授权输入集合中的引用唯一性和 scope 身份，不检查 payload/schema 真实性，不改变 catalog 或 promotion，insert 不自动调用；不是 active memory，不含 EventLog/PolicyGate、持久化或 promotion |
+| V22 本地行为 acceptance | 已验证 smoke 与回归切片 | `tests/acceptance/` 的四个 Cargo target，共 23 项；使用生产 Redactor、精确 policy decision/reason、正确 loop/task 身份和 pause/resume/cancel 状态/预算/事件断言，takeover 明确 Rejected；同一受限 Markdown 写在交互模式需审批、自主模式可 Allow。进度延迟仅为本地 controller/in-memory sink smoke，不是 TUI/Web、模型首字节性能、在途抢占、完整接管或通用 DLP 验收 |
+| V23 Routed 故障封口 | 已验证当前进程内切片 | `tests/loop_model_routing.rs`：fallback/route/loop-failed 事件写入失败及多阶段 ProgressSink 故障后不再调用模型、不伪造 evidence refs、不误覆盖 completed/cancelled/paused；审批拒绝不当成失败重试。不保证失败终态持久化，不扩展 non-routed/resolved 或跨进程恢复 |
 
 状态更新规则：只有可复现命令、测试输出或运行日志支持时，才能把“未验证”改为“已验证”。
 
@@ -218,6 +221,8 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 1. 在文件修改前创建 checkpoint metadata
 2. 执行修改
 3. 在修改后记录 checkpoint / diff 关系
+4. 使用 `CheckpointStore::latest_for` / `latest_for_loop_step` 查询最后追加的匹配记录，检查只读恢复建议
+5. 构造非法/歧义 hash、未知 changed-hash 恢复状态、no-write 与 files 矛盾及不匹配记录的 JSON 错误
 
 期望结果：
 
@@ -225,6 +230,9 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 - checkpoint 关联 goal_id / loop_run_id / step_id
 - checkpoint 明确覆盖范围
 - checkpoint 不承诺恢复外部不可逆动作
+- 写入失败或验证失败且 hash 改变时建议 `RestoreRequired`；有效已验证记录、相同 hash 或一致的 no-write 记录可为 `NoAction`，非法/歧义元数据不自动放行
+- 非匹配记录的 JSON 错误也传播，并保留物理行号；查询不创建缺失日志、不读取或重算 workspace hash、不修改 workspace/log，不执行恢复
+- 查询仍为全日志线性扫描，只保留最新匹配记录；单条记录大小仍影响内存，不代表已做内存压测
 
 ### V8. SideEffectLedger
 
@@ -236,8 +244,8 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 
 期望结果：
 
-- 只读工具标记为 read_only
-- 本地文件修改标记为 reversible_local_change 或 partially_reversible_local_change
+- 当前持久化 class 经派生解释后，`None/WorkspaceRead → ReadOnly`，`WorkspaceWrite → Reversible`；后者不证明已有恢复快照或 restore 能力
+- 外部/未知 class 派生为 `ManualRequired`；未知 audit status 不允许 metadata 自动执行判断。这些仅是 metadata 解释，不新增执行授权或完整恢复/补偿状态机
 - 不可逆外部动作被阻断或要求 human approval
 
 ### V9. GoalAlignmentCheck

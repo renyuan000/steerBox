@@ -29,11 +29,23 @@
 
 ### 当前可执行切片
 
-已实现并验证的范围是 Rust/Cargo 工程骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、配置未知字段拒绝、append-only JSONL `EventLog`、事件 append 入口、无副作用的只读 observation loop、secret-free `LocalFixtureModelAdapter` 决策链，以及接入 `LoopController` 的 `ToolRegistry`/`PolicyGate` 和受控只读工具执行器切片。当前 executor 只执行固定 argv 的 `git status --short --branch`，不接受 shell 字符串、不执行写操作，且对 workspace、超时和输出大小做限制；controller 会记录 `policy_decision`、`tool_call_requested`、成功或失败的工具事件，并追加 trace/side-effect 记录。软件开发垂直切片还可执行受审批的 Markdown 修改、链接验证和 `RunSummary` 写入，验证失败返回非零退出。当前新增了注入式 non-stream HTTP transport、secret-free credential resolver 边界、`ResolvedPromptPack` 到 `ModelCallStore` 的 opt-in 审计路径，以及 TaskRun／Attempt 最小父关系／总预算 schema。UserCommandInbox 已在 controller 安全边界支持 pause/resume/cancel，但同步模型调用期间不读取命令；可连接的后台控制面、修订/接管、真实 profile/live provider、文件写入/Bash 等有副作用动作、完整工具执行器与完整 Agent 仍未完成；只读模型动作闭环已在 fixture/resolved provider 路径接线，但尚未形成真实 provider E2E 或完整副作用恢复闭环。
+已实现的本地切片包括 Rust/Cargo 骨架、核心领域对象、`RuntimeConfig`、`/temp/steerbox/<project_ref>` 路径约束、JSONL `EventLog`、只读 observation loop、`LocalFixtureModelAdapter`，以及接入 `LoopController` 的 `ToolRegistry` / `PolicyGate`。受控只读执行器支持固定 argv 的 git status、固定字符串搜索、有界文件读取和 Markdown 链接检查；结构化动作不接受任意 shell 字符串。受审批的 Markdown 修改另有 workspace-edit 路径，记录修改前后 hash、验证结果和副作用；开发 CLI 生成 `RunSummary`，验证失败返回非零。
+
+OpenAI-compatible 与 Anthropic non-stream adapter、注入式 HTTP transport、本地 credential resolver 边界、冻结的 `ResolvedPromptPack` 和 opt-in `ModelCallStore` 审计已有 fake/localhost 测试，不等于完成获准的真实帐号/live provider 验收。`UserCommandInbox` 在 controller 安全边界应用 pause/resume/cancel，但同步模型调用期间不读取命令。后台 worker / 运行中接管、修订恢复、任意文件写入 / Bash、完整记忆和实际 restore/replay 均未完成；当前不能称为完整可用的模型连接型开发 Agent。
 
 ### 长期运行目标与 Phase 1 实现边界
 
-模型路径已有本地规则路由到 `ModelAdapterRegistry` 的 LoopController 接线，EventLog 保存路由及关联的调用事件；High risk 或 Restricted privacy 路由在没有审批 resolver 时先记录人工介入，再拒绝调用。模型失败会写 `step_failed`，避免 StateStore 留下 Running 步骤。静态 `ResolvedPromptPack`、opt-in provider bridge 和 `ResolvedPromptPack` → `ModelCallStore` 审计路径已通过 fake/localhost 请求验证 provider/endpoint/model/prompt 分层、实际 wire hash、usage/finish_reason 和 fail-closed 失败路径。只读模型动作已接入 `PolicyGate → ReadOnlyToolExecutor → verification`，但文件写入/Bash、动态 fallback、真实 profile/live provider 和完整恢复仍待接线。`ModelRegistry` 与 `RuntimeConfig` 已通过 focused 回归验证 `auth_ref` opaque reference 及 endpoint URL 认证材料边界；该校验不覆盖直接构造 provider adapter 时的任意 `base_url`，也不等于对任意 prompt、summary 和审计字符串执行全量 secret scanning。
+模型路径已有本地规则路由到 `ModelAdapterRegistry` 的 LoopController 接线，EventLog 保存路由及关联的调用事件；High risk 或 Restricted privacy 路由在没有审批 resolver 时拒绝调用。静态 `ResolvedPromptPack`、opt-in provider bridge 和 `ModelCallStore` 审计已有 fake/localhost 请求验证，覆盖 provider/endpoint/model/prompt 绑定、wire hash、usage/finish_reason 和 fail-closed 路径。routed fixture/model-adapter fallback 已创建新的父链 Attempt，记录实际事件证据并共享累计预算；不以模型切换清零 no-progress，不可恢复失败或额度耗尽后运行进入失败终态。此结果不覆盖 resolved provider fallback、retry/resume/fork 或跨进程恢复。
+
+routed 路径的 EventLog 或 ProgressSink 故障会将仍 Running 的 Attempt/TaskRun/LoopRun 在当前进程内封为失败，防止再次调用模型；保留原故障，不把 progress 故障当成模型可重试错误，不覆盖已完成/取消/暂停状态。失败日志无法写入时不伪造 evidence refs，也不声称终态已持久化或可跨进程恢复。此封口不扩展 non-routed/resolved 路径的故障保证。
+
+只读模型动作已接入 `PolicyGate → ReadOnlyToolExecutor → verification`。任意文件写入/Bash、真实 profile/live provider 和完整恢复仍未验收。`ModelRegistry` / `RuntimeConfig` 的 auth_ref 与 endpoint 认证材料校验、本地 `Redactor` 和 provider 出站脱敏均是已测规则边界，不是任意敏感正文的通用 DLP 保证。
+
+`MemoryCandidate` / `MemoryCatalog` 已提供 project/goal/task 隔离、来源/provenance/confidence/lifecycle 校验、schema v1 校验、本地摘要脱敏及确定性候选查询（`tests/memory.rs`）。返回的仍是候选 metadata，不等于 accepted/active `MemoryRecord`；正式 promotion、PolicyGate/EventLog、持久化及 Wiki/EvidencePack 链尚未完成，也不自动生成 global memory 或跨项目权限。
+
+`MemoryCandidate::validate_source_events` 另提供显式来源身份校验：调用方传入已获授权的事件集合，检查每个引用唯一存在且 project/goal/task 与候选 scope 相符。不读取日志或 payload，不证明事件真实持久化、payload 真实性或来源可信度；`MemoryCatalog::insert` 不自动执行此校验，校验通过也不 promotion 或授予权限。
+
+`CheckpointStore` 可流式扫描 JSONL，查询 loop 或 loop/step 最后追加的 checkpoint，并根据已记录的 SHA-256 边界和 recoverability 给出只读恢复建议。查询传播日志解码错误，只保留最新匹配记录；仍需扫描全日志，单条记录大小仍影响内存。该结果不读取或重算 workspace hash、不验证快照、不授权或执行恢复，不能替代跨进程恢复闭环。
 
 架构目标是四个专业方向都支持 7x24 常驻和多年可恢复生命周期；这不是 Phase 1 已实现能力的声明。Phase 1 的目标边界包含本地单机、顺序执行、持久化事件、任务状态和最小 `RecoveryCheckpoint`。当前代码已实现 JSON StateStore 持久化 reopen、Trace/Checkpoint/SideEffect JSONL 记录、只读 BoardProjection fixture、静态 GoalAlignment/DriftGuard 报告以及 Markdown 文件修改/链接验证开发 loop；完整恢复闭环、运行中用户控制面和真实模型 provider 仍是未完成验收项。
 
