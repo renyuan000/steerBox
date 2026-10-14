@@ -1,0 +1,82 @@
+[
+  {
+    "capabilities": ["text", "tool_calling"],
+    "route": {
+      "model_id": "cheap-fast",
+      "supported_task_types": ["code_change"],
+      "supported_agent_roles": ["implementer"],
+      "max_risk_level": "Medium",
+      "privacy_clearance": "Internal",
+      "estimated_cost": 0.01,
+      "estimated_latency_ms": 80,
+      "quality_score": 60,
+      "reliability_score": 80,
+      "preferred_for_high_risk": false,
+      "fallback_priority": 0
+    }
+  },
+  {
+    "capabilities": ["text", "tool_calling"],
+    "route": {
+      "model_id": "strong-slow",
+      "supported_task_types": ["code_change"],
+      "supported_agent_roles": ["implementer"],
+      "max_risk_level": "Critical",
+      "privacy_clearance": "Sensitive",
+      "estimated_cost": 0.5,
+      "estimated_latency_ms": 900,
+      "quality_score": 95,
+      "reliability_score": 95,
+      "preferred_for_high_risk": true,
+      "fallback_priority": 0
+    }
+  },
+  {
+    "capabilities": ["text", "code_search"],
+    "route": {
+      "model_id": "specialized",
+      "supported_task_types": ["code_search"],
+      "supported_agent_roles": ["researcher"],
+      "max_risk_level": "Medium",
+      "privacy_clearance": "Internal",
+      "estimated_cost": 0.04,
+      "estimated_latency_ms": 200,
+      "quality_score": 85,
+      "reliability_score": 85,
+      "preferred_for_high_risk": false,
+      "fallback_priority": 0
+    }
+  },
+  {
+    "capabilities": ["text", "evaluation"],
+    "route": {
+      "model_id": "evaluator",
+      "supported_task_types": ["verification"],
+      "supported_agent_roles": ["reviewer"],
+      "max_risk_level": "High",
+      "privacy_clearance": "Sensitive",
+      "estimated_cost": 0.2,
+      "estimated_latency_ms": 450,
+      "quality_score": 90,
+      "reliability_score": 90,
+      "preferred_for_high_risk": true,
+      "fallback_priority": 0
+    }
+  },
+  {
+    "capabilities": ["text"],
+    "route": {
+      "model_id": "local-private",
+      "supported_task_types": ["code_change"],
+      "supported_agent_roles": ["implementer"],
+      "max_risk_level": "Medium",
+      "privacy_clearance": "Restricted",
+      "estimated_cost": 0.0,
+      "estimated_latency_ms": 300,
+      "quality_score": 50,
+      "reliability_score": 70,
+      "preferred_for_high_risk": false,
+      "fallback_priority": 0
+    }
+  }
+]
