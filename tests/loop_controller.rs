@@ -10,6 +10,11 @@ use steerbox::domain::{
 };
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{LoopControllerError, ModelActionRuntime, ReadOnlyLoopController};
+use steerbox::memory::{
+    MemoryCandidate, MemoryCandidateState, MemoryConfidence, MemoryProvenance, MemoryQuery,
+    MemoryScope,
+};
+use steerbox::memory_store::MemoryStore;
 use steerbox::model_adapter::{
     LocalFixtureModelAdapter, ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest,
     ModelResponse, ModelResponseWithAction,
@@ -30,6 +35,32 @@ fn test_data_dir() -> PathBuf {
         .expect("clock is after epoch")
         .as_nanos();
     PathBuf::from(format!("/temp/steerbox/test-loop-{nonce}"))
+}
+
+fn runtime_memory_candidate(
+    candidate_id: &str,
+    project_id: &str,
+    scope: MemoryScope,
+    goal_id: Option<&str>,
+    task_id: Option<&str>,
+    lifecycle_state: MemoryCandidateState,
+) -> MemoryCandidate {
+    MemoryCandidate::new(
+        candidate_id,
+        scope,
+        project_id,
+        goal_id,
+        task_id,
+        format!("claim for {candidate_id} password=synthetic-memory-secret"),
+        MemoryProvenance {
+            producer: "loop-controller-test".into(),
+            source_kind: "verification".into(),
+        },
+        vec![format!("event:{candidate_id}")],
+        MemoryConfidence::Medium,
+        lifecycle_state,
+    )
+    .expect("runtime memory candidate is valid")
 }
 
 struct RecordingSink(Arc<Mutex<Vec<ProgressEvent>>>);
@@ -107,6 +138,334 @@ fn controller_reports_safe_lifecycle_metadata_without_payloads() {
     assert!(events
         .iter()
         .all(|event| { event.summary.as_deref() != Some("secret observation must not stream") }));
+}
+
+#[test]
+fn controller_retrieves_memory_candidates_only_when_explicitly_requested() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let event_path = directory.join("events.jsonl");
+    let memory_store = MemoryStore::open(directory.join("memory.jsonl"));
+    for candidate in [
+        runtime_memory_candidate(
+            "project-visible",
+            "project-memory-runtime",
+            MemoryScope::Project,
+            None,
+            None,
+            MemoryCandidateState::New,
+        ),
+        runtime_memory_candidate(
+            "goal-visible",
+            "project-memory-runtime",
+            MemoryScope::Goal,
+            Some("goal-memory-runtime"),
+            None,
+            MemoryCandidateState::New,
+        ),
+        runtime_memory_candidate(
+            "task-visible",
+            "project-memory-runtime",
+            MemoryScope::Task,
+            Some("goal-memory-runtime"),
+            Some("task-run-memory-runtime"),
+            MemoryCandidateState::New,
+        ),
+        runtime_memory_candidate(
+            "rejected",
+            "project-memory-runtime",
+            MemoryScope::Goal,
+            Some("goal-memory-runtime"),
+            None,
+            MemoryCandidateState::Rejected,
+        ),
+        runtime_memory_candidate(
+            "foreign-project",
+            "project-other",
+            MemoryScope::Project,
+            None,
+            None,
+            MemoryCandidateState::New,
+        ),
+    ] {
+        memory_store
+            .append(&candidate)
+            .expect("memory candidate appends");
+    }
+
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&event_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-memory-runtime",
+            "project-memory-runtime",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-memory-runtime",
+        "task-run-memory-runtime",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+    let query = MemoryQuery::new(
+        "project-memory-runtime",
+        Some("goal-memory-runtime"),
+        Some("task-run-memory-runtime"),
+    )
+    .expect("memory query is valid");
+
+    let retrieved = controller
+        .retrieve_memory_candidates(&memory_store, &query, "memory-read-1")
+        .expect("memory retrieval succeeds");
+
+    assert_eq!(
+        retrieved
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["goal-visible", "project-visible", "task-visible"]
+    );
+    assert_eq!(controller.status(), LoopStatus::Running);
+    let events = EventLog::open(&event_path)
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    let retrieval_events = events
+        .iter()
+        .filter(|event| event.event_type.starts_with("memory_retrieval_"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retrieval_events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "memory_retrieval_requested",
+            "memory_retrieval_filtered",
+            "memory_retrieval_used"
+        ]
+    );
+    assert_eq!(
+        retrieval_events[0].payload["project_id"],
+        "project-memory-runtime"
+    );
+    assert_eq!(retrieval_events[1].payload["candidate_count"], 3);
+    assert_eq!(
+        retrieval_events[1].payload["candidate_ids"],
+        serde_json::json!(["goal-visible", "project-visible", "task-visible"])
+    );
+    assert_eq!(
+        retrieval_events[2].payload["usage"],
+        "returned_metadata_only"
+    );
+    assert!(retrieval_events.iter().all(|event| {
+        let payload = event.payload.to_string();
+        !payload.contains("synthetic-memory-secret") && !payload.contains("event:")
+    }));
+}
+
+#[test]
+fn controller_rejects_memory_query_outside_current_loop_scope_without_event() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let event_path = directory.join("events.jsonl");
+    let memory_store = MemoryStore::open(directory.join("memory.jsonl"));
+    memory_store
+        .append(&runtime_memory_candidate(
+            "foreign-project",
+            "project-other",
+            MemoryScope::Project,
+            None,
+            None,
+            MemoryCandidateState::New,
+        ))
+        .expect("foreign memory candidate appends");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&event_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-memory-scope",
+            "project-memory-scope",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-memory-scope",
+        "task-run-memory-scope",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+    let query = MemoryQuery::new("project-other", None, None).expect("memory query is valid");
+
+    assert!(matches!(
+        controller.retrieve_memory_candidates(&memory_store, &query, "memory-read-foreign"),
+        Err(LoopControllerError::MemoryQueryScopeMismatch)
+    ));
+    let events = EventLog::open(&event_path)
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type.starts_with("memory_retrieval_")));
+}
+
+#[test]
+fn controller_fails_closed_when_memory_retrieval_audit_cannot_be_written() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let event_path = directory.join("events.jsonl");
+    let memory_store = MemoryStore::open(directory.join("memory.jsonl"));
+    memory_store
+        .append(&runtime_memory_candidate(
+            "candidate-audit-failure",
+            "project-memory-audit-failure",
+            MemoryScope::Project,
+            None,
+            None,
+            MemoryCandidateState::New,
+        ))
+        .expect("memory candidate appends");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&event_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-memory-audit-failure",
+            "project-memory-audit-failure",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-memory-audit-failure",
+        "task-run-memory-audit-failure",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+    fs::remove_file(&event_path).expect("event file removes");
+    fs::create_dir(&event_path).expect("event path becomes directory");
+    let query = MemoryQuery::new("project-memory-audit-failure", None, None)
+        .expect("memory query is valid");
+
+    assert!(matches!(
+        controller.retrieve_memory_candidates(&memory_store, &query, "memory-read-failure"),
+        Err(LoopControllerError::EventLog(_))
+    ));
+}
+
+#[test]
+fn controller_rejects_memory_retrieval_when_paused_or_terminal() {
+    let paused_directory = test_data_dir();
+    fs::create_dir_all(&paused_directory).expect("paused test directory creates");
+    let paused_event_path = paused_directory.join("events.jsonl");
+    let paused_memory_store = MemoryStore::open(paused_directory.join("memory.jsonl"));
+    paused_memory_store
+        .append(&runtime_memory_candidate(
+            "paused-candidate",
+            "project-memory-lifecycle",
+            MemoryScope::Project,
+            None,
+            None,
+            MemoryCandidateState::New,
+        ))
+        .expect("paused memory candidate appends");
+    let paused_inbox = UserCommandInbox::open(paused_directory.join("commands.jsonl"));
+    paused_inbox
+        .submit(steering_command(
+            "pause-memory-retrieval",
+            "project-memory-lifecycle",
+            "goal-memory-lifecycle",
+            "task-run-memory-lifecycle",
+            "loop-memory-lifecycle",
+            CommandKind::Pause,
+        ))
+        .expect("pause command submits");
+    let mut paused_controller = ReadOnlyLoopController::start(
+        EventLog::open(&paused_event_path).expect("paused event log opens"),
+        GoalContract::new(
+            "goal-memory-lifecycle",
+            "project-memory-lifecycle",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-memory-lifecycle",
+        "task-run-memory-lifecycle",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("paused loop starts")
+    .with_command_inbox(paused_inbox);
+    let lifecycle_query = MemoryQuery::new(
+        "project-memory-lifecycle",
+        Some("goal-memory-lifecycle"),
+        Some("task-run-memory-lifecycle"),
+    )
+    .expect("lifecycle query is valid");
+    assert!(matches!(
+        paused_controller.retrieve_memory_candidates(
+            &paused_memory_store,
+            &lifecycle_query,
+            "memory-read-paused"
+        ),
+        Err(LoopControllerError::Paused)
+    ));
+    assert_eq!(paused_controller.status(), LoopStatus::Paused);
+    let paused_events = EventLog::open(paused_event_path)
+        .expect("paused event log reopens")
+        .read_all()
+        .expect("paused events read");
+    assert!(!paused_events
+        .iter()
+        .any(|event| event.event_type.starts_with("memory_retrieval_")));
+
+    let terminal_directory = test_data_dir();
+    fs::create_dir_all(&terminal_directory).expect("terminal test directory creates");
+    let terminal_event_path = terminal_directory.join("events.jsonl");
+    let terminal_memory_store = MemoryStore::open(terminal_directory.join("memory.jsonl"));
+    terminal_memory_store
+        .append(&runtime_memory_candidate(
+            "terminal-candidate",
+            "project-memory-lifecycle-terminal",
+            MemoryScope::Project,
+            None,
+            None,
+            MemoryCandidateState::New,
+        ))
+        .expect("terminal memory candidate appends");
+    let mut terminal_controller = ReadOnlyLoopController::start(
+        EventLog::open(&terminal_event_path).expect("terminal event log opens"),
+        GoalContract::new(
+            "goal-memory-lifecycle-terminal",
+            "project-memory-lifecycle-terminal",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-memory-lifecycle-terminal",
+        "task-run-memory-lifecycle-terminal",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("terminal loop starts");
+    terminal_controller.complete().expect("loop completes");
+    let terminal_query = MemoryQuery::new("project-memory-lifecycle-terminal", None, None)
+        .expect("terminal query is valid");
+    assert!(matches!(
+        terminal_controller.retrieve_memory_candidates(
+            &terminal_memory_store,
+            &terminal_query,
+            "memory-read-terminal"
+        ),
+        Err(LoopControllerError::Terminal)
+    ));
+    let terminal_events = EventLog::open(terminal_event_path)
+        .expect("terminal event log reopens")
+        .read_all()
+        .expect("terminal events read");
+    assert!(!terminal_events
+        .iter()
+        .any(|event| event.event_type.starts_with("memory_retrieval_")));
 }
 
 #[test]

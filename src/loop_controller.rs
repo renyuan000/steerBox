@@ -10,6 +10,8 @@ use crate::domain::{
     NoProgressTracker, RiskLevel, TaskRun, TaskRunStatus,
 };
 use crate::event_log::{EventLog, EventLogError};
+use crate::memory::{MemoryCandidate, MemoryQuery};
+use crate::memory_store::{MemoryStore, MemoryStoreError};
 use crate::model_adapter::{
     ModelAdapter, ModelAdapterError, ModelAdapterRegistry, ModelDecision, ModelRequest,
     ModelResponseWithAction,
@@ -49,6 +51,10 @@ pub enum LoopControllerError {
     EventLog(#[from] EventLogError),
     #[error("loop event rejected: {0}")]
     EventEnvelope(#[from] EventEnvelopeError),
+    #[error("memory store failed: {0}")]
+    MemoryStore(#[from] MemoryStoreError),
+    #[error("memory query scope does not match current loop")]
+    MemoryQueryScopeMismatch,
     #[error("loop budget exhausted: {0:?}")]
     BudgetExhausted(BudgetKind),
     #[error("task run lineage failed: {0}")]
@@ -408,6 +414,86 @@ impl ReadOnlyLoopController {
 
     pub fn current_attempt_id(&self) -> Option<&str> {
         self.task_run.current_attempt_id.as_deref()
+    }
+
+    /// Explicitly retrieves scoped memory candidate metadata for the current loop.
+    ///
+    /// This does not inject candidates into prompts or runtime context, validate source
+    /// events, promote candidates, or grant authorization. The retrieval is recorded only
+    /// as metadata in EventLog; if that audit write fails, no result is returned.
+    pub fn retrieve_memory_candidates(
+        &mut self,
+        store: &MemoryStore,
+        query: &MemoryQuery,
+        retrieval_id: impl Into<String>,
+    ) -> Result<Vec<MemoryCandidate>, LoopControllerError> {
+        self.prepare_action()?;
+        if query.project_id != self.goal.project_id
+            || query
+                .goal_id
+                .as_deref()
+                .is_some_and(|goal_id| goal_id != self.goal.goal_id)
+            || query
+                .task_id
+                .as_deref()
+                .is_some_and(|task_id| task_id != self.task_run.task_id)
+        {
+            return Err(LoopControllerError::MemoryQueryScopeMismatch);
+        }
+
+        let retrieval_id = retrieval_id.into();
+        let attempt_id = self.task_run.current_attempt_id.clone();
+        append_loop_event(
+            &mut self.event_log,
+            &self.goal,
+            &self.loop_run,
+            "memory_retrieval_requested",
+            &format!("{retrieval_id}:requested"),
+            json!({
+                "retrieval_id": retrieval_id,
+                "project_id": query.project_id,
+                "goal_id": query.goal_id,
+                "task_id": query.task_id,
+            }),
+            attempt_id.clone(),
+        )?;
+
+        let candidates = store.read_catalog()?.retrieve(query);
+        let candidate_ids = candidates
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>();
+        append_loop_event(
+            &mut self.event_log,
+            &self.goal,
+            &self.loop_run,
+            "memory_retrieval_filtered",
+            &format!("{retrieval_id}:filtered"),
+            json!({
+                "retrieval_id": retrieval_id,
+                "project_id": query.project_id,
+                "goal_id": query.goal_id,
+                "task_id": query.task_id,
+                "candidate_ids": candidate_ids,
+                "candidate_count": candidates.len(),
+            }),
+            attempt_id.clone(),
+        )?;
+        append_loop_event(
+            &mut self.event_log,
+            &self.goal,
+            &self.loop_run,
+            "memory_retrieval_used",
+            &format!("{retrieval_id}:used"),
+            json!({
+                "retrieval_id": retrieval_id,
+                "candidate_ids": candidate_ids,
+                "candidate_count": candidates.len(),
+                "usage": "returned_metadata_only",
+            }),
+            attempt_id,
+        )?;
+        Ok(candidates)
     }
 
     pub fn with_audit_stores(
