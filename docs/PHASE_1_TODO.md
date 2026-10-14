@@ -63,8 +63,8 @@
 - [ ] 定义 `VerificationResult`
 - [x] 定义 `TraceRecord`
 - [x] 定义 `ProviderProfile`、`EndpointProfile`、`ModelProfile`（已有注册/序列化及关联验证）
-- [x] 定义并测试 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`（静态 resolver 已验证 registry/provider/endpoint/model/role/task/version 绑定、审批阻断、低信任 user JSON 分层；resolved controller 审计路径已有 focused 验收）
-- [x] 定义 `RouteDecision` 和 `ModelCallRecord`（字段结构、最小语义校验及 resolved controller → ModelCallStore 的成功／失败审计已有测试；routed fallback 的 Attempt lineage 已接线，live provider、resolved provider fallback 和恢复仍待完成）
+- [x] 定义并测试 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`（静态 resolver 已验证 registry/provider/endpoint/model/role/task/version 绑定、审批阻断、低信任 user JSON 分层；resolved controller 成功调用的审计路径已有 focused 验收）
+- [x] 定义 `RouteDecision` 和 `ModelCallRecord`（字段结构、最小语义校验及 resolved controller 成功调用 → ModelCallStore 的审计已有测试；provider failure 当前仅有 EventLog/step/progress 失败证据，失败 `ModelCallRecord` 的合同仍待单独设计；routed fallback 的 Attempt lineage 已接线，live provider、resolved provider fallback 和恢复仍待完成）
 
 验收：
 
@@ -93,6 +93,7 @@ Memory 最小实现：
 - [ ] 定义 `WorkingMemory` 与 project-scoped candidate 的可见性边界
 - [x] 实现 candidate 的 provenance、confidence、lifecycle state 和 source event refs（MemoryCandidate 最小领域子集；promotion 与 EventLog 接线仍待完成）
 - [x] 实现按 project / goal / task 的确定性 metadata retrieval（MemoryCatalog 只查询 candidate metadata，先做 project/scope/lifecycle 过滤并稳定排序；不是 trusted/active memory，不自动注入上下文或授予访问权；PolicyGate 接线仍待完成）
+- [x] 为 candidate 提供本地 JSONL metadata persistence（`MemoryStore` 在 append/read 时校验 candidate、按物理行报告 JSON/字段错误、在锁内拒绝重复 ID；不做 source-event 自动解析、promotion 或授权）
 - [ ] 将 memory 写入、检索和 promotion decision 写入 EventLog
 - [ ] 明确 Phase 1 不启用 vector index、graph index、global auto-promotion 或 cross-project implicit visibility
 - [ ] 定义 `EvidencePack`、`WikiPage`、`WikiRevision` 的 Phase 1 子集
@@ -151,7 +152,7 @@ Memory 最小实现：
 - [x] 实现 LoopBudget 与 NoProgressTracker 的领域级停止规则
 - [x] 实现 `UserCommandInbox` 持久化、command_id 幂等和按 loop 的 pending 读取；LoopController 已在安全边界应用 `pause` / `resume` / `cancel`，`takeover` 和 side-effect 不确定分支仍待完成
 - [x] 增加注入式完整行 `CommandPoller`，并提供 poll → validate → submit → 下一安全边界 apply 的 controller API；真实 OS stdin、后台 polling 和 takeover 仍待完成
-- [ ] 实现 `GoalRevision` / `PlanRevision` 与旧计划失效
+- [x] 实现 `GoalRevision` / `PlanRevision` 的最小可序列化契约与旧 revision 失效（仅领域 metadata/stale-plan boundary；不接后台 takeover、自动重规划或审批恢复）
 - [ ] 实现 `InterruptRequest` 的安全边界和 `side_effect_uncertain` 分支
 - [x] 实现 `LoopBudget` 与 `NoProgressObservation`，达到上限后停止自动重试（fixture/resolved model step 已接入基于 `model_id + goal_id + observation` fingerprint 的重复请求检测；完整 action payload、plan revision、失败分类和跨进程恢复仍待完成）
 
@@ -246,7 +247,7 @@ Memory 最小实现：
 - [x] 定义、校验并持久化 `RouteDecision` 到 EventLog；routed 模型调用的开始/成功/失败事件关联 route ID
 - [x] 实现按 prompt ID/version、role/task 的最小 prompt binding 查询
 - [x] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成可冻结的 `ResolvedPromptPack` 并由 opt-in resolved bridge 使用（fake/localhost 请求已验证模板实际进入最终 messages、logical model 与 wire model 分离、wire body hash 一致；resolved controller 审计路径已接线）
-- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（resolved controller 成功、provider 失败、审计写入失败和 binding/approval fail-closed 已有回归；live provider、resolved fallback Attempt 和完整验证结果仍待完成）
+- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（resolved controller 成功记录、审计写入失败和 binding/approval fail-closed 已有回归；provider failure 当前仅有 EventLog/step/progress 失败证据，失败 `ModelCallRecord` 合同仍待设计；live provider、resolved fallback Attempt 和完整验证结果仍待完成）
 - [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider 的只读 action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；只读工具 raw output 已从 EventLog/TraceStore/SideEffectLedger 脱敏；文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
 - [x] 实现能力兼容、非静默的 fallback 事件（routed fixture/model-adapter 路径仅对 retryable provider failure 按声明顺序切换；新建父链可追踪的 Attempt，只引用实际追加的事件，累计预算与 no-progress 不因 fallback 重置；不可恢复失败/额度耗尽后关闭运行；resolved provider fallback 和跨进程恢复仍待完成）
 - [ ] 端到端验证 registry、prompt、provider request、trace、event log 和 checkpoint 均不保存认证明文（registry/config 的 auth_ref 与 endpoint 边界 focused 回归已通过；全链路审计脱敏仍未完成）
