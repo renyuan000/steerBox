@@ -61,7 +61,8 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V5 Trace 可读性 | 已验证切片 | `tests/loop_controller.rs`、`tests/runtime_cli.rs`；完整回放工具仍未实现 |
 | V6 文件修改与 diff boundary | 已验证切片 | `tests/dev_vertical_slice.rs`、`tests/runtime_cli.rs`、`tests/workspace_edit_audit_gates.rs`；bounded Markdown controller 缺 checkpoint/ledger、pending pause/cancel、终态及前置审计故障均不修改原始字节；不保证后置故障自动 rollback |
 | V7 RecoveryCheckpoint metadata | 已验证写入与只读解释切片 | `tests/audit_store.rs`、`tests/dev_vertical_slice.rs`；覆盖 loop/step 最新追加查询、hash 格式/歧义、未知恢复状态、no-write 矛盾、日志错误行号及查询不修改文件；不重算 workspace hash、不验证快照、不执行 restore/replay |
-| V7.1 单文件 snapshot/显式恢复 | 已验证独立 primitive 与当前回归 | `tests/workspace_snapshot.rs`、`tests/workspace_edit.rs`；focused 42 + 11 = 53 passed，覆盖私有正文/metadata 分离、binding/scope/hash/foreign-owner 拒绝、restore 错误分类、hardlink/store 祖先替换与 exact-byte restore；master 全量 563 passed/0 failed/0 ignored，strict clippy/lib-bin build/fmt/diff 通过；未接 controller，不代表 task/process 恢复 |
+| V7.1 单文件 snapshot/显式恢复 | 已验证独立 primitive 与当前回归 | `tests/workspace_snapshot.rs`、`tests/workspace_edit.rs`；focused 42 + 11 = 53 passed，覆盖私有正文/metadata 分离、binding/scope/hash/foreign-owner 拒绝、restore 错误分类、hardlink/store 祖先替换与 exact-byte restore；master 全量 563 passed/0 failed/0 ignored，strict clippy/lib-bin build/fmt/diff 通过；V7.1 仍不代表 task/process 恢复 |
+| V7.2 controller opt-in snapshot 接线 | 已验证 bounded Markdown controller 的 opt-in capture/显式 restore 边界 | `tests/controller_snapshot_integration.rs` 11 passed；另有 `workspace_snapshot` 43 项、`loop_controller` 37 项与 `workspace_edit_audit_gates` 14 项 focused 回归；覆盖 capture 前失败、公开 snapshot root、未配置 snapshot store 的兼容行为、非法 hash 不落事件、pre-mutation audit 失败不注册 binding、verification failure 不自动 restore、Paused/terminal restore 拒绝、failed restore metadata-only 事件及 post-restore audit failure 的 `side_effect_uncertain` 语义；默认路径不自动 capture，restore 不构成 rollback 或完整恢复，统一 PolicyGate/approval/ledger restore 接线仍待完成 |
 | V8 SideEffectLedger | 已验证记录与基础派生解释切片 | `tests/loop_controller.rs`、`tests/dev_vertical_slice.rs`、`tests/audit_store.rs`、`tests/workspace_edit_audit_gates.rs`；ledger 缺失或 mutation 前 append 故障阻止 controller Markdown 写入。disposition/status 是 metadata 派生解释，不改变 JSONL schema、不构成执行授权或完整恢复/补偿状态机 |
 | V9 GoalAlignmentCheck | 已验证切片 | `tests/drift_guard.rs`；结果写入完整 loop 仍待接线 |
 | V10 DriftGuard | 已验证切片 | `tests/drift_guard.rs` |
@@ -261,7 +262,30 @@ master 提供的本次 focused 结果为 snapshot 42 项、workspace edit 11 项
 - 正文上限 1 MiB，JSON private record 上限 6 MiB + 64 KiB，测试包含边界正文、转义膨胀和超限 record。Unix 新 store/record 的 owner-only 权限、现有过宽权限拒绝及当前目标 permission mode 保留已有 focused 覆盖；foreign-owner store/record 拒绝由 root-only 测试覆盖，master 确认本次 effective UID=0，测试实际 chown 仅涉及 TempDir；非 root 运行该用例会提前返回，不能把那种结果当作 owner 场景的运行时证据。非 Unix 实现 fail-closed，未宣称 Windows ACL 已验证。
 - snapshot `before_hash`/restore `expected_after_hash` 为 `SHA256(file bytes)`；旧 controller checkpoint 为 `SHA256(relative_path + NUL + file bytes)`，不可混用。body hash 是完整性而非认证，本地 owner/权限不是加密或同用户/root 隔离，不能抵御同用户同时修改 body/hash。
 
-限制：private body 仅在 workspace 外本地存储，不自动注入 prompt/事件/trace/summary/model-call store。恢复只保留 Unix permission mode，不保留 inode/owner/ACL/xattrs；精确替换不是恶意并发 CAS、跨进程 writer 锁或完整 crash transaction，replacement 后 sync 失败可能已改变目标，须检查后重试，该错误阶段未以本次 focused 记录宣称独立故障注入通过。controller 默认不捕获或自动 restore，metadata 查询仍只读，TaskRun/Attempt/预算/进程及外部副作用恢复未完成。
+限制：private body 仅在 workspace 外本地存储，不自动注入 prompt/事件/trace/summary/model-call store。恢复只保留 Unix permission mode，不保留 inode/owner/ACL/xattrs；精确替换不是恶意并发 CAS、跨进程 writer 锁或完整 crash transaction，replacement 后 sync 失败可能已改变目标，须检查后重试，该错误阶段未以本次 focused 记录宣称独立故障注入通过。controller 仅在显式配置 snapshot store 时 capture，restore 仍由 trusted caller 显式调用；verification failure 不自动 rollback，metadata 查询仍只读，TaskRun/Attempt/预算/进程及外部副作用恢复未完成。
+
+### V7.2 bounded Markdown controller 的 opt-in snapshot 接线
+
+当前 controller 接线的 focused 验收入口：
+
+```bash
+CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 \
+  cargo test --locked --offline --test controller_snapshot_integration --quiet
+```
+
+当前现场结果为 `11 passed; 0 failed; 0 ignored`。11 项覆盖：
+
+- 配置 `with_snapshot_store(...)` 后，workspace edit 在 mutation 前 capture，事件仅记录 snapshot metadata；显式 restore 可恢复原始正文
+- capture 前置失败（包括公开 snapshot root）不会修改目标文件，也不启动 tool ledger
+- 未配置 snapshot store 时保持既有 edit 行为，不产生 snapshot capture 事件
+- verification failure 产生 `RestoreRequired`，保留坏内容，不自动调用 restore
+- Paused 或 terminal controller 拒绝显式 restore
+- `approved=false`、错误 expected current hash、未绑定 snapshot 等 restore 失败不覆盖目标文件
+- failed restore 只写 metadata-only `workspace_snapshot_restore_failed` 事件，不写入文件正文
+- 非法 expected hash 不写入 restore 请求事件；capture 事件或 checkpoint 失败时 binding 不注册；恢复后成功事件写入失败时返回固定 `side_effect_uncertain` 错误
+- snapshot 正文保留在 workspace 外的 private record，不进入公共 EventLog、Trace、summary 或模型调用记录
+
+显式 restore 还要求 trusted caller approval、当前 controller run 的 snapshot binding、snapshot integrity 和 expected current raw-bytes hash；人类在 agent edit 后修改目标文件会触发 hash mismatch 并拒绝覆盖。snapshot hash 是 `SHA256(file bytes)`，不能与 legacy checkpoint 的 `SHA256(relative_path + NUL + file bytes)` 混用。该 slice 不接受 model action，也不自行接入 PolicyGate、approval store 或 SideEffectLedger；这些统一授权/审计仍是后续任务。它不提供 verification failure 自动 rollback、TaskRun/Attempt 恢复、进程/跨进程恢复、并发 writer CAS、完整 crash transaction 或外部副作用补偿；replacement 后 sync failure 仍需检查现场。
 
 ### V8. SideEffectLedger
 

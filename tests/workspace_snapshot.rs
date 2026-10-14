@@ -134,6 +134,30 @@ fn restore_requires_explicit_approval_and_keeps_current_bytes() {
 }
 
 #[test]
+fn restore_rejects_invalid_expected_hash_before_comparing_current_bytes() {
+    let fixture = Fixture::new();
+    fixture.capture();
+    fs::write(fixture.workspace.join("README.md"), AFTER).unwrap();
+    for invalid_hash in [
+        "sha256:not-a-hash".to_owned(),
+        format!("sha256:{}", "a".repeat(65)),
+    ] {
+        let error = fixture
+            .store()
+            .restore(
+                &fixture.workspace,
+                &fixture.goal,
+                "snapshot-1",
+                &invalid_hash,
+                true,
+            )
+            .unwrap_err();
+        assert_eq!(error, SnapshotError::InvalidHash);
+        fixture.assert_bytes(AFTER);
+    }
+}
+
+#[test]
 fn restore_rejects_user_changed_current_file_hash() {
     let fixture = Fixture::new();
     fixture.capture();

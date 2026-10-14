@@ -1,0 +1,541 @@
+//! Controller opt-in snapshot integration. Restore is explicit; verification
+//! failure is recorded as restore-required and never auto-restored.
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::{Path, PathBuf};
+use steerbox::audit_store::{CheckpointStore, RecoveryAction, SideEffectLedger};
+use steerbox::domain::{GoalContract, HumanSteeringMode, LoopBudget};
+use steerbox::event_log::EventLog;
+use steerbox::loop_controller::ReadOnlyLoopController;
+use steerbox::model_contracts::{ActionPathScope, ModelActionEnvelope, VerificationContract};
+use steerbox::policy_gate::PolicyGate;
+use steerbox::tool_executor::{ReadOnlyToolExecutor, WorkspaceToolExecutor};
+use steerbox::tool_registry::ToolRegistry;
+use steerbox::user_command_inbox::{CommandKind, UserCommand, UserCommandInbox};
+
+fn sha256(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+struct Fixture {
+    _dir: tempfile::TempDir,
+    workspace: PathBuf,
+    snapshot_root: PathBuf,
+    events: PathBuf,
+    checkpoints: PathBuf,
+    traces: PathBuf,
+    side_effects: PathBuf,
+    goal: GoalContract,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("README.md"), "before\n").unwrap();
+        let snapshot_root = dir.path().join("snapshots");
+        let mut goal = GoalContract::new(
+            "goal-controller-snapshot",
+            "project-controller-snapshot",
+            "edit bounded markdown",
+            vec![".".into()],
+            Vec::new(),
+            vec!["verified".into()],
+        );
+        goal.allowed_tools = vec!["edit_markdown".into(), "markdown_link_check".into()];
+        goal.human_steering_mode = HumanSteeringMode::HumanInTheLoop;
+        Self {
+            events: workspace.join("events.jsonl"),
+            checkpoints: workspace.join("checkpoints.jsonl"),
+            traces: workspace.join("traces.jsonl"),
+            side_effects: workspace.join("side-effects.jsonl"),
+            _dir: dir,
+            workspace,
+            snapshot_root,
+            goal,
+        }
+    }
+
+    fn controller_with_snapshot_root(
+        &self,
+        snapshot_root: Option<&Path>,
+    ) -> ReadOnlyLoopController {
+        let controller = ReadOnlyLoopController::start(
+            EventLog::open(&self.events).unwrap(),
+            self.goal.clone(),
+            "loop-controller-snapshot",
+            "task-controller-snapshot",
+            LoopBudget::new(10, 0, 0, 1, 0, 10, 1, 1),
+        )
+        .unwrap()
+        .with_checkpoint_store(&self.checkpoints)
+        .with_audit_stores(&self.traces, &self.side_effects);
+        match snapshot_root {
+            Some(root) => controller.with_snapshot_store(root),
+            None => controller,
+        }
+    }
+
+    fn controller(&self) -> ReadOnlyLoopController {
+        self.controller_with_snapshot_root(Some(&self.snapshot_root))
+    }
+
+    fn controller_without_snapshot(&self) -> ReadOnlyLoopController {
+        self.controller_with_snapshot_root(None)
+    }
+
+    fn controller_with_snapshot_root_path(&self, root: &Path) -> ReadOnlyLoopController {
+        ReadOnlyLoopController::start(
+            EventLog::open(&self.events).unwrap(),
+            self.goal.clone(),
+            "loop-controller-snapshot",
+            "task-controller-snapshot",
+            LoopBudget::new(10, 0, 0, 1, 0, 10, 1, 1),
+        )
+        .unwrap()
+        .with_checkpoint_store(&self.checkpoints)
+        .with_audit_stores(&self.traces, &self.side_effects)
+        .with_snapshot_store(root)
+    }
+
+    fn action(&self, replacement: &str) -> ModelActionEnvelope {
+        ModelActionEnvelope {
+            schema_version: 1,
+            action_id: "controller-snapshot-edit".into(),
+            tool_id: "edit_markdown".into(),
+            parameters: serde_json::json!({
+                "path": "README.md",
+                "expected": "before\n",
+                "replacement": replacement
+            }),
+            path_scope: ActionPathScope {
+                root: self.workspace.display().to_string(),
+                allowed_paths: vec!["README.md".into()],
+            },
+            verification: VerificationContract {
+                verifier_tool_id: "markdown_link_check".into(),
+                parameters: serde_json::json!({"path": "README.md"}),
+            },
+        }
+    }
+
+    fn run_edit(
+        &self,
+        controller: &mut ReadOnlyLoopController,
+        action: &ModelActionEnvelope,
+        step_id: &str,
+    ) -> Result<
+        steerbox::tool_executor::ToolCallOutput,
+        steerbox::loop_controller::LoopControllerError,
+    > {
+        controller.execute_workspace_edit_action(
+            &ToolRegistry::baseline().unwrap(),
+            &PolicyGate::new(),
+            &WorkspaceToolExecutor,
+            &ReadOnlyToolExecutor,
+            &self.workspace,
+            action,
+            step_id,
+            true,
+        )
+    }
+
+    fn snapshot_ids(&self) -> Vec<String> {
+        let mut ids = fs::read_dir(&self.snapshot_root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .map(|path| path.file_stem().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+
+    fn events(&self) -> Vec<steerbox::domain::EventEnvelope> {
+        EventLog::open(&self.events).unwrap().read_all().unwrap()
+    }
+}
+
+#[test]
+fn opt_in_controller_edit_captures_snapshot_before_mutation_and_explicit_restore_works() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    fixture
+        .run_edit(
+            &mut controller,
+            &fixture.action("after\n"),
+            "step-snapshot-success",
+        )
+        .expect("approved edit succeeds");
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"after\n"
+    );
+    assert_eq!(fixture.snapshot_ids().len(), 1);
+    let events = fixture.events();
+    let captured = events
+        .iter()
+        .find(|event| event.event_type == "workspace_snapshot_captured")
+        .expect("controller records snapshot capture");
+    assert_eq!(captured.payload["relative_path"], "README.md");
+    assert_eq!(captured.payload["before_hash"], sha256(b"before\n"));
+    let snapshot_id = captured.payload["snapshot_id"].as_str().unwrap();
+    assert_eq!(snapshot_id, fixture.snapshot_ids()[0]);
+
+    controller
+        .restore_workspace_snapshot(snapshot_id, &sha256(b"after\n"), true)
+        .expect("explicit restore succeeds");
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"before\n"
+    );
+}
+
+#[test]
+fn verification_failure_records_restore_required_without_automatic_restore() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    let result = fixture.run_edit(
+        &mut controller,
+        &fixture.action("after\n[broken](missing.md)"),
+        "step-snapshot-verify-failed",
+    );
+    assert!(result.is_err(), "semantic verification must fail");
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"after\n[broken](missing.md)"
+    );
+    assert_eq!(fixture.snapshot_ids().len(), 1);
+    let recovery = CheckpointStore::open(&fixture.checkpoints)
+        .latest_for_loop_step("loop-controller-snapshot", "step-snapshot-verify-failed")
+        .unwrap()
+        .expect("verification checkpoint exists");
+    assert_eq!(recovery.action, RecoveryAction::RestoreRequired);
+    let events = fixture.events();
+    let snapshot_id = events
+        .iter()
+        .find(|event| event.event_type == "workspace_snapshot_captured")
+        .and_then(|event| event.payload["snapshot_id"].as_str())
+        .expect("snapshot capture event contains id")
+        .to_owned();
+    assert!(recovery
+        .metadata
+        .side_effect_refs
+        .contains(&format!("snapshot:{snapshot_id}")));
+    assert!(fixture
+        .events()
+        .iter()
+        .all(|event| event.event_type != "workspace_snapshot_restored"));
+}
+
+#[test]
+fn explicit_restore_keeps_approval_and_expected_after_hash_boundaries() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    fixture
+        .run_edit(
+            &mut controller,
+            &fixture.action("after\n"),
+            "step-snapshot-boundary",
+        )
+        .unwrap();
+    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    assert!(controller
+        .restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), false)
+        .is_err());
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"after\n"
+    );
+    assert!(controller
+        .restore_workspace_snapshot(&snapshot_id, &sha256(b"wrong-current-version"), true)
+        .is_err());
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"after\n"
+    );
+    controller
+        .restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), true)
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"before\n"
+    );
+}
+
+#[test]
+fn invalid_expected_after_hash_is_rejected_before_restore_event() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    fixture
+        .run_edit(
+            &mut controller,
+            &fixture.action("after\n"),
+            "step-invalid-restore-hash",
+        )
+        .unwrap();
+    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    let invalid_hashes = [
+        "sha256:not-a-hash".to_owned(),
+        format!("sha256:{}", "a".repeat(65)),
+    ];
+
+    for invalid_hash in invalid_hashes {
+        let error = controller
+            .restore_workspace_snapshot(&snapshot_id, &invalid_hash, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid expected current content hash"));
+        assert!(!error.contains(&invalid_hash));
+        assert!(!fixture
+            .events()
+            .iter()
+            .any(|event| { event.event_type == "workspace_snapshot_restore_requested" }));
+        let serialized = serde_json::to_string(&fixture.events()).unwrap();
+        assert!(!serialized.contains(&invalid_hash));
+    }
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"after\n"
+    );
+}
+
+#[test]
+fn snapshot_binding_is_not_registered_before_pre_mutation_audit_completes() {
+    let fixture = Fixture::new();
+    fs::create_dir(&fixture.checkpoints).unwrap();
+    let mut controller = fixture.controller();
+    let result = fixture.run_edit(
+        &mut controller,
+        &fixture.action("after\n"),
+        "step-binding-audit-failure",
+    );
+    assert!(result.is_err());
+    assert_eq!(fixture.snapshot_ids().len(), 1);
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"before\n"
+    );
+    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    let restore = controller.restore_workspace_snapshot(&snapshot_id, &sha256(b"before\n"), true);
+    assert!(restore
+        .unwrap_err()
+        .to_string()
+        .contains("snapshot is not bound to this controller run"));
+}
+
+#[test]
+fn capture_failure_is_pre_mutation_and_does_not_start_tool_ledger() {
+    let fixture = Fixture::new();
+    let invalid_root = fixture.workspace.join("snapshots-inside-workspace");
+    let mut controller = fixture.controller_with_snapshot_root_path(&invalid_root);
+    let result = fixture.run_edit(
+        &mut controller,
+        &fixture.action("after\n"),
+        "step-snapshot-capture-failed",
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"before\n"
+    );
+    assert!(!fixture.events().iter().any(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "workspace_snapshot_captured" | "model_action_started"
+        )
+    }));
+    assert!(!SideEffectLedger::open(&fixture.side_effects)
+        .read_all()
+        .unwrap()
+        .iter()
+        .any(|record| record.status == "started"));
+}
+
+#[cfg(unix)]
+#[test]
+fn public_snapshot_root_capture_failure_does_not_mutate_or_start_tool() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    fs::create_dir(&fixture.snapshot_root).unwrap();
+    fs::set_permissions(&fixture.snapshot_root, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut controller = fixture.controller();
+    let result = fixture.run_edit(
+        &mut controller,
+        &fixture.action("after\n"),
+        "step-snapshot-public-root",
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"before\n"
+    );
+    assert!(!fixture
+        .events()
+        .iter()
+        .any(|event| event.event_type == "model_action_started"));
+    assert!(!SideEffectLedger::open(&fixture.side_effects)
+        .read_all()
+        .unwrap()
+        .iter()
+        .any(|record| record.status == "started"));
+}
+
+#[test]
+fn controller_without_snapshot_store_keeps_existing_edit_behavior_without_snapshot_event() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller_without_snapshot();
+    fixture
+        .run_edit(
+            &mut controller,
+            &fixture.action("after\n"),
+            "step-no-snapshot",
+        )
+        .expect("existing edit path remains usable without opt-in snapshots");
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"after\n"
+    );
+    assert!(!fixture.snapshot_root.exists());
+    assert!(fixture
+        .events()
+        .iter()
+        .all(|event| event.event_type != "workspace_snapshot_captured"));
+}
+
+#[test]
+fn restore_rejects_paused_and_terminal_controller_states() {
+    let fixture = Fixture::new();
+    let inbox = UserCommandInbox::open(fixture._dir.path().join("commands.jsonl"));
+    let mut paused_controller = fixture.controller().with_command_inbox(inbox.clone());
+    fixture
+        .run_edit(
+            &mut paused_controller,
+            &fixture.action("after\n"),
+            "step-restore-paused",
+        )
+        .unwrap();
+    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    inbox
+        .submit(
+            UserCommand::new(
+                "pause-before-restore",
+                "operator",
+                &fixture.goal.project_id,
+                &fixture.goal.goal_id,
+                "task-controller-snapshot",
+                "loop-controller-snapshot",
+                CommandKind::Pause,
+                "restore-boundary",
+                serde_json::json!({"reason":"pause before explicit restore"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(matches!(
+        paused_controller.restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), true),
+        Err(steerbox::loop_controller::LoopControllerError::Paused)
+    ));
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"after\n"
+    );
+
+    let mut terminal_controller = fixture.controller_without_snapshot();
+    terminal_controller.complete().unwrap();
+    assert!(terminal_controller
+        .restore_workspace_snapshot("missing", &sha256(b"after\n"), true)
+        .is_err());
+}
+
+#[test]
+fn failed_restore_writes_metadata_only_event_without_file_body() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    fixture
+        .run_edit(
+            &mut controller,
+            &fixture.action("after\n"),
+            "step-restore-failed",
+        )
+        .unwrap();
+    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    fs::write(
+        fixture.workspace.join("README.md"),
+        "human changed the file\n",
+    )
+    .unwrap();
+    assert!(controller
+        .restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), true)
+        .is_err());
+    let events = fixture.events();
+    let failed = events
+        .iter()
+        .find(|event| event.event_type == "workspace_snapshot_restore_failed")
+        .expect("restore failure event exists");
+    let serialized = failed.payload.to_string();
+    assert_eq!(failed.payload["error"], "snapshot_restore_failed");
+    assert!(!serialized.contains("human changed the file"));
+    assert!(!serialized.contains("after\n"));
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"human changed the file\n"
+    );
+}
+
+#[test]
+fn physical_restore_with_restored_event_failure_returns_side_effect_uncertain() {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    fixture
+        .run_edit(
+            &mut controller,
+            &fixture.action("after\n"),
+            "step-restore-audit-uncertain",
+        )
+        .unwrap();
+    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    let event_path = fixture.events.clone();
+    let backup_path = fixture.events.with_extension("jsonl.before-uncertain");
+    let watcher_backup_path = backup_path.clone();
+    let watcher = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(contents) = fs::read(&event_path) {
+                if contents
+                    .windows(b"workspace_snapshot_restore_requested".len())
+                    .any(|window| window == b"workspace_snapshot_restore_requested")
+                {
+                    fs::rename(&event_path, &watcher_backup_path).unwrap();
+                    fs::create_dir(&event_path).unwrap();
+                    return true;
+                }
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::yield_now();
+        }
+    });
+
+    let result = controller.restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), true);
+    assert!(
+        watcher.join().unwrap(),
+        "restore request event was not observed"
+    );
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("side_effect_uncertain"));
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"before\n"
+    );
+    let request_log = fs::read_to_string(backup_path).unwrap();
+    assert!(request_log.contains("workspace_snapshot_restore_requested"));
+}

@@ -69,12 +69,15 @@ pub enum SnapshotError {
     BindingMismatch,
     #[error("current content hash does not match the expected version")]
     CurrentHashMismatch,
+    #[error("invalid expected current content hash")]
+    InvalidHash,
     #[error("conditional workspace replacement failed; inspect current file before retrying")]
     ReplacementFailed,
     #[error("snapshot filesystem operation failed ({kind:?})")]
     Io { kind: std::io::ErrorKind },
 }
 
+#[derive(Debug, Clone)]
 pub struct WorkspaceSnapshotStore {
     root: PathBuf,
 }
@@ -152,6 +155,7 @@ impl WorkspaceSnapshotStore {
         if !approved {
             return Err(SnapshotError::ApprovalRequired);
         }
+        validate_content_hash(expected_after_hash)?;
         supported_platform()?;
         validate_id(snapshot_id)?;
         validate_goal_identity(goal)?;
@@ -323,6 +327,16 @@ fn read_text(path: &Path, limit: usize, private: bool) -> Result<String, Snapsho
 
 fn content_hash(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+pub(crate) fn validate_content_hash(value: &str) -> Result<(), SnapshotError> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(SnapshotError::InvalidHash);
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(SnapshotError::InvalidHash);
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

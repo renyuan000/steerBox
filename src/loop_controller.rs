@@ -41,8 +41,10 @@ use crate::user_command_inbox::{
     CommandStatus, NonBlockingCommandReader, RuntimeTick, RuntimeTickError, UserCommand,
     UserCommandInbox, UserCommandInboxError,
 };
+use crate::workspace_snapshot::{validate_content_hash, WorkspaceSnapshotStore};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -100,6 +102,8 @@ pub enum LoopControllerError {
     ToolExecution(#[from] ToolExecutionError),
     #[error("workspace tool execution failed: {0}")]
     WorkspaceToolExecution(String),
+    #[error("workspace snapshot failed: {0}")]
+    WorkspaceSnapshot(String),
     #[error("audit store failed: {0}")]
     AuditStore(#[from] AuditStoreError),
     #[error("user command inbox failed: {0}")]
@@ -112,6 +116,14 @@ pub enum LoopControllerError {
 
 struct ProgressSinkHolder {
     sink: Box<dyn ProgressSink>,
+}
+
+#[derive(Debug, Clone)]
+struct SnapshotBinding {
+    workspace: std::path::PathBuf,
+    step_id: String,
+    relative_path: String,
+    before_hash: String,
 }
 
 impl std::fmt::Debug for ProgressSinkHolder {
@@ -133,6 +145,8 @@ pub struct ReadOnlyLoopController {
     trace_store: Option<TraceStore>,
     checkpoint_store: Option<CheckpointStore>,
     side_effect_ledger: Option<SideEffectLedger>,
+    snapshot_store: Option<WorkspaceSnapshotStore>,
+    snapshot_bindings: HashMap<String, SnapshotBinding>,
     model_call_store: Option<ModelCallStore>,
     approval_store: Option<ApprovalStore>,
     progress_sink: Option<ProgressSinkHolder>,
@@ -259,6 +273,8 @@ impl ReadOnlyLoopController {
             trace_store: None,
             checkpoint_store: None,
             side_effect_ledger: None,
+            snapshot_store: None,
+            snapshot_bindings: HashMap::new(),
             model_call_store: None,
             approval_store: None,
             progress_sink: None,
@@ -509,6 +525,102 @@ impl ReadOnlyLoopController {
     pub fn with_checkpoint_store(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.checkpoint_store = Some(CheckpointStore::open(path));
         self
+    }
+
+    /// Opt into private single-file snapshots for workspace edits. This does
+    /// not enable automatic rollback; restore remains an explicit trusted-call
+    /// operation through `restore_workspace_snapshot`.
+    pub fn with_snapshot_store(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.snapshot_store = Some(WorkspaceSnapshotStore::open(root));
+        self
+    }
+
+    /// Explicitly restore a controller-captured snapshot. The caller supplies
+    /// the trusted approval and expected current raw-bytes hash; verification
+    /// failures never call this method automatically.
+    pub fn restore_workspace_snapshot(
+        &mut self,
+        snapshot_id: &str,
+        expected_after_hash: &str,
+        approved: bool,
+    ) -> Result<crate::workspace_edit::EditResult, LoopControllerError> {
+        self.prepare_action()?;
+        if !approved {
+            return Err(LoopControllerError::WorkspaceSnapshot(
+                "restore requires explicit trusted-caller approval".into(),
+            ));
+        }
+        validate_content_hash(expected_after_hash).map_err(|_| {
+            LoopControllerError::WorkspaceSnapshot("invalid expected current content hash".into())
+        })?;
+        let binding = self
+            .snapshot_bindings
+            .get(snapshot_id)
+            .cloned()
+            .ok_or_else(|| {
+                LoopControllerError::WorkspaceSnapshot(
+                    "snapshot is not bound to this controller run".into(),
+                )
+            })?;
+        let store = self.snapshot_store.clone().ok_or_else(|| {
+            LoopControllerError::WorkspaceSnapshot("snapshot store is not configured".into())
+        })?;
+        self.append_model_event(
+            "workspace_snapshot_restore_requested",
+            &format!("{snapshot_id}:restore_requested"),
+            json!({
+                "snapshot_id": snapshot_id,
+                "step_id": binding.step_id,
+                "relative_path": binding.relative_path,
+                "before_hash": binding.before_hash,
+                "expected_after_hash": expected_after_hash,
+            }),
+        )?;
+        let result = store.restore(
+            &binding.workspace,
+            &self.goal,
+            snapshot_id,
+            expected_after_hash,
+            true,
+        );
+        match result {
+            Ok(edit) => {
+                if self
+                    .append_model_event(
+                        "workspace_snapshot_restored",
+                        &format!("{snapshot_id}:restored"),
+                        json!({
+                            "snapshot_id": snapshot_id,
+                            "step_id": binding.step_id,
+                            "relative_path": edit.relative_path,
+                            "bytes_before": edit.bytes_before,
+                            "bytes_after": edit.bytes_after,
+                            "changed": edit.changed,
+                        }),
+                    )
+                    .is_err()
+                {
+                    return Err(LoopControllerError::WorkspaceSnapshot(
+                        "workspace snapshot restored but audit event append failed; side_effect_uncertain"
+                            .into(),
+                    ));
+                }
+                Ok(edit)
+            }
+            Err(error) => {
+                self.append_model_event(
+                    "workspace_snapshot_restore_failed",
+                    &format!("{snapshot_id}:restore_failed"),
+                    json!({
+                        "snapshot_id": snapshot_id,
+                        "step_id": binding.step_id,
+                        "relative_path": binding.relative_path,
+                        "error": "snapshot_restore_failed",
+                    }),
+                )?;
+                Err(LoopControllerError::WorkspaceSnapshot(error.to_string()))
+            }
+        }
     }
 
     pub fn with_model_call_store(mut self, store: ModelCallStore) -> Self {
@@ -1966,11 +2078,11 @@ impl ReadOnlyLoopController {
         }
         // Authorization alone cannot make an unaudited mutation safe. Keep
         // these requirements local to workspace edits, not read-only tools.
-        let checkpoint_store = self.checkpoint_store.as_ref().ok_or_else(|| {
-            LoopControllerError::WorkspaceToolExecution(
+        if self.checkpoint_store.is_none() {
+            return Err(LoopControllerError::WorkspaceToolExecution(
                 "workspace edit requires a checkpoint store".into(),
-            )
-        })?;
+            ));
+        }
         if self.side_effect_ledger.is_none() {
             return Err(LoopControllerError::WorkspaceToolExecution(
                 "workspace edit requires a side-effect ledger".into(),
@@ -1984,7 +2096,39 @@ impl ReadOnlyLoopController {
             .ok_or_else(|| {
                 LoopControllerError::WorkspaceToolExecution("missing edit path".into())
             })?;
+        let snapshot = if let Some(snapshot_store) = self.snapshot_store.clone() {
+            let snapshot_id =
+                controller_snapshot_id(&self.loop_run.loop_run_id, &step_id, &action.action_id);
+            let metadata = snapshot_store
+                .capture(workspace, &self.goal, relative_path, &snapshot_id)
+                .map_err(|error| LoopControllerError::WorkspaceSnapshot(error.to_string()))?;
+            self.append_model_event(
+                "workspace_snapshot_captured",
+                &format!("{step_id}:snapshot_captured"),
+                json!({
+                    "snapshot_id": metadata.snapshot_id,
+                    "relative_path": metadata.relative_path,
+                    "before_hash": metadata.before_hash,
+                    "bytes_before": metadata.bytes_before,
+                }),
+            )?;
+            Some((metadata.snapshot_id, metadata.before_hash))
+        } else {
+            None
+        };
+        let snapshot_id = snapshot
+            .as_ref()
+            .map(|(snapshot_id, _)| snapshot_id.clone());
         let before_hash = workspace_file_hash(workspace, relative_path)?;
+        let mut checkpoint_side_effect_refs = vec![format!("{step_id}:side-effect")];
+        if let Some(snapshot_id) = &snapshot_id {
+            checkpoint_side_effect_refs.push(format!("snapshot:{snapshot_id}"));
+        }
+        let checkpoint_store = self.checkpoint_store.as_ref().ok_or_else(|| {
+            LoopControllerError::WorkspaceToolExecution(
+                "workspace edit requires a checkpoint store".into(),
+            )
+        })?;
         checkpoint_store.append(&CheckpointMetadata {
             checkpoint_id: format!("{step_id}:checkpoint:before-write"),
             goal_id: self.goal.goal_id.clone(),
@@ -1993,7 +2137,7 @@ impl ReadOnlyLoopController {
             files: vec![relative_path.to_owned()],
             diff_boundary: format!("before={before_hash};after=pending"),
             recoverability: "local_workspace_restore_or_escalate".into(),
-            side_effect_refs: vec![format!("{step_id}:side-effect")],
+            side_effect_refs: checkpoint_side_effect_refs.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
         })?;
         self.append_model_event(
@@ -2008,6 +2152,17 @@ impl ReadOnlyLoopController {
             "started",
             "workspace edit approved; mutation started",
         )?;
+        if let Some((snapshot_id, snapshot_before_hash)) = &snapshot {
+            self.snapshot_bindings.insert(
+                snapshot_id.clone(),
+                SnapshotBinding {
+                    workspace: workspace.to_path_buf(),
+                    step_id: step_id.clone(),
+                    relative_path: relative_path.to_owned(),
+                    before_hash: snapshot_before_hash.clone(),
+                },
+            );
+        }
         let _action_output = match workspace_executor.execute(
             registry,
             workspace,
@@ -2043,7 +2198,7 @@ impl ReadOnlyLoopController {
                         files: vec![relative_path.to_owned()],
                         diff_boundary: format!("before={before_hash};after={after_boundary}"),
                         recoverability: "write_failed_local_workspace_restore_or_escalate".into(),
-                        side_effect_refs: vec![format!("{step_id}:side-effect")],
+                        side_effect_refs: checkpoint_side_effect_refs.clone(),
                         created_at: chrono::Utc::now().to_rfc3339(),
                     })?;
                 }
@@ -2111,7 +2266,7 @@ impl ReadOnlyLoopController {
                         diff_boundary: format!("before={before_hash};after={after_hash}"),
                         recoverability: "verification_failed_local_workspace_restore_or_escalate"
                             .into(),
-                        side_effect_refs: vec![format!("{step_id}:side-effect")],
+                        side_effect_refs: checkpoint_side_effect_refs.clone(),
                         created_at: chrono::Utc::now().to_rfc3339(),
                     })?;
                 }
@@ -2146,7 +2301,7 @@ impl ReadOnlyLoopController {
                     diff_boundary: format!("before={before_hash};after={after_hash}"),
                     recoverability: "verification_failed_local_workspace_restore_or_escalate"
                         .into(),
-                    side_effect_refs: vec![format!("{step_id}:side-effect")],
+                    side_effect_refs: checkpoint_side_effect_refs.clone(),
                     created_at: chrono::Utc::now().to_rfc3339(),
                 })?;
             }
@@ -2163,7 +2318,7 @@ impl ReadOnlyLoopController {
                 files: vec![relative_path.to_owned()],
                 diff_boundary: format!("before={before_hash};after={after_hash}"),
                 recoverability: "verified_local_workspace_restore_or_escalate".into(),
-                side_effect_refs: vec![format!("{step_id}:side-effect")],
+                side_effect_refs: checkpoint_side_effect_refs.clone(),
                 created_at: chrono::Utc::now().to_rfc3339(),
             })?;
         }
@@ -2835,6 +2990,11 @@ fn workspace_file_hash(
     hasher.update([0]);
     hasher.update(contents);
     Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+fn controller_snapshot_id(loop_run_id: &str, step_id: &str, action_id: &str) -> String {
+    let seed = format!("{loop_run_id}:{step_id}:{action_id}");
+    format!("snapshot-{:x}", Sha256::digest(seed.as_bytes()))
 }
 
 fn redact_audit_text(value: &str) -> String {
