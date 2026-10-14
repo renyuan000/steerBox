@@ -1358,12 +1358,35 @@ impl ReadOnlyLoopController {
         &mut self,
         router: &ModelRouter<'_>,
         adapters: &ModelAdapterRegistry,
-        mut route_request: RouteRequest,
+        route_request: RouteRequest,
         step_id: impl Into<String>,
         observation: impl Into<String>,
     ) -> Result<ModelDecision, LoopControllerError> {
-        let step_id = step_id.into();
-        let observation = observation.into();
+        let result = self.run_routed_model_step_inner(
+            router,
+            adapters,
+            route_request,
+            step_id.into(),
+            observation.into(),
+        );
+        if matches!(
+            &result,
+            Err(LoopControllerError::EventLog(_) | LoopControllerError::ProgressReport(_))
+        ) && self.loop_run.status == LoopStatus::Running
+        {
+            self.close_failed_routed_state()?;
+        }
+        result
+    }
+
+    fn run_routed_model_step_inner(
+        &mut self,
+        router: &ModelRouter<'_>,
+        adapters: &ModelAdapterRegistry,
+        mut route_request: RouteRequest,
+        step_id: String,
+        observation: String,
+    ) -> Result<ModelDecision, LoopControllerError> {
         self.prepare_step_action()?;
         route_request.risk_level = max_route_risk(route_request.risk_level, self.goal.risk_level);
         let route_decision = router.route(&route_request)?;
@@ -1534,16 +1557,27 @@ impl ReadOnlyLoopController {
     }
 
     fn close_failed_routed_run(&mut self) -> Result<(), LoopControllerError> {
-        let attempt_id = self
-            .task_run
-            .current_attempt_id
-            .clone()
-            .ok_or_else(|| AttemptLineageError::AttemptNotFound("current_attempt_id".into()))?;
+        if self.loop_run.status != LoopStatus::Running {
+            return Ok(());
+        }
+        self.close_failed_routed_state()?;
         self.append_model_event(
             "loop_failed",
             &format!("{}:failed", self.loop_run.loop_run_id),
             json!({"status": "failed", "summary": "routed model step failed"}),
         )?;
+        Ok(())
+    }
+
+    fn close_failed_routed_state(&mut self) -> Result<(), LoopControllerError> {
+        if self.loop_run.status != LoopStatus::Running {
+            return Ok(());
+        }
+        let attempt_id = self
+            .task_run
+            .current_attempt_id
+            .clone()
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound("current_attempt_id".into()))?;
         let attempt = self
             .task_run
             .attempt(&attempt_id)

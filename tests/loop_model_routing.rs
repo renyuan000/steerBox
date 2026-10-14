@@ -21,6 +21,8 @@ use steerbox::model_router::{
 };
 use steerbox::provider_adapter::ProviderErrorClass;
 use steerbox::state_store::StateStore;
+use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
+use steerbox::user_command_inbox::{CommandKind, UserCommand, UserCommandInbox};
 
 static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
@@ -94,6 +96,46 @@ impl ModelAdapter for RetryableAdapter {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Err(ModelAdapterError::Provider { class: self.class })
     }
+}
+
+struct FailOnceProgressSink {
+    subject: ProgressSubject,
+    status: ProgressStatus,
+    failed: bool,
+}
+
+impl ProgressSink for FailOnceProgressSink {
+    fn report(&mut self, event: ProgressEvent) -> std::io::Result<()> {
+        if !self.failed && event.subject == self.subject && event.status == self.status {
+            self.failed = true;
+            return Err(std::io::Error::other("injected routed progress failure"));
+        }
+        Ok(())
+    }
+}
+
+struct BlockAuditAfterStepFailure {
+    path: PathBuf,
+    blocked: bool,
+}
+
+impl ProgressSink for BlockAuditAfterStepFailure {
+    fn report(&mut self, event: ProgressEvent) -> std::io::Result<()> {
+        if !self.blocked
+            && event.subject == ProgressSubject::Step
+            && event.status == ProgressStatus::Failed
+        {
+            fs::rename(&self.path, self.path.with_extension("saved"))?;
+            fs::create_dir(&self.path)?;
+            self.blocked = true;
+        }
+        Ok(())
+    }
+}
+
+fn restore_blocked_event_log(path: &Path) {
+    fs::remove_dir(path).expect("injected log blocker removes");
+    fs::rename(path.with_extension("saved"), path).expect("original event log restores");
 }
 
 fn read_events(path: &Path) -> Vec<EventEnvelope> {
@@ -412,13 +454,11 @@ fn assert_unapproved_route_is_blocked(request: RouteRequest) {
             }),
         )
         .expect("adapter registers");
-    let result = controller(&events_path).run_routed_model_step(
-        &router,
-        &adapters,
-        request,
-        "step-routing",
-        "ready",
-    );
+    let mut controller = controller(&events_path);
+    let result =
+        controller.run_routed_model_step(&router, &adapters, request, "step-routing", "ready");
+    assert_eq!(controller.status(), LoopStatus::Running);
+    assert_eq!(controller.task_run().status, TaskRunStatus::Running);
     let events = read_events(&events_path);
     let route_index = events
         .iter()
@@ -1205,4 +1245,364 @@ fn fallback_ids_and_attempt_budget_are_shared_across_external_steps() {
     assert_eq!(controller.budget().attempts_used, 3);
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     assert_eq!(controller.status(), LoopStatus::Failed);
+}
+
+#[test]
+fn fallback_event_failure_finishes_the_child_and_blocks_further_calls() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = fallback_registry();
+    let router = ModelRouter::new(&registry, fallback_profiles()).unwrap();
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let backup_calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    adapters
+        .register(
+            "fixture-model",
+            Box::new(RetryableAdapter {
+                calls: Arc::clone(&primary_calls),
+                class: ProviderErrorClass::Upstream,
+            }),
+        )
+        .unwrap();
+    adapters
+        .register(
+            "backup-model",
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&backup_calls),
+                fail: false,
+            }),
+        )
+        .unwrap();
+    let mut controller = fallback_controller(&events_path, LoopBudget::new(6, 0, 6, 3, 0, 6, 6, 1))
+        .with_progress_sink(BlockAuditAfterStepFailure {
+            path: events_path.clone(),
+            blocked: false,
+        });
+
+    let result = controller.run_routed_model_step(
+        &router,
+        &adapters,
+        route_request(),
+        "fallback-audit-fault",
+        "ready",
+    );
+    restore_blocked_event_log(&events_path);
+
+    assert!(matches!(result, Err(LoopControllerError::EventLog(_))));
+    assert_eq!(controller.status(), LoopStatus::Failed);
+    assert_eq!(controller.task_run().status, TaskRunStatus::Failed);
+    assert_eq!(controller.task_run().attempts.len(), 2);
+    assert_eq!(controller.budget().attempts_used, 2);
+    for attempt in &controller.task_run().attempts {
+        assert_eq!(attempt.status, AttemptStatus::Failed);
+    }
+    assert!(controller.task_run().attempts[1].evidence_refs.is_empty());
+    let events = read_events(&events_path);
+    assert!(events
+        .iter()
+        .all(|event| event.event_type != "model_route_fallback"));
+    assert!(matches!(
+        controller.run_routed_model_step(&router, &adapters, route_request(), "again", "fresh"),
+        Err(LoopControllerError::Terminal)
+    ));
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(backup_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn loop_failed_event_failure_keeps_the_run_terminal_without_fake_evidence() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = registry();
+    let router = ModelRouter::new(&registry, vec![route_profile()]).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    adapters
+        .register(
+            "fixture-model",
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&calls),
+                fail: true,
+            }),
+        )
+        .unwrap();
+    let mut controller = fallback_controller(&events_path, LoopBudget::new(6, 0, 6, 3, 0, 6, 6, 1))
+        .with_progress_sink(BlockAuditAfterStepFailure {
+            path: events_path.clone(),
+            blocked: false,
+        });
+
+    let result = controller.run_routed_model_step(
+        &router,
+        &adapters,
+        route_request(),
+        "close-audit-fault",
+        "ready",
+    );
+    restore_blocked_event_log(&events_path);
+
+    assert!(matches!(result, Err(LoopControllerError::EventLog(_))));
+    assert_eq!(controller.status(), LoopStatus::Failed);
+    assert_eq!(controller.task_run().status, TaskRunStatus::Failed);
+    let attempt = &controller.task_run().attempts[0];
+    assert_eq!(attempt.status, AttemptStatus::Failed);
+    let events = read_events(&events_path);
+    assert!(events.iter().all(|event| event.event_type != "loop_failed"));
+    assert!(attempt
+        .evidence_refs
+        .iter()
+        .all(|reference| events.iter().any(|event| &event.event_id == reference)));
+    assert!(matches!(
+        controller.run_routed_model_step(&router, &adapters, route_request(), "again", "fresh"),
+        Err(LoopControllerError::Terminal)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn routed_progress_failures_never_retry_models_or_overwrite_completed_runs() {
+    for (subject, status, retryable, expected_calls, expected_status) in [
+        (
+            ProgressSubject::Step,
+            ProgressStatus::Started,
+            false,
+            0,
+            LoopStatus::Failed,
+        ),
+        (
+            ProgressSubject::Model,
+            ProgressStatus::Started,
+            false,
+            0,
+            LoopStatus::Failed,
+        ),
+        (
+            ProgressSubject::Model,
+            ProgressStatus::Failed,
+            true,
+            1,
+            LoopStatus::Failed,
+        ),
+        (
+            ProgressSubject::Model,
+            ProgressStatus::Completed,
+            false,
+            1,
+            LoopStatus::Failed,
+        ),
+        (
+            ProgressSubject::Step,
+            ProgressStatus::Completed,
+            false,
+            1,
+            LoopStatus::Failed,
+        ),
+        (
+            ProgressSubject::Loop,
+            ProgressStatus::Completed,
+            false,
+            1,
+            LoopStatus::Completed,
+        ),
+    ] {
+        let directory = TestDirectory::new();
+        let events_path = directory.join("events.jsonl");
+        let registry = fallback_registry();
+        let router = ModelRouter::new(&registry, fallback_profiles()).unwrap();
+        let primary_calls = Arc::new(AtomicUsize::new(0));
+        let backup_calls = Arc::new(AtomicUsize::new(0));
+        let primary: Box<dyn ModelAdapter> = if retryable {
+            Box::new(RetryableAdapter {
+                calls: Arc::clone(&primary_calls),
+                class: ProviderErrorClass::Upstream,
+            })
+        } else {
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&primary_calls),
+                fail: false,
+            })
+        };
+        let mut adapters = ModelAdapterRegistry::default();
+        adapters.register("fixture-model", primary).unwrap();
+        adapters
+            .register(
+                "backup-model",
+                Box::new(CountingAdapter {
+                    calls: Arc::clone(&backup_calls),
+                    fail: false,
+                }),
+            )
+            .unwrap();
+        let mut controller =
+            fallback_controller(&events_path, LoopBudget::new(6, 0, 6, 3, 0, 6, 6, 1))
+                .with_progress_sink(FailOnceProgressSink {
+                    subject,
+                    status,
+                    failed: false,
+                });
+
+        let error = controller
+            .run_routed_model_step(
+                &router,
+                &adapters,
+                route_request(),
+                "progress-fault",
+                "ready",
+            )
+            .expect_err("injected progress error must be preserved");
+
+        assert!(
+            matches!(error, LoopControllerError::ProgressReport(ref message) if message.contains("injected routed progress failure"))
+        );
+        assert_eq!(
+            controller.status(),
+            expected_status,
+            "{subject:?}/{status:?}"
+        );
+        let expected_task_status = if expected_status == LoopStatus::Completed {
+            TaskRunStatus::Succeeded
+        } else {
+            TaskRunStatus::Failed
+        };
+        assert_eq!(controller.task_run().status, expected_task_status);
+        assert_eq!(controller.task_run().attempts.len(), 1);
+        assert!(controller.task_run().attempts[0].status.is_terminal());
+        assert!(matches!(
+            controller.run_routed_model_step(&router, &adapters, route_request(), "again", "fresh"),
+            Err(LoopControllerError::Terminal)
+        ));
+        assert_eq!(primary_calls.load(Ordering::SeqCst), expected_calls);
+        assert_eq!(backup_calls.load(Ordering::SeqCst), 0);
+        let events = read_events(&events_path);
+        assert!(events
+            .iter()
+            .all(|event| event.event_type != "model_route_fallback"));
+        if expected_status == LoopStatus::Completed {
+            assert!(events.iter().all(|event| event.event_type != "loop_failed"));
+        }
+    }
+}
+
+#[test]
+fn route_audit_failure_stops_before_the_model_and_prevents_later_calls() {
+    let directory = TestDirectory::new();
+    let events_path = directory.join("events.jsonl");
+    let registry = registry();
+    let router = ModelRouter::new(&registry, vec![route_profile()]).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut adapters = ModelAdapterRegistry::default();
+    adapters
+        .register(
+            "fixture-model",
+            Box::new(CountingAdapter {
+                calls: Arc::clone(&calls),
+                fail: false,
+            }),
+        )
+        .unwrap();
+    let mut controller = fallback_controller(&events_path, LoopBudget::new(6, 0, 6, 3, 0, 6, 6, 1));
+    fs::rename(&events_path, events_path.with_extension("saved")).unwrap();
+    fs::create_dir(&events_path).unwrap();
+
+    let result = controller.run_routed_model_step(
+        &router,
+        &adapters,
+        route_request(),
+        "route-audit-fault",
+        "ready",
+    );
+    restore_blocked_event_log(&events_path);
+
+    assert!(matches!(result, Err(LoopControllerError::EventLog(_))));
+    assert_eq!(controller.status(), LoopStatus::Failed);
+    assert_eq!(
+        controller.task_run().attempts[0].status,
+        AttemptStatus::Failed
+    );
+    assert_eq!(controller.budget().steps_used, 0);
+    assert_eq!(controller.budget().model_calls_used, 0);
+    assert!(matches!(
+        controller.run_routed_model_step(&router, &adapters, route_request(), "again", "fresh"),
+        Err(LoopControllerError::Terminal)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn routed_preflight_pause_and_cancel_are_not_reclassified_as_failed() {
+    for (kind, expected_status, progress_status) in [
+        (
+            CommandKind::Pause,
+            LoopStatus::Paused,
+            ProgressStatus::Paused,
+        ),
+        (
+            CommandKind::Cancel,
+            LoopStatus::Cancelled,
+            ProgressStatus::Cancelled,
+        ),
+    ] {
+        for progress_fault in [false, true] {
+            let directory = TestDirectory::new();
+            let events_path = directory.join("events.jsonl");
+            let inbox = UserCommandInbox::open(directory.join("commands.jsonl"));
+            inbox
+                .submit(
+                    UserCommand::new(
+                        "steer",
+                        "operator",
+                        "project-routing",
+                        "goal-routing",
+                        "task-run-routing",
+                        "loop-routing",
+                        kind,
+                        "corr-steer",
+                        json!({}),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let registry = registry();
+            let router = ModelRouter::new(&registry, vec![route_profile()]).unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mut adapters = ModelAdapterRegistry::default();
+            adapters
+                .register(
+                    "fixture-model",
+                    Box::new(CountingAdapter {
+                        calls: Arc::clone(&calls),
+                        fail: false,
+                    }),
+                )
+                .unwrap();
+            let mut controller =
+                fallback_controller(&events_path, LoopBudget::new(6, 0, 6, 3, 0, 6, 6, 1))
+                    .with_command_inbox(inbox);
+            if progress_fault {
+                controller = controller.with_progress_sink(FailOnceProgressSink {
+                    subject: ProgressSubject::Loop,
+                    status: progress_status,
+                    failed: false,
+                });
+            }
+
+            let error = controller
+                .run_routed_model_step(&router, &adapters, route_request(), "preflight", "ready")
+                .expect_err("steering prevents execution");
+
+            if progress_fault {
+                assert!(matches!(error, LoopControllerError::ProgressReport(_)));
+            } else if expected_status == LoopStatus::Paused {
+                assert!(matches!(error, LoopControllerError::Paused));
+            } else {
+                assert!(matches!(error, LoopControllerError::Terminal));
+            }
+            assert_eq!(controller.status(), expected_status);
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(read_events(&events_path)
+                .iter()
+                .all(|event| event.event_type != "loop_failed"));
+        }
+    }
 }
