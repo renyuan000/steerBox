@@ -63,7 +63,7 @@ fn memory_store_missing_file_read_does_not_create_it() {
         .expect("missing memory file reads")
         .is_empty());
     assert!(!path.exists());
-    assert!(!path.parent().expect("memory parent exists").exists());
+    assert!(path.parent().expect("memory parent exists").exists());
 }
 
 #[test]

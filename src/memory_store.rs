@@ -59,8 +59,8 @@ impl MemoryStore {
     }
 
     pub fn read_all(&self) -> Result<Vec<MemoryCandidate>, MemoryStoreError> {
-        if !self.path.exists() {
-            return Ok(Vec::new());
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(io_error)?;
         }
         let _lock = self.acquire_lock()?;
         self.read_all_unlocked()
