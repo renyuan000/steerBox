@@ -64,7 +64,7 @@
 - [x] 定义 `TraceRecord`
 - [x] 定义 `ProviderProfile`、`EndpointProfile`、`ModelProfile`（已有注册/序列化及关联验证）
 - [x] 定义并测试 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`（静态 resolver 已验证 registry/provider/endpoint/model/role/task/version 绑定、审批阻断、低信任 user JSON 分层；resolved controller 成功调用的审计路径已有 focused 验收）
-- [x] 定义 `RouteDecision` 和 `ModelCallRecord`（字段结构、最小语义校验及 resolved controller 成功调用 → ModelCallStore 的审计已有测试；provider failure 当前仅有 EventLog/step/progress 失败证据，失败 `ModelCallRecord` 的合同仍待单独设计；routed fallback 的 Attempt lineage 已接线，live provider、resolved provider fallback 和恢复仍待完成）
+- [x] 定义 `RouteDecision`、成功 `ModelCallRecord` 和独立 `ModelCallFailureRecord`（resolved controller 成功调用与 adapter-error 分支分别写入成功/failure JSONL；失败记录不保存 provider 原始错误正文，不伪造未知 response facts；routed fallback 的 Attempt lineage 已接线，live provider、resolved provider fallback、所有失败路径覆盖和恢复仍待完成）
 
 验收：
 
@@ -91,10 +91,10 @@ Memory 最小实现：
 
 - [ ] 定义 `MemoryRecord`、`MemoryCandidate`、`MemoryPromotion` 的 Phase 1 子集
 - [ ] 定义 `WorkingMemory` 与 project-scoped candidate 的可见性边界
-- [x] 实现 candidate 的 provenance、confidence、lifecycle state 和 source event refs（MemoryCandidate 最小领域子集；promotion 与 EventLog 接线仍待完成）
-- [x] 实现按 project / goal / task 的确定性 metadata retrieval（MemoryCatalog 只查询 candidate metadata，先做 project/scope/lifecycle 过滤并稳定排序；不是 trusted/active memory，不自动注入上下文或授予访问权；PolicyGate 接线仍待完成）
-- [x] 为 candidate 提供本地 JSONL metadata persistence（`MemoryStore` 在 append/read 时校验 candidate、按物理行报告 JSON/字段错误、在锁内拒绝重复 ID；不做 source-event 自动解析、promotion 或授权）
-- [ ] 将 memory 写入、检索和 promotion decision 写入 EventLog
+- [x] 实现 candidate 的 provenance、confidence、lifecycle state 和 source event refs（MemoryCandidate 最小领域子集；检索 EventLog 子切片已接线，promotion 与 memory 写入/promotion EventLog 仍待完成）
+- [x] 实现按 project / goal / task 的确定性 metadata retrieval（`MemoryCatalog` 稳定过滤/排序；controller 显式接口约束当前运行 scope，在安全边界后返回 metadata，记录 requested/filtered/used；used 仅表示 returned_metadata_only，不是模型使用、prompt 注入或授权，PolicyGate 接线仍待完成）
+- [x] 为 candidate 提供本地 JSONL metadata persistence（`MemoryStore` 在锁内校验并拒绝重复 ID，`read_catalog()` 复用 catalog insert，保留 lifecycle，错误按物理行报告；整份加载，不做 source-event 自动解析、promotion 或授权）
+- [ ] 将 memory 写入、检索和 promotion decision 写入 EventLog（检索三阶段事件已接线；写入与 promotion decision 仍待完成，不能整体标为完成）
 - [ ] 明确 Phase 1 不启用 vector index、graph index、global auto-promotion 或 cross-project implicit visibility
 - [ ] 定义 `EvidencePack`、`WikiPage`、`WikiRevision` 的 Phase 1 子集
 - [ ] 实现通过验证结果生成项目范围 `WikiPageCandidate`
@@ -236,7 +236,7 @@ Memory 最小实现：
 
 ### P12. Model Registry、Prompt Resolution 与规则路由
 
-- [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（注册及 registry JSON 反序列化重验标识/关联；`ModelRegistry`/`RuntimeConfig` 对 `auth_ref` opaque reference 和 endpoint URL 认证材料的 focused 回归已通过；prompt 版本/role/task 查询已有测试；模型路由已使用 registry，完整 prompt resolution 尚未接线）
+- [x] 实现静态 `ModelRegistry` 和 `PromptRegistry`（注册及 registry JSON 反序列化重验标识/关联；`ModelRegistry`/`RuntimeConfig` 对 `auth_ref` opaque reference 和 endpoint URL 认证材料的 focused 回归已通过；opt-in resolved bridge 已接线，所有入口自动解析与 live provider E2E 尚未完成）
 - [x] 建立 provider-neutral OpenAI-compatible adapter、fake transport 和严格错误分类；新增 non-stream HTTP transport、注入式 credential resolver、localhost 安全集成测试和显式 no-redirect/no-retry/response-limit 边界；完成 secret-free profile → provider adapter 绑定（focused 测试通过；配置绑定不调用 resolver、不读取环境变量、不发起网络请求；wire body 不包含 `auth_ref`，transport 只在出站边界解析引用并加入请求头；非 `openai`/`openai-compatible` endpoint 会在 resolved bridge 发送前拒绝）
 - [x] 增加独立 Anthropic non-stream protocol adapter（独立 `x-api-key` / `anthropic-version` envelope、状态分类、响应解析和 secret-free auth_ref 校验）；未接入真实 HTTP transport 或 live provider
 - [x] 建立 provider-to-`ModelAdapter` bridge（仅接受严格 `decision`/`summary` JSON envelope；固定输出契约放 system，用户目标与 observation 作为 JSON 编码数据放 user，不升格为 system/developer；fake transport 实际请求体已有回归，不代表完整 prompt 解析或提示注入防护）
@@ -247,7 +247,7 @@ Memory 最小实现：
 - [x] 定义、校验并持久化 `RouteDecision` 到 EventLog；routed 模型调用的开始/成功/失败事件关联 route ID
 - [x] 实现按 prompt ID/version、role/task 的最小 prompt binding 查询
 - [x] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成可冻结的 `ResolvedPromptPack` 并由 opt-in resolved bridge 使用（fake/localhost 请求已验证模板实际进入最终 messages、logical model 与 wire model 分离、wire body hash 一致；resolved controller 审计路径已接线）
-- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（resolved controller 成功记录、审计写入失败和 binding/approval fail-closed 已有回归；provider failure 当前仅有 EventLog/step/progress 失败证据，失败 `ModelCallRecord` 合同仍待设计；live provider、resolved fallback Attempt 和完整验证结果仍待完成）
+- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（opt-in resolved controller 成功记录与 adapter-error 分支的独立 `ModelCallFailureRecord`/failure JSONL 已接线；失败审计不存原始 provider error 或伪造 response facts，审计错误 fail-closed；live provider、resolved fallback Attempt 和完整验证结果仍待完成）
 - [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider 的只读 action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；只读工具 raw output 已从 EventLog/TraceStore/SideEffectLedger 脱敏；文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
 - [x] 实现能力兼容、非静默的 fallback 事件（routed fixture/model-adapter 路径仅对 retryable provider failure 按声明顺序切换；新建父链可追踪的 Attempt，只引用实际追加的事件，累计预算与 no-progress 不因 fallback 重置；不可恢复失败/额度耗尽后关闭运行；resolved provider fallback 和跨进程恢复仍待完成）
 - [ ] 端到端验证 registry、prompt、provider request、trace、event log 和 checkpoint 均不保存认证明文（registry/config 的 auth_ref 与 endpoint 边界 focused 回归已通过；全链路审计脱敏仍未完成）

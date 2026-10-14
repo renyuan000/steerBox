@@ -77,7 +77,8 @@
 - 第一阶段主语言和构建工具已确定为 `Rust` + `Cargo`
 - 当前已实现并验证领域契约、配置校验、append-only JSONL EventLog（含分页读取）、StateStore 重建/持久化、Trace/Checkpoint/SideEffect 记录、GoalAlignment/DriftGuard 最小报告和只读 BoardProjection fixture
 - 当前开发垂直切片可执行受审批的 Markdown 文件修改与链接验证，成功/失败均写入 run summary；验证失败会保留事件、状态和摘要并以非零退出
-- 当前仍不是可连接真实网络模型并自主执行开发任务的 Agent：已有本地 fixture、OpenAI-compatible fake/localhost transport、注入式 credential resolver、严格 provider-to-ModelAdapter bridge、规则式模型路由，以及 opt-in 的 `ResolvedPromptPack` → LoopController → ModelCallStore 审计路径；已验证 provider/endpoint/逻辑模型与 wire model 绑定、实际 wire body hash、usage/finish_reason 保留和 provider/审计失败 fail-closed。真实 provider profile/auth_ref 配置绑定、获准 live 调用、动态 fallback、模型提出动作→PolicyGate→工具/验证闭环、后台控制和完整恢复仍未完成
+- 当前尚未完成连接真实模型并自主开发的端到端验收，研发目标仍是模型连接型 Agent：已有本地 fixture、OpenAI-compatible/Anthropic adapter、fake/localhost HTTP transport、注入式 credential resolver、secret-free profile/auth_ref 配置绑定、规则路由，以及 opt-in 的 `ResolvedPromptPack` → LoopController → ModelCallStore 审计路径。成功调用保留 binding/wire hash/usage/finish_reason，resolved adapter-error 分支另存 `ModelCallFailureRecord`，不保存原始 provider error 或伪造未知响应字段；审计错误 fail-closed。routed fixture/model-adapter fallback 已有 child Attempt 与共享预算，只读动作 → PolicyGate → 工具 → 验证闭环已有；尚未完成真实 credential store/live 调用、resolved-provider fallback、真实模型驱动编辑、通用文件写入/Bash、后台控制与完整恢复
+- 候选记忆已有 JSONL metadata 持久化、`read_catalog()` 和 controller project/goal/task 范围检索；requested/filtered/used 事件不包含摘要正文，used 仅表示返回候选 metadata。尚不注入 prompt、提升为 active memory、授予权限或形成 Wiki/EvidencePack 完整链
 - 历史查询支持 metadata-only `execution list/show/page`，分页是读取全量事件后的 detached snapshot，不是流式读取或 live cursor；CLI 生命周期输出仅在真实完成时报告 loop completed
 - 执行策略已有可验证的库 API 切片：按显式任务特征选择策略，记录选择/调整事件，将倍率分配限制在既有授权预算内，并在需审批时拒绝动作；调整不清零消耗或重复动作历史。验证频率与协作/专业领域策略目前只是需求元数据，不代表自动验证、多 agent 编排或专业操作已执行
 - 用户中途接入后台任务已有设计契约，但没有常驻后台 worker 或可连接它的交互控制面；见 [Human Steering Modes](./docs/HUMAN_STEERING_MODES.md) 与 [Control Plane Discussion](./docs/CONTROL_PLANE_DISCUSSION.md)

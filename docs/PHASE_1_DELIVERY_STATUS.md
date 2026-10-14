@@ -2,13 +2,13 @@
 
 ## 定位与证据边界
 
-状态核对日期：2026-10-12。已提交代码基线为 `78bfd56`，当前工作树还包含待精确提交的 workspace-edit checkpoint/side-effect 审计与语义验证失败门禁；command submit/show CLI、provider stream 到安全进度事件 bridge、Anthropic profile binding、只读工具执行、模型动作闭环、bounded runtime tick、StreamReporter 进度刷新和 model-call 分页 CLI 切片已在先前提交中落地；未提交代码仍须以本文末尾的实际验证命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
+状态核对日期：2026-10-14。已提交代码基线为 `e754d07`，核对时 `dev` 与 `origin/dev` 同步，正式源码无未提交修改；未跟踪的历史审核、参考资料与 benchmark 目录不计入交付。`202cec6` 已加入独立 `ModelCallFailureRecord`、failure JSONL 存储和 `MemoryStore::read_catalog`，`e754d07` 已加入 controller scoped memory retrieval。command submit/show CLI、provider stream 到安全进度事件 bridge、Anthropic profile binding、只读工具执行、模型动作闭环、bounded runtime tick、StreamReporter 进度刷新和 model-call 分页 CLI 切片已在先前提交中落地；验证范围仍以实际执行命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
 
 本文是剩余验收的归并视图，不替代 [PHASE_1_CONTRACTS.md](PHASE_1_CONTRACTS.md)、[PHASE_1_IMPLEMENTATION_SCOPE.md](PHASE_1_IMPLEMENTATION_SCOPE.md)、[PHASE_1_TODO.md](PHASE_1_TODO.md) 或 [PHASE_1_VALIDATION_PLAN.md](PHASE_1_VALIDATION_PLAN.md)。对象、身份、授权、事件及恢复语义以 Contracts 为准，范围以 Scope 为准，逐项状态和验收用例分别回查 TODO 与 Validation。
 
-上一批全量 **188 项测试通过** 是历史证据；其中的全目标 test、clippy、build、fmt 结果不能直接覆盖当前工作树。2026-10-11 master 本轮新复跑的 focused 结果见本文末尾；工作树中另有未审核的 acceptance/benchmark 产物，因此当前不把 `--all-targets` 全量状态标为通过。本轮没有真实网络调用或真实凭据检查。
+188 项及此前 focused/build/fmt/all-targets 结果仅为历史证据，不覆盖当前基线。2026-10-14 `e754d07` 的实际重跑记录见本文末尾；未跟踪 benchmark 和历史资料不计入验收。本轮未调用 live provider，不能据本地/fake/localhost 回归宣称真实帐号或完整 Phase 1 通过。
 
-当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、bounded `read_file`、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。controller workspace-edit 路径现在支持可选的 mutation 前 `CheckpointStore`、`SideEffectLedger` 的 started/completed/failed/verification_failed metadata 记录，并会把 `markdown-link-check` 返回的缺失链接视为验证失败，禁止写入 `model_action_verified`；仍未接入不确定副作用状态、before-state hash/恢复执行或真实模型 E2E。ModelRouter 现有静态 capability/risk/privacy/cost/latency 约束，并新增 secret-free deterministic `RouteExplanation` 供策略调试；这不等于并行调用、自动 fallback 执行、代理/中转健康路由或 prompt cache。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 已支持 action/progress、非法进度拒绝、逐事件 flush，并可把已验证 provider delta 序列转换为不暴露正文的 model lifecycle 进度；command submit/show CLI 只返回 metadata 并把 command 持久化到 inbox。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的 Markdown 修改／链接验证切片。当前不能交付给用户作为任意 coding Agent，也不能声明完整 Phase 1 已完成。
+当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、bounded `read_file`、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。controller workspace-edit 路径支持可选的 mutation 前 `CheckpointStore`、`SideEffectLedger` 的 started/completed/failed/verification_failed metadata 记录，并会把缺失 Markdown 链接视为验证失败，禁止写入 `model_action_verified`；已记录 before/after hash，但不确定副作用状态、恢复快照与实际 restore/replay、真实模型 E2E 仍未完成。ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 deterministic `RouteExplanation`；routed fixture/model-adapter fallback 已有 child Attempt 和共享预算，这不等于 resolved-provider/live fallback、并行调用、代理/中转健康路由或 prompt cache。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 支持 action/progress、非法进度拒绝、逐事件 flush，并可把已验证 provider delta 序列转换为不暴露正文的 lifecycle 进度；command submit/show CLI 只返回 metadata 并把 command 持久化到 inbox。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的修改／链接验证切片。当前不能作为任意 coding Agent 交付，也不能声明完整 Phase 1 已完成。
 
 ## 六个交付包
 
@@ -17,11 +17,11 @@
 | 包 | 交付结果 | 验收层级 | 当前边界 |
 |---|---|---|---|
 | 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | non-stream OpenAI-compatible/Anthropic HTTP transport、注入式 credential resolver、secret-free provider profile binding、Anthropic profile binding 和 localhost 安全集成测试已通过；live 凭据与 live 调用仍未交付 |
-| 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | resolved bridge 已接入 LoopController，并以 ModelCallStore、route/prompt/wire hash/output ref 做 fail-closed 审计；真实 provider、fallback 和完整恢复绑定仍未交付 |
+| 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | opt-in resolved bridge、成功 ModelCallStore 和 adapter-error 的独立 failure JSONL 已接线；routed fixture/model-adapter fallback 已有 child Attempt/共享预算；live provider、resolved-provider fallback 和完整恢复绑定未交付 |
 | 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 只读动作已连成 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的 controller 闭环并有 focused 覆盖；新增 bounded `read_file`，仍尚未从真实模型响应解析动作，也没有文件写入/Bash/副作用验证闭环 |
 | 4 | 用户入口、preflight、状态／取消及真实开发任务 E2E | 首个受限可用版本门槛 | fixture CLI、注入式安全进度报告、逐事件 flush、bounded RuntimeTick/controller safe-boundary 和可测试的完整行命令轮询已有；真实 OS stdin、常驻 Agent 入口、live 控制及 E2E 未交付 |
 | 5 | TaskRun／Attempt、目标／计划修订与 controller 恢复 | 完整 Phase 1 补齐项；fallback lineage／总预算是包 2 前置门禁 | TaskRun／Attempt 领域 schema、父关系、跨 Attempt 总预算校验以及初始 Attempt 到 controller 完成的最小绑定已通过；尚未接入 EventLog/StateStore 恢复、目标/计划修订或跨进程 resume |
-| 6 | 项目范围 recipe／memory／wiki 候选与验证回链 | 完整 Phase 1 补齐项 | LessonCandidate 失败来源回链已有，其余候选链未交付 |
+| 6 | 项目范围 recipe／memory／wiki 候选与验证回链 | 完整 Phase 1 补齐项 | LessonCandidate 来源回链、MemoryCandidate/Catalog、JSONL store 和 scoped retrieval 三阶段审计已有；PolicyGate、promotion、WorkingMemory 与 Wiki/EvidencePack 完整链未交付 |
 
 包 1–4 必须共同通过，才能称为“首个受限可用、连接真实模型的开发 Agent”；该版本只承诺经过验收的工具和任务范围，不承诺任意代码任务。包 5–6 和正式规范中的其余适用验收一并通过后，才可称完整 Phase 1。受限版本仍必须遵守现有 Contracts，不得以分包为理由取消授权、预算、证据或副作用边界。
 
@@ -55,15 +55,16 @@
 - [model_contracts.rs](../src/model_contracts.rs)、[model_call_store.rs](../src/model_call_store.rs) 提供 `RouteDecision`／`ModelCallRecord` 字段校验、独立 append-only 存储及有界 `read_page(offset, limit)` 查询；`main.rs` 已提供独立 `model-call page` 只读入口。
 - provider bridge 的固定输出契约位于 system；用户 objective／observation 经 JSON 编码放入 user。该分层修复不等于完整 prompt resolution 或提示注入防护。
 - `ReadOnlyLoopController::run_resolved_model_step` 已将 `ResolvedPromptPack`、`ProviderModelAdapter`、`ModelCallRecord` 和 `ModelCallStore` 接成 opt-in 路径；成功、provider 失败、审计写入失败、binding mismatch 和审批阻断均有 focused 回归。
+- resolved adapter-error 分支已追加独立 `ModelCallFailureRecord`，成功与 failure JSONL 分开；失败记录不保存原始 provider error，不伪造缺失的 response facts，failure audit 错误 fail-closed。前置 binding/approval 和 routed 等其它失败路径不因此自动获得该覆盖。
 
 剩余：
 
-- 本批 `PreparedProviderRequest`、`ResolvedPromptPack` resolver、opt-in provider bridge 及 controller 审计接线已通过 master focused 验收；这仍不等于真实 provider 可达、live credential 可用或 fallback 已完成。
-- 按 provider／model／role／task 和适用 skill／context 层解析实际使用的 `ResolvedPromptPack`，校验后端兼容性，并验证模板确实进入最终请求，不止返回 registry 条目。
+- 现有 `PreparedProviderRequest`、resolver、opt-in provider bridge 及 controller 审计接线不等于真实 provider 可达、live credential 可用或 resolved-provider/live fallback 已完成。
+- 在 live provider 和未来 resolved fallback 中复用并验收现有 resolver、冻结请求及模板 binding，扩展适用 skill/context 层；现有静态解析及模板进入最终请求已有回归，不重复列为未实现。
 - 将实际模型调用与 prompt 版本、route、结果和验证状态继续扩展到真实 provider、attempt lineage、trace/output artifact 和验证结果；当前 opt-in 路径已覆盖 fake/localhost transport，不代表完整 coding loop。
-- 完成能力兼容、非静默的 fallback；自动执行必须先通过包 5 的新 Attempt／`parent_attempt_id`／TaskRun 总预算门禁，保留原失败证据和既有消耗，再创建新 route、重新解析 prompt 和重新验证。前置门禁未通过时必须关闭自动 fallback，不能把 lineage 当作切换完成后的补记事项。
+- 补齐能力兼容、非静默的 resolved-provider fallback；沿用 routed 子集已有的新 Attempt／父链／累计预算门禁，保留失败证据和消耗，再创建新 route、重新解析 prompt/后端并验证。新增路径前置门禁未通过时关闭该路径，不事后补记 lineage。
 
-可复现验收证据：本轮已执行 `cargo test --locked --test http_transport --test model_call_controller_audit --test task_attempt_lineage --test prepared_provider_request --test resolved_prompt --test resolved_provider_model_adapter --test provider_adapter --test provider_model_adapter`，共 49 passed、0 failed；随后 `cargo test --locked --all-targets --all-features --quiet`、`cargo clippy --locked --all-targets --all-features -- -D warnings` 和 `cargo build --locked --all-targets --all-features` 均退出 0。live provider、fallback、跨进程恢复和完整 coding loop 仍未验收。
+历史验收记录（非 2026-10-14 复跑）：`cargo test --locked --test http_transport --test model_call_controller_audit --test task_attempt_lineage --test prepared_provider_request --test resolved_prompt --test resolved_provider_model_adapter --test provider_adapter --test provider_model_adapter`，49 passed、0 failed；随后 all-targets/all-features test、clippy 和 build 均退出 0。当前基线复跑见末尾；live provider、resolved-provider/live fallback、跨进程恢复和完整 coding loop 仍未验收。
 
 正式依据：Scope「10. 多模型接入最小垂直切片」；TODO P2／P12；Validation V13 及「最小验收命令」。
 
@@ -116,8 +117,8 @@
 
 剩余：
 
-- 补齐单 Portfolio／Project／Task／TaskRun／Attempt 及依赖身份；当前已具备 TaskRun／Attempt 最小 schema、初始 Attempt controller 绑定及完成／失败状态写回；retry／fallback／resume／fork 的 controller 创建新 Attempt、依赖身份和完整 evidence 链仍待实现。
-- 上述 fallback lineage／总预算子集是包 2 自动 fallback 的先行依赖，即使包 5 的其余修订／恢复能力尚未交付，也不能推迟此门禁或通过重新创建 controller 补额度。验收未通过前首个受限版本必须关闭自动 fallback。
+- 补齐单 Portfolio／Project／Task／TaskRun／Attempt 及依赖身份；已有初始 Attempt controller 绑定、完成/失败写回及 routed fixture/model-adapter fallback 新 Attempt、父链和共享累计预算。retry/resume/fork、resolved-provider fallback、完整依赖/evidence 投影及跨进程恢复仍待完成。
+- 新增 fallback 路径必须复用并单独验收 lineage/总预算门禁，未通过时关闭该路径；不能以包 5 其它修订/恢复尚未交付为理由推迟门禁或新建 controller 补额度。
 - 相关 steer 创建 GoalRevision，使旧 PlanRevision 失效后重新规划；无关请求进入独立 Task。补齐 object_version 冲突、审批／接管及 InterruptRequest 的 side_effect_uncertain 分支。
 - 从事件和已记录边界恢复 controller 的目标、计划、策略修订、预算消耗及无进展历史；执行恢复前协调 workspace／checkpoint／外部副作用，无法确认时等待人工，不自动重放。
 
@@ -131,21 +132,24 @@
 
 - [tool_registry.rs](../src/tool_registry.rs) 已保留 `recipe_ref`；controller 的失败事件内嵌 LessonCandidate，其 source_event_ids 精确引用实际持久化失败事件，已有回归。
 - [MEMORY_SCOPE_AND_LIFECYCLE_CONTRACTS.md](MEMORY_SCOPE_AND_LIFECYCLE_CONTRACTS.md)、[RAG_WIKI_KNOWLEDGE_COMPILATION.md](RAG_WIKI_KNOWLEDGE_COMPILATION.md) 已规定 scope、来源、生命周期、promotion 和派生知识边界；设计存在不等于运行时已实现。
+- `MemoryCandidate`/`MemoryCatalog` 的来源、confidence/lifecycle 和 scope 查询、`MemoryStore` JSONL 及锁内 `read_catalog()` 已有测试。controller 显式检索要求当前 project 与指定 goal/task 匹配，并记录 requested/filtered/used；used 仅表示返回 metadata，事件不复制摘要/source payload，Paused/terminal 或审计错误不返回结果，不自动注入 prompt、promotion 或授权。
 
 剩余：
 
 - 实现 baseline recipes 及 `ToolUseErrorEvent → LessonCandidate → verified local recipe` 的候选链；tool call 能关联 recipe ID，提升有验证、版本和回滚引用，不自动修改全局 policy。
-- 实现 run WorkingMemory／project MemoryCandidate 的最小记录、provenance／confidence／lifecycle、source refs 与确定性 metadata retrieval；先执行 PolicyGate 和项目可见性过滤，写入和 promotion decision 可审计。
+- 在已有 project MemoryCandidate、持久化与 scoped retrieval 上补齐 run WorkingMemory、PolicyGate、写入/promotion decision 审计和显式 promotion；检索不应自动改变信任或访问权限。
 - 实现项目范围 EvidencePack／WikiPageCandidate／WikiRevision、验证回链、expiry／revalidation 与低风险项目页发布；高风险、global、cross-project 只产生候选，不自动提升。仅创建候选 schema 不等于完整 wiki 验收。
 
-可复现验收证据：现有 `cargo test --test loop_controller --test tool_policy` 只能复核失败来源和 registry 边界。新增最小验收需从一次失败找到原 tool/event，生成并验证 local recipe；从验证结果形成项目 memory/wiki 候选，反查 source 和 EvidencePack；不同 project 检索不得泄漏，失效页面不得直接支撑高风险动作，promotion 必须有事件。实现后登记专属回归命令；当前不存在可称为 memory/wiki 完整通过的测试入口。
+可复现验收入口：`cargo test --test memory --test memory_store --test loop_controller --test tool_policy` 覆盖候选 metadata、catalog 加载、scoped retrieval 审计和失败来源/registry 边界。完整验收仍需从失败生成并验证 local recipe，从验证形成项目 memory/wiki 候选并反查 EvidencePack，验收 PolicyGate、expiry/revalidation 和 promotion 事件；当前不能称为 memory/wiki 完整通过。
 
 正式依据：Contracts「十三、Memory Contract 边界」；Scope「9. Baseline Tool Recipes」；TODO P3 Memory／Wiki 与 P11；Validation V12；上述 Memory 与 RAG/Wiki 补充规范。
 
 ## 验收记录与范围保护
 
-2026-10-12 master 复跑记录：`loop_controller` 31 项、`runtime_cli` 11 项、`stream_reporter` 12 项、`tool_executor` 11 项、`tool_policy` 7 项、`workspace_edit` 11 项、`model_router` 11 项通过；本轮新增 checkpoint/SideEffectLedger assertions、semantic missing-link verification failure（文件已修改但无 `model_action_verified`）以及 deterministic route explanation。对应 focused clippy `-D warnings`、rustfmt 和 `git diff --check` 均通过；此前 provider/CLI focused 与全量离线测试证据仍见本文件历史记录。构建产物位于 `/tmp/steerbox-phase1-target`，未写入项目目录。工作树中另有未审核的 `tests/acceptance/` 与 `tests/benchmarks/` 产物，不能据此声称当前 `--all-targets` 全量通过；真实 provider、SideEffectUncertain、before-state hash/恢复执行、并行多模型、自动 fallback、代理/中转、prompt cache、Bash、常驻后台 worker、跨进程恢复仍未验收。
+2026-10-12 master 历史复跑记录：`loop_controller` 31 项、`runtime_cli` 11 项、`stream_reporter` 12 项、`tool_executor` 11 项、`tool_policy` 7 项、`workspace_edit` 11 项、`model_router` 11 项通过；当时新增 checkpoint/SideEffectLedger assertions、缺失链接验证失败门禁和 deterministic route explanation，focused clippy、rustfmt 和 `git diff --check` 通过。此为历史现场，不代表 2026-10-14 当前状态；当时未审核 acceptance、before-state hash 和 fallback 的判断已被后续实现/验收取代。当前仍未验收 live provider、resolved-provider fallback、完整恢复、并行多模型、代理/中转、prompt cache、Bash 或常驻 worker。
 
 每包交接记录应给出代码基线、实际执行命令、结果／退出码、产物位置与证据引用、已验证范围及未通过项。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
+
+2026-10-14 `e754d07` 基线重新执行了 `CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --tests --quiet`（507 passed、0 failed）和 `cargo clippy --locked --offline --lib --bins --tests -- -D warnings`（退出码 0）。这是本地/fake/localhost 回归，不包括 live provider 或完整 Phase 1 验收；后续源码变化须重新执行。项目原有 `target/` 目录仍存在，本轮构建输出在 `/tmp`，没有删除用户既有产物。
 
 这六包不新增 SQLite 迁移、多 agent、TUI/Web、分布式 worker、向量／图数据库或无审批自动进化的交付要求。现有 JSONL／JSON 切片应先闭合规范要求，存储迁移不能替代真实模型闭环。CCG 和其他参考项目仅提供可核查的设计线索，不作为已证明最优的性能 benchmark，也不改变 Phase 1 正式范围。

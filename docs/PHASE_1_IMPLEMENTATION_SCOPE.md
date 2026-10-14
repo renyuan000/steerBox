@@ -35,17 +35,19 @@ OpenAI-compatible 与 Anthropic non-stream adapter、注入式 HTTP transport、
 
 ### 长期运行目标与 Phase 1 实现边界
 
-模型路径已有本地规则路由到 `ModelAdapterRegistry` 的 LoopController 接线，EventLog 保存路由及关联的调用事件；High risk 或 Restricted privacy 路由在没有审批 resolver 时拒绝调用。静态 `ResolvedPromptPack`、opt-in provider bridge 和 `ModelCallStore` 审计已有 fake/localhost 请求验证，覆盖成功 resolved 调用的 provider/endpoint/model/prompt 绑定、wire hash、usage/finish_reason 和 fail-closed 路径。provider failure 当前只追加 `model_call_failed`、`step_failed` 和 progress failure 证据，不追加失败 `ModelCallRecord`；当前 `ModelCallRecord` 对 `input_context_hash` 和 `output_artifact_ref` 有非空校验，`finish_reason` 是成功记录中的字符串字段，但 provider failure 没有 provider response，不能凭空生成 finish reason、output artifact 或 wire/input hash，失败记录合同仍待单独设计。routed fixture/model-adapter fallback 已创建新的父链 Attempt，记录实际事件证据并共享累计预算；不以模型切换清零 no-progress，不可恢复失败或额度耗尽后运行进入失败终态。此结果不覆盖 resolved provider fallback、retry/resume/fork 或跨进程恢复。
+模型路径已有本地规则路由到 `ModelAdapterRegistry` 的 LoopController 接线，EventLog 保存路由及关联的调用事件；High risk 或 Restricted privacy 路由在没有审批 resolver 时拒绝调用。静态 `ResolvedPromptPack`、opt-in provider bridge 和 `ModelCallStore` 审计已有 fake/localhost 请求验证，覆盖成功 resolved 调用的 provider/endpoint/model/prompt 绑定、wire hash、usage/finish_reason 和 fail-closed 路径。opt-in resolved controller 的 adapter-error 分支另写独立 `ModelCallFailureRecord` 和 failure JSONL，不改变成功 `ModelCallRecord` 合同、不保存 provider 原始错误正文；无法取得的 hash、output artifact、finish reason、usage/cost 保留为 `None`，不伪造成功事实。failure audit 写入失败则返回错误；该覆盖不延伸到所有前置 binding/approval、routed 或工具失败路径，也不是通用 DLP 保证。routed fixture/model-adapter fallback 已创建新的父链 Attempt，记录实际事件证据并共享累计预算；不以模型切换清零 no-progress，不可恢复失败或额度耗尽后运行进入失败终态。此结果不覆盖 resolved provider fallback、retry/resume/fork 或跨进程恢复。
 
 routed 路径的 EventLog 或 ProgressSink 故障会将仍 Running 的 Attempt/TaskRun/LoopRun 在当前进程内封为失败，防止再次调用模型；保留原故障，不把 progress 故障当成模型可重试错误，不覆盖已完成/取消/暂停状态。失败日志无法写入时不伪造 evidence refs，也不声称终态已持久化或可跨进程恢复。此封口不扩展 non-routed/resolved 路径的故障保证。
 
 只读模型动作已接入 `PolicyGate → ReadOnlyToolExecutor → verification`。任意文件写入/Bash、真实 profile/live provider 和完整恢复仍未验收。`ModelRegistry` / `RuntimeConfig` 的 auth_ref 与 endpoint 认证材料校验、本地 `Redactor` 和 provider 出站脱敏均是已测规则边界，不是任意敏感正文的通用 DLP 保证。
 
-`MemoryCandidate` / `MemoryCatalog` 已提供 project/goal/task 隔离、来源/provenance/confidence/lifecycle 校验、schema v1 校验、本地摘要脱敏及确定性候选查询（`tests/memory.rs`）。返回的仍是候选 metadata，不等于 accepted/active `MemoryRecord`；正式 promotion、PolicyGate/EventLog、持久化及 Wiki/EvidencePack 链尚未完成，也不自动生成 global memory 或跨项目权限。
+`MemoryCandidate` / `MemoryCatalog` 已提供 project/goal/task 隔离、来源/provenance/confidence/lifecycle 校验、schema v1 校验、本地摘要脱敏及确定性候选查询（`tests/memory.rs`）。返回的仍是候选 metadata，不等于 accepted/active `MemoryRecord`；候选 JSONL 持久化和 retrieval EventLog 子切片已有，正式 promotion、PolicyGate、写入/promotion 审计及 Wiki/EvidencePack 链尚未完成，也不自动生成 global memory 或跨项目权限。
 
 `MemoryCandidate::validate_source_events` 另提供显式来源身份校验：调用方传入已获授权的事件集合，检查每个引用唯一存在且 project/goal/task 与候选 scope 相符。不读取日志或 payload，不证明事件真实持久化、payload 真实性或来源可信度；`MemoryCatalog::insert` 不自动执行此校验，校验通过也不 promotion 或授予权限。
 
-`MemoryStore` 已提供候选 metadata 的 append-only JSONL 持久化：append/read 都执行候选 schema/字段校验，物理行号错误不回显摘要正文，锁内拒绝重复 candidate ID，缺失文件的 read 不创建文件。它不解析 source events、不自动 promotion、不改变 lifecycle 或授予运行时权限。
+`MemoryStore` 已提供候选 metadata 的 append-only JSONL 持久化和 `read_catalog()`：锁内逐行校验并复用 `MemoryCatalog::insert`，物理行号错误不回显摘要正文，锁内拒绝重复 candidate ID。缺失 JSONL 的 read 不创建该日志，但锁操作可能创建父目录和 `.lock`；当前整份加载 catalog，不是分页或向量检索。它不解析 source events、不自动 promotion、不改变 lifecycle 或授予运行时权限。
+
+`ReadOnlyLoopController::retrieve_memory_candidates()` 在生命周期安全边界之后校验 project 与指定 goal/task 必须匹配当前运行，从 store 加载 catalog 并返回候选 metadata（含候选摘要）。`memory_retrieval_requested/filtered/used` 仅记录 scope、候选 IDs/count 和 `returned_metadata_only`，不复制摘要或 source payload；`used` 不代表模型实际使用。Paused/terminal 或审计写入失败时不返回候选；三个事件不是原子事务，失败可留下前置事件。该显式接口不读取 source payload、不自动注入 prompt、不执行 promotion 或 PolicyGate 授权。
 
 `GoalRevision` / `PlanRevision` 已提供 schema、父 revision、失效和 stale-plan 判定的最小领域契约；它们只表示 metadata 和旧计划边界，不接入后台 worker、takeover、自动重规划、模型审批恢复或跨进程恢复。
 
