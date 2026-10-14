@@ -1,3 +1,4 @@
+use steerbox::domain::EventEnvelope;
 use steerbox::memory::{
     MemoryCandidate, MemoryCandidateState, MemoryCatalog, MemoryConfidence, MemoryError,
     MemoryProvenance, MemoryQuery, MemoryScope,
@@ -520,4 +521,328 @@ fn memory_candidate_retrieval_preserves_states_without_accepting_candidates() {
         ]
     );
     assert_eq!(catalog.retrieve(&query), result);
+}
+
+fn source_event(
+    event_id: &str,
+    project_id: Option<&str>,
+    goal_id: Option<&str>,
+    task_id: Option<&str>,
+) -> EventEnvelope {
+    let mut event = EventEnvelope::new(
+        "memory-source",
+        event_id,
+        "verification_completed",
+        "source-fixture",
+        "source-fixture",
+        serde_json::json!({}),
+    )
+    .expect("source envelope constructs");
+    event.project_id = project_id.map(str::to_owned);
+    event.goal_id = goal_id.map(str::to_owned);
+    event.task_id = task_id.map(str::to_owned);
+    event
+}
+
+#[test]
+fn memory_source_validation_accepts_project_goal_and_task_scopes() {
+    for (scope, goal_id, task_id, event_goal, event_task) in [
+        (MemoryScope::Project, None, None, None, None),
+        (
+            MemoryScope::Project,
+            None,
+            None,
+            Some("any-goal"),
+            Some("any-task"),
+        ),
+        (
+            MemoryScope::Goal,
+            Some("goal-a"),
+            None,
+            Some("goal-a"),
+            Some("any-task"),
+        ),
+        (
+            MemoryScope::Task,
+            Some("goal-a"),
+            Some("task-a"),
+            Some("goal-a"),
+            Some("task-a"),
+        ),
+        (
+            MemoryScope::Task,
+            None,
+            Some("task-a"),
+            Some("any-goal"),
+            Some("task-a"),
+        ),
+        (
+            MemoryScope::Task,
+            None,
+            Some("task-a"),
+            None,
+            Some("task-a"),
+        ),
+    ] {
+        let mut candidate = candidate(
+            "scoped-source",
+            scope,
+            "project-a",
+            goal_id,
+            task_id,
+            MemoryCandidateState::New,
+        );
+        candidate.source_event_refs = vec!["event:first".into(), "event:second".into()];
+        let events = [
+            source_event("event:second", Some("project-a"), event_goal, event_task),
+            source_event("unrelated", Some("project-b"), None, None),
+            source_event("event:first", Some("project-a"), event_goal, event_task),
+        ];
+        candidate
+            .validate_source_events(&events)
+            .expect("matching source identities validate");
+    }
+}
+
+#[test]
+fn memory_source_validation_requires_every_reference_to_exist_exactly_once() {
+    let mut candidate = candidate(
+        "missing-source",
+        MemoryScope::Project,
+        "project-a",
+        None,
+        None,
+        MemoryCandidateState::New,
+    );
+    candidate.source_event_refs = vec!["event:first".into(), "event:second".into()];
+    let first = source_event("event:first", Some("project-a"), None, None);
+    for events in [
+        vec![],
+        vec![first.clone()],
+        vec![
+            first.clone(),
+            source_event("EVENT:SECOND", Some("project-a"), None, None),
+        ],
+    ] {
+        assert!(candidate.validate_source_events(&events).is_err());
+    }
+    let second = source_event("event:second", Some("project-a"), None, None);
+    for duplicate in [
+        second.clone(),
+        source_event("event:second", Some("project-b"), None, None),
+    ] {
+        assert!(candidate
+            .validate_source_events(&[first.clone(), second.clone(), duplicate])
+            .is_err());
+    }
+    let unrelated = source_event("unreferenced", Some("project-b"), None, None);
+    candidate
+        .validate_source_events(&[first, second, unrelated.clone(), unrelated])
+        .expect("unreferenced duplicate ids do not affect requested sources");
+}
+
+#[test]
+fn memory_source_validation_rejects_missing_or_different_project_identity() {
+    for scope in [MemoryScope::Project, MemoryScope::Goal, MemoryScope::Task] {
+        let goal_id = (scope != MemoryScope::Project).then_some("goal-a");
+        let task_id = (scope == MemoryScope::Task).then_some("task-a");
+        let candidate = candidate(
+            "project-source",
+            scope,
+            "project-a",
+            goal_id,
+            task_id,
+            MemoryCandidateState::New,
+        );
+        for project in [
+            None,
+            Some("project-b"),
+            Some("project-a "),
+            Some("PROJECT-A"),
+        ] {
+            let event = source_event("event:project-source", project, goal_id, task_id);
+            assert!(candidate.validate_source_events(&[event]).is_err());
+        }
+    }
+}
+
+#[test]
+fn memory_source_validation_rejects_goal_and_task_scope_mismatches() {
+    for (scope, candidate_goal, candidate_task, event_goal, event_task) in [
+        (MemoryScope::Goal, Some("goal-a"), None, None, None),
+        (
+            MemoryScope::Goal,
+            Some("goal-a"),
+            None,
+            Some("goal-b"),
+            None,
+        ),
+        (
+            MemoryScope::Task,
+            Some("goal-a"),
+            Some("task-a"),
+            None,
+            Some("task-a"),
+        ),
+        (
+            MemoryScope::Task,
+            Some("goal-a"),
+            Some("task-a"),
+            Some("goal-b"),
+            Some("task-a"),
+        ),
+        (
+            MemoryScope::Task,
+            Some("goal-a"),
+            Some("task-a"),
+            Some("goal-a"),
+            None,
+        ),
+        (
+            MemoryScope::Task,
+            Some("goal-a"),
+            Some("task-a"),
+            Some("goal-a"),
+            Some("task-b"),
+        ),
+        (
+            MemoryScope::Task,
+            None,
+            Some("task-a"),
+            Some("any-goal"),
+            Some("task-b"),
+        ),
+        (MemoryScope::Task, None, Some("task-a"), None, None),
+    ] {
+        let candidate = candidate(
+            "scoped-source",
+            scope,
+            "project-a",
+            candidate_goal,
+            candidate_task,
+            MemoryCandidateState::New,
+        );
+        let event = source_event(
+            "event:scoped-source",
+            Some("project-a"),
+            event_goal,
+            event_task,
+        );
+        assert!(candidate.validate_source_events(&[event]).is_err());
+    }
+}
+
+#[test]
+fn memory_source_validation_checks_candidate_before_looking_up_events() {
+    let valid = candidate(
+        "invalid-source",
+        MemoryScope::Project,
+        "project-a",
+        None,
+        None,
+        MemoryCandidateState::New,
+    );
+    let mut unsupported = valid.clone();
+    unsupported.schema_version = 2;
+    let mut raw_summary = valid.clone();
+    raw_summary.claim_summary = "password=synthetic-invalid-candidate".into();
+    let mut no_refs = valid.clone();
+    no_refs.source_event_refs.clear();
+    let mut illegal_scope = valid;
+    illegal_scope.scope = MemoryScope::Goal;
+    for candidate in [unsupported, raw_summary, no_refs, illegal_scope] {
+        let expected = candidate.validate().expect_err("candidate is invalid");
+        assert_eq!(candidate.validate_source_events(&[]), Err(expected));
+    }
+}
+
+#[test]
+fn memory_source_validation_only_reads_identity_fields_not_payload_or_schema() {
+    let candidate = candidate(
+        "payload-source",
+        MemoryScope::Project,
+        "project-a",
+        None,
+        None,
+        MemoryCandidateState::New,
+    );
+    let mut event = source_event("event:payload-source", Some("project-a"), None, None);
+    event.schema_version = 0;
+    event.event_type.clear();
+    event.payload = serde_json::json!({"password": "synthetic-source-payload", "token": "synthetic-source-token"});
+    let before = event.clone();
+    candidate
+        .validate_source_events(std::slice::from_ref(&event))
+        .expect("only source identity metadata is checked");
+    assert!(event == before);
+}
+
+#[test]
+fn memory_source_validation_errors_do_not_echo_sensitive_identity_or_payload() {
+    let mut candidate = candidate(
+        "synthetic-candidate-id",
+        MemoryScope::Task,
+        "project-a",
+        Some("goal-a"),
+        Some("task-a"),
+        MemoryCandidateState::New,
+    );
+    candidate.source_event_refs = vec!["event:synthetic-sensitive-reference".into()];
+    let mut matching = source_event(
+        "event:synthetic-sensitive-reference",
+        Some("project-a"),
+        Some("goal-a"),
+        Some("task-a"),
+    );
+    matching.payload = serde_json::json!({"password": "synthetic-payload-secret"});
+    let mut wrong_project = matching.clone();
+    wrong_project.project_id = Some("synthetic-private-project".into());
+    let mut wrong_goal = matching.clone();
+    wrong_goal.goal_id = Some("synthetic-private-goal".into());
+    let mut wrong_task = matching.clone();
+    wrong_task.task_id = Some("synthetic-private-task".into());
+    for events in [
+        vec![],
+        vec![matching.clone(), matching],
+        vec![wrong_project],
+        vec![wrong_goal],
+        vec![wrong_task],
+    ] {
+        let error = candidate
+            .validate_source_events(&events)
+            .expect_err("source identity is rejected");
+        assert!(!error.to_string().contains("synthetic"));
+        assert!(!format!("{error:?}").contains("synthetic"));
+    }
+}
+
+#[test]
+fn memory_source_validation_does_not_change_catalog_or_promote_candidates() {
+    let candidate = candidate(
+        "catalog-source",
+        MemoryScope::Project,
+        "project-a",
+        None,
+        None,
+        MemoryCandidateState::New,
+    );
+    let mut catalog = MemoryCatalog::default();
+    catalog
+        .insert(candidate.clone())
+        .expect("existing insert remains independent of source lookup");
+    let before = catalog.clone();
+    assert!(candidate.validate_source_events(&[]).is_err());
+    assert_eq!(catalog, before);
+    candidate
+        .validate_source_events(&[source_event(
+            "event:catalog-source",
+            Some("project-a"),
+            None,
+            None,
+        )])
+        .expect("source identity matches");
+    assert_eq!(catalog, before);
+    assert_eq!(candidate.lifecycle_state, MemoryCandidateState::New);
+    let query = MemoryQuery::new("project-a", None, None).unwrap();
+    assert_eq!(catalog.retrieve(&query), vec![candidate]);
 }

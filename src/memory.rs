@@ -1,3 +1,4 @@
+use crate::domain::EventEnvelope;
 use crate::redaction::Redactor;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -170,6 +171,42 @@ impl MemoryCandidate {
                         reason: "required for task scope".into(),
                     })?;
                 validate_non_blank("task_id", task_id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Callers must supply an already authorized event set for this explicit identity check.
+    /// Checks envelope identities only, without inspecting payloads or establishing payload
+    /// authenticity or source trust. Does not read logs, mutate catalogs, promote candidates,
+    /// or grant authorization. `MemoryCatalog::insert` does not invoke this check.
+    pub fn validate_source_events(&self, events: &[EventEnvelope]) -> Result<(), MemoryError> {
+        self.validate()?;
+        let invalid_source = |reason: &'static str| MemoryError::InvalidField {
+            field: "source_event_refs".into(),
+            reason: reason.into(),
+        };
+        for reference in &self.source_event_refs {
+            let mut matching = events.iter().filter(|event| event.event_id == *reference);
+            let event = matching
+                .next()
+                .ok_or_else(|| invalid_source("referenced event is missing"))?;
+            if matching.next().is_some() {
+                return Err(invalid_source("referenced event is ambiguous"));
+            }
+            if event.project_id.as_deref() != Some(self.project_id.as_str()) {
+                return Err(invalid_source("referenced event project does not match"));
+            }
+            if self.scope != MemoryScope::Project
+                && self.goal_id.is_some()
+                && event.goal_id.as_deref() != self.goal_id.as_deref()
+            {
+                return Err(invalid_source("referenced event goal does not match"));
+            }
+            if self.scope == MemoryScope::Task
+                && event.task_id.as_deref() != self.task_id.as_deref()
+            {
+                return Err(invalid_source("referenced event task does not match"));
             }
         }
         Ok(())
