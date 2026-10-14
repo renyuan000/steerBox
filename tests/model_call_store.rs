@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 
 use steerbox::model_call_store::{ModelCallStore, ModelCallStoreError};
-use steerbox::model_contracts::ModelCallRecord;
+use steerbox::model_contracts::{ModelCallFailureRecord, ModelCallRecord};
 
 static NEXT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -68,6 +68,31 @@ fn record(id: &str) -> ModelCallRecord {
         started_at: "2026-10-10T00:00:00Z".into(),
         completed_at: Some("2026-10-10T00:00:01Z".into()),
         created_at: "2026-10-10T00:00:01Z".into(),
+    }
+}
+
+fn failure_record(id: &str) -> ModelCallFailureRecord {
+    ModelCallFailureRecord {
+        schema_version: 1,
+        model_call_id: id.into(),
+        task_id: "task-1".into(),
+        task_run_id: "task-run-1".into(),
+        agent_role: "implementer".into(),
+        provider_id: "fixture".into(),
+        endpoint_id: "local://fixture".into(),
+        model_id: "fixture-model".into(),
+        route_decision_id: "route-1".into(),
+        resolved_prompt_pack_id: "prompt-1".into(),
+        started_at: "2026-10-10T00:00:00Z".into(),
+        ended_at: "2026-10-10T00:00:01Z".into(),
+        failure_stage: "provider_request".into(),
+        failure_class: "timeout".into(),
+        input_context_hash: None,
+        output_artifact_ref: None,
+        finish_reason: None,
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost: None,
     }
 }
 
@@ -487,4 +512,112 @@ fn read_rejects_invalid_identity_or_cost_with_actual_line_and_no_record_text() {
             ModelCallStoreError::InvalidContractAtLine { line: 3, .. }
         ));
     }
+}
+
+#[test]
+fn failure_append_and_read_use_a_separate_jsonl_without_changing_success_records() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let failure_file = file.with_extension("failures.jsonl");
+    let store = ModelCallStore::open(&file).expect("store opens");
+    let failure = failure_record("call-failure-1");
+
+    store
+        .append(&record("call-success-1"))
+        .expect("success record appends");
+    store
+        .append_failure(&failure)
+        .expect("failure record appends");
+
+    assert_eq!(
+        store.read_all().expect("success records read"),
+        vec![record("call-success-1")]
+    );
+    assert_eq!(
+        store.read_failures().expect("failure records read"),
+        vec![failure]
+    );
+    assert!(file.exists());
+    assert!(failure_file.exists());
+}
+
+#[test]
+fn failure_append_is_idempotent_and_rejects_conflicting_duplicate_ids() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let failure_file = file.with_extension("failures.jsonl");
+    let store = ModelCallStore::open(&file).expect("store opens");
+    let failure = failure_record("call-failure-duplicate");
+
+    store
+        .append_failure(&failure)
+        .expect("first failure appends");
+    let bytes_after_first = fs::read(&failure_file).expect("failure log exists");
+    store
+        .append_failure(&failure)
+        .expect("identical failure retry is idempotent");
+    assert_eq!(
+        fs::read(&failure_file).expect("failure log rereads"),
+        bytes_after_first
+    );
+
+    let mut conflict = failure.clone();
+    conflict.failure_class = "transport".into();
+    assert!(matches!(
+        store
+            .append_failure(&conflict)
+            .expect_err("conflicting failure ID must fail"),
+        ModelCallStoreError::DuplicateModelCallId
+    ));
+}
+
+#[test]
+fn read_failures_reports_physical_json_line_without_echoing_sensitive_text() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let failure_file = file.with_extension("failures.jsonl");
+    let store = ModelCallStore::open(&file).expect("store opens");
+    fs::write(
+        &failure_file,
+        "\nnot-json\n{\"failure_class\":\"password=synthetic-secret\"}\n",
+    )
+    .expect("failure fixture writes");
+
+    let error = store
+        .read_failures()
+        .expect_err("invalid failure JSON must fail");
+    assert!(matches!(
+        error,
+        ModelCallStoreError::InvalidJson { line: 2, .. }
+    ));
+    assert!(!error.to_string().contains("synthetic-secret"));
+}
+
+#[test]
+fn read_failures_reports_invalid_contract_at_physical_line() {
+    let directory = TestDirectory::new();
+    let file = directory.file();
+    let failure_file = file.with_extension("failures.jsonl");
+    let store = ModelCallStore::open(&file).expect("store opens");
+    let valid =
+        serde_json::to_string(&failure_record("call-failure-valid")).expect("failure serializes");
+    let mut invalid = serde_json::to_value(failure_record("call-failure-invalid")).unwrap();
+    invalid["failure_class"] = serde_json::json!("provider said password=synthetic-secret");
+    fs::write(
+        &failure_file,
+        format!(
+            "{valid}\n{}\n",
+            serde_json::to_string(&invalid).expect("invalid failure serializes")
+        ),
+    )
+    .expect("failure fixture writes");
+
+    let error = store
+        .read_failures()
+        .expect_err("invalid failure contract must fail");
+    assert!(matches!(
+        error,
+        ModelCallStoreError::InvalidContractAtLine { line: 2, .. }
+    ));
+    assert!(!error.to_string().contains("synthetic-secret"));
 }

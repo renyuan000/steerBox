@@ -1,4 +1,4 @@
-use crate::memory::{MemoryCandidate, MemoryError};
+use crate::memory::{MemoryCandidate, MemoryCatalog, MemoryError};
 use serde_json::from_str;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -66,6 +66,14 @@ impl MemoryStore {
         self.read_all_unlocked()
     }
 
+    pub fn read_catalog(&self) -> Result<MemoryCatalog, MemoryStoreError> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(io_error)?;
+        }
+        let _lock = self.acquire_lock()?;
+        self.read_catalog_unlocked()
+    }
+
     fn read_all_unlocked(&self) -> Result<Vec<MemoryCandidate>, MemoryStoreError> {
         if !self.path.exists() {
             return Ok(Vec::new());
@@ -92,6 +100,28 @@ impl MemoryStore {
         Ok(records)
     }
 
+    fn read_catalog_unlocked(&self) -> Result<MemoryCatalog, MemoryStoreError> {
+        if !self.path.exists() {
+            return Ok(MemoryCatalog::default());
+        }
+        let reader = BufReader::new(File::open(&self.path).map_err(io_error)?);
+        let mut catalog = MemoryCatalog::default();
+        for (index, line) in reader.lines().enumerate() {
+            let line_number = index + 1;
+            let line = line.map_err(io_error)?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let candidate = from_str::<MemoryCandidate>(&line)
+                .map_err(|_| MemoryStoreError::InvalidJson { line: line_number })?;
+            validate_candidate(&candidate, line_number)?;
+            catalog
+                .insert(candidate)
+                .map_err(|error| map_memory_error(line_number, error))?;
+        }
+        Ok(catalog)
+    }
+
     fn acquire_lock(&self) -> Result<File, MemoryStoreError> {
         let mut lock_path = self.path.as_os_str().to_os_string();
         lock_path.push(".lock");
@@ -108,14 +138,20 @@ impl MemoryStore {
 }
 
 fn validate_candidate(candidate: &MemoryCandidate, line: usize) -> Result<(), MemoryStoreError> {
-    candidate.validate().map_err(|error| match error {
+    candidate
+        .validate()
+        .map_err(|error| map_memory_error(line, error))
+}
+
+fn map_memory_error(line: usize, error: MemoryError) -> MemoryStoreError {
+    match error {
         MemoryError::InvalidField { field, reason } => MemoryStoreError::InvalidCandidate {
             line,
             field,
             reason,
         },
         MemoryError::DuplicateCandidate(_) => MemoryStoreError::DuplicateCandidate { line },
-    })
+    }
 }
 
 fn io_error(error: std::io::Error) -> MemoryStoreError {

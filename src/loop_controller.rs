@@ -16,7 +16,8 @@ use crate::model_adapter::{
 };
 use crate::model_call_store::{ModelCallStore, ModelCallStoreError};
 use crate::model_contracts::{
-    ModelActionEnvelope, ModelCallRecord, ModelContractError, RouteDecision, VerificationContract,
+    ModelActionEnvelope, ModelCallFailureRecord, ModelCallRecord, ModelContractError,
+    RouteDecision, VerificationContract,
 };
 use crate::model_router::{
     next_fallback_model, ModelRouter, ModelRouterError, RiskLevel as RouteRiskLevel, RouteRequest,
@@ -857,9 +858,73 @@ impl ReadOnlyLoopController {
         )?;
 
         let started_at = chrono::Utc::now().to_rfc3339();
+        let model_call_id = format!("call-{}-{step_id}", self.loop_run.loop_run_id);
         let resolved = match adapter.complete_resolved_with_action(request, pack) {
             Ok(response) => response,
             Err(error) => {
+                let (failure_stage, failure_class) = model_call_failure_metadata(&error);
+                let failure_record = ModelCallFailureRecord {
+                    schema_version: crate::model_contracts::MODEL_CALL_FAILURE_SCHEMA_VERSION,
+                    model_call_id: model_call_id.clone(),
+                    task_id: route.task_id.clone(),
+                    task_run_id: self.loop_run.task_run_id.clone(),
+                    agent_role: route.agent_role.clone(),
+                    provider_id: pack.provider_id().into(),
+                    endpoint_id: pack.endpoint_id().into(),
+                    model_id: pack.model_id().into(),
+                    route_decision_id: route.route_decision_id.clone(),
+                    resolved_prompt_pack_id: pack.metadata().prompt_pack_id.clone(),
+                    started_at: started_at.clone(),
+                    ended_at: chrono::Utc::now().to_rfc3339(),
+                    failure_stage: failure_stage.into(),
+                    failure_class: failure_class.into(),
+                    input_context_hash: None,
+                    output_artifact_ref: None,
+                    finish_reason: None,
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                };
+                if let Err(store_error) = store.append_failure(&failure_record) {
+                    self.append_model_event(
+                        "model_call_failed",
+                        &format!("{step_id}:audit_failed"),
+                        json!({
+                            "error": redact_audit_text(&store_error.to_string()),
+                            "route_decision_id": route.route_decision_id,
+                            "model_call_id": model_call_id,
+                            "audit_failure": true,
+                        }),
+                    )?;
+                    append_step_event(
+                        &mut self.event_log,
+                        &self.goal,
+                        &self.loop_run,
+                        &step,
+                        "step_failed",
+                        &format!("{step_id}:audit_failed"),
+                        json!({
+                            "summary": redact_audit_text(&store_error.to_string()),
+                            "audit_failure": true,
+                        }),
+                        self.task_run.current_attempt_id.clone(),
+                    )?;
+                    self.report_progress(
+                        ProgressSubject::Model,
+                        model_progress_id.clone(),
+                        ProgressStatus::Failed,
+                        Some("model audit failed"),
+                        None,
+                    )?;
+                    self.report_progress(
+                        ProgressSubject::Step,
+                        step.step_id.clone(),
+                        ProgressStatus::Failed,
+                        Some("step failed"),
+                        None,
+                    )?;
+                    return Err(LoopControllerError::ModelCallStore(store_error));
+                }
                 self.append_model_event(
                     "model_call_failed",
                     &format!("{step_id}:model_failed"),
@@ -935,7 +1000,6 @@ impl ReadOnlyLoopController {
             }
         }
         let completed_at = chrono::Utc::now().to_rfc3339();
-        let model_call_id = format!("call-{}-{step_id}", self.loop_run.loop_run_id);
         let output_artifact_ref = format!("trace://{model_call_id}/output");
         let record = ModelCallRecord {
             model_call_id: model_call_id.clone(),
@@ -2530,6 +2594,31 @@ fn is_retryable_model_error(error: &LoopControllerError) -> bool {
                 | ProviderErrorClass::Upstream,
         })
     )
+}
+
+fn model_call_failure_metadata(error: &ModelAdapterError) -> (&'static str, &'static str) {
+    match error {
+        ModelAdapterError::Provider { class } => (
+            "provider_invocation",
+            match class {
+                ProviderErrorClass::InvalidRequest => "invalid_request",
+                ProviderErrorClass::Authentication => "authentication",
+                ProviderErrorClass::Permission => "permission",
+                ProviderErrorClass::RateLimit => "rate_limit",
+                ProviderErrorClass::Timeout => "timeout",
+                ProviderErrorClass::Transport => "transport",
+                ProviderErrorClass::Upstream => "upstream",
+                ProviderErrorClass::ResponseParse => "response_parse",
+            },
+        ),
+        ModelAdapterError::ProviderTextUnmappable => ("provider_response", "response_unmappable"),
+        ModelAdapterError::EmptyModelId | ModelAdapterError::EmptyObjective => {
+            ("provider_request", "invalid_request")
+        }
+        ModelAdapterError::ResolvedBindingMismatch { .. } => {
+            ("provider_request", "binding_mismatch")
+        }
+    }
 }
 
 fn with_goal_risk_floor(mut features: TaskFeatures, goal_risk: RiskLevel) -> TaskFeatures {

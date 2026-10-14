@@ -1,7 +1,8 @@
 use std::fs;
 
 use steerbox::memory::{
-    MemoryCandidate, MemoryCandidateState, MemoryConfidence, MemoryProvenance, MemoryScope,
+    MemoryCandidate, MemoryCandidateState, MemoryConfidence, MemoryProvenance, MemoryQuery,
+    MemoryScope,
 };
 use steerbox::memory_store::{MemoryStore, MemoryStoreError};
 
@@ -64,6 +65,81 @@ fn memory_store_missing_file_read_does_not_create_it() {
         .is_empty());
     assert!(!path.exists());
     assert!(path.parent().expect("memory parent exists").exists());
+}
+
+#[test]
+fn memory_store_read_catalog_reuses_stable_query_filtering_without_changing_lifecycle() {
+    let directory = test_directory();
+    let path = directory.path().join("memory.jsonl");
+    let store = MemoryStore::open(&path);
+    let mut rejected = candidate("rejected", "rejected claim");
+    rejected.lifecycle_state = MemoryCandidateState::Rejected;
+    let mut superseded = candidate("superseded", "superseded claim");
+    superseded.lifecycle_state = MemoryCandidateState::Superseded;
+    let visible_z = candidate("z-visible", "visible claim z");
+    let visible_a = candidate("a-visible", "visible claim a");
+
+    for item in [
+        rejected.clone(),
+        visible_z.clone(),
+        superseded.clone(),
+        visible_a.clone(),
+    ] {
+        store.append(&item).expect("candidate appends");
+    }
+
+    let catalog = store.read_catalog().expect("catalog reads");
+    let query = MemoryQuery::new("project-memory-store", None, None)
+        .expect("project memory query is valid");
+    let visible = catalog.retrieve(&query);
+
+    assert_eq!(
+        visible
+            .iter()
+            .map(|candidate| candidate.candidate_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a-visible", "z-visible"]
+    );
+    assert!(visible
+        .iter()
+        .all(|candidate| candidate.lifecycle_state == MemoryCandidateState::New));
+    assert_eq!(
+        store.read_all().expect("candidates reread"),
+        vec![rejected, visible_z, superseded, visible_a]
+    );
+}
+
+#[test]
+fn memory_store_read_catalog_preserves_error_line_numbers() {
+    let directory = test_directory();
+    let path = directory.path().join("memory.jsonl");
+    let store = MemoryStore::open(&path);
+    let valid = serde_json::to_string(&candidate("line-one", "valid claim"))
+        .expect("valid candidate serializes");
+
+    fs::write(&path, "\nnot-json\n").expect("invalid JSON fixture writes");
+    assert!(matches!(
+        store.read_catalog().expect_err("invalid JSON must fail"),
+        MemoryStoreError::InvalidJson { line: 2 }
+    ));
+
+    let mut invalid = serde_json::to_value(candidate("invalid-schema", "invalid claim"))
+        .expect("invalid candidate serializes");
+    invalid["schema_version"] = serde_json::json!(2);
+    let invalid = serde_json::to_string(&invalid).expect("invalid candidate JSON serializes");
+    fs::write(&path, format!("{valid}\n{invalid}\n")).expect("invalid candidate fixture writes");
+    assert!(matches!(
+        store
+            .read_catalog()
+            .expect_err("invalid candidate must fail"),
+        MemoryStoreError::InvalidCandidate { line: 2, .. }
+    ));
+
+    fs::write(&path, format!("{valid}\n\n{valid}\n")).expect("duplicate fixture writes");
+    assert!(matches!(
+        store.read_catalog().expect_err("duplicate must fail"),
+        MemoryStoreError::DuplicateCandidate { line: 3 }
+    ));
 }
 
 #[test]

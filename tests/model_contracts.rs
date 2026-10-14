@@ -1,4 +1,4 @@
-use steerbox::model_contracts::{ModelCallRecord, RouteDecision};
+use steerbox::model_contracts::{ModelCallFailureRecord, ModelCallRecord, RouteDecision};
 
 fn route_decision() -> RouteDecision {
     RouteDecision {
@@ -49,6 +49,31 @@ fn model_call_record() -> ModelCallRecord {
         started_at: "2026-10-10T00:00:00Z".into(),
         completed_at: Some("2026-10-10T00:00:00Z".into()),
         created_at: "2026-10-10T00:00:00Z".into(),
+    }
+}
+
+fn model_call_failure_record() -> ModelCallFailureRecord {
+    ModelCallFailureRecord {
+        schema_version: 1,
+        model_call_id: "call-failure-1".into(),
+        task_id: "task-1".into(),
+        task_run_id: "task-run-1".into(),
+        agent_role: "implementer".into(),
+        provider_id: "fixture".into(),
+        endpoint_id: "local://fixture".into(),
+        model_id: "fixture-model".into(),
+        route_decision_id: "route-1".into(),
+        resolved_prompt_pack_id: "prompt-1".into(),
+        started_at: "2026-10-10T00:00:00Z".into(),
+        ended_at: "2026-10-10T00:00:01Z".into(),
+        failure_stage: "provider_request".into(),
+        failure_class: "timeout".into(),
+        input_context_hash: None,
+        output_artifact_ref: None,
+        finish_reason: None,
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost: None,
     }
 }
 
@@ -123,6 +148,105 @@ fn valid_contracts_pass_semantic_validation_without_changing_serialization() {
 
     assert_eq!(serde_json::to_value(decision).unwrap(), route_json);
     assert_eq!(serde_json::to_value(record).unwrap(), record_json);
+}
+
+#[test]
+fn model_call_failure_record_round_trips_without_sentinel_fields() {
+    let failure = model_call_failure_record();
+    failure
+        .validate()
+        .expect("valid failure record is accepted");
+    let encoded = serde_json::to_string(&failure).expect("failure record serializes");
+    let decoded: ModelCallFailureRecord =
+        serde_json::from_str(&encoded).expect("failure record decodes");
+
+    assert_eq!(decoded, failure);
+    assert!(!encoded.contains("unknown"));
+    assert!(!encoded.contains("error"));
+    assert!(!encoded.contains("synthetic-secret"));
+}
+
+#[test]
+fn model_call_failure_record_preserves_only_available_optional_facts() {
+    let mut failure = model_call_failure_record();
+    failure.input_context_hash = Some("sha256:input".into());
+    failure.output_artifact_ref = Some("trace://call-failure-1/partial-output".into());
+    failure.finish_reason = Some("length".into());
+    failure.input_tokens = Some(20);
+    failure.output_tokens = Some(3);
+    failure.estimated_cost = Some(0.001);
+
+    failure
+        .validate()
+        .expect("available optional facts are accepted");
+    let decoded: ModelCallFailureRecord =
+        serde_json::from_str(&serde_json::to_string(&failure).unwrap()).unwrap();
+    assert_eq!(decoded, failure);
+}
+
+#[test]
+fn model_call_failure_record_rejects_unknown_and_forbidden_fields() {
+    let mut unknown = serde_json::to_value(model_call_failure_record()).unwrap();
+    unknown["unexpected"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<ModelCallFailureRecord>(unknown).is_err());
+
+    let mut sensitive = serde_json::to_value(model_call_failure_record()).unwrap();
+    sensitive["token"] = serde_json::json!("synthetic-secret");
+    assert!(serde_json::from_value::<ModelCallFailureRecord>(sensitive).is_err());
+}
+
+#[test]
+fn model_call_failure_record_rejects_blank_identity_timing_and_failure_fields() {
+    for field in [
+        "model_call_id",
+        "task_id",
+        "task_run_id",
+        "agent_role",
+        "provider_id",
+        "endpoint_id",
+        "model_id",
+        "route_decision_id",
+        "resolved_prompt_pack_id",
+        "started_at",
+        "ended_at",
+        "failure_stage",
+        "failure_class",
+    ] {
+        let mut value = serde_json::to_value(model_call_failure_record()).unwrap();
+        value[field] = serde_json::json!(" \t\n ");
+        let failure: ModelCallFailureRecord = serde_json::from_value(value).unwrap();
+        let error = failure
+            .validate()
+            .expect_err("blank failure field must fail");
+        assert!(error.to_string().contains(field));
+        assert!(!error.to_string().contains("synthetic"));
+    }
+}
+
+#[test]
+fn model_call_failure_record_rejects_raw_error_text_in_failure_class() {
+    for marker in [
+        "password=synthetic-secret",
+        "api_key=synthetic-secret",
+        "access_token=synthetic-secret",
+        "client_secret=synthetic-secret",
+        "authorization=synthetic-secret",
+        "bearer token synthetic-secret",
+    ] {
+        let mut failure = model_call_failure_record();
+        failure.failure_class = marker.into();
+        let error = failure
+            .validate()
+            .expect_err("raw provider error text must fail");
+        assert!(!error.to_string().contains("synthetic-secret"));
+    }
+
+    let mut failure = model_call_failure_record();
+    failure.provider_id = "fixture\nprovider".into();
+    let error = failure
+        .validate()
+        .expect_err("control characters must fail");
+    assert!(!error.to_string().contains("fixture"));
 }
 
 #[test]

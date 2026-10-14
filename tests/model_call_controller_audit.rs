@@ -332,6 +332,101 @@ fn successful_model_step_persists_complete_audit_identity_and_actual_output_refe
 }
 
 #[test]
+fn provider_failure_persists_only_failure_contract_and_keeps_success_log_empty() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let mut controller = controller(&directory).with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, FakeTransport::failing()),
+        None,
+    );
+
+    let error = controller
+        .run_resolved_model_step(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-audit-provider-failure".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            "step-audit-provider-failure",
+        )
+        .expect_err("provider failure must fail the model step");
+    assert!(matches!(error, LoopControllerError::ModelAdapter(_)));
+
+    let store = ModelCallStore::open(directory.model_calls()).expect("model call store reopens");
+    assert!(store.read_all().expect("success records read").is_empty());
+    let failures = store.read_failures().expect("failure records read");
+    assert_eq!(failures.len(), 1);
+    let failure = &failures[0];
+    assert_eq!(failure.failure_stage, "provider_invocation");
+    assert_eq!(failure.failure_class, "transport");
+    assert!(failure.input_context_hash.is_none());
+    assert!(failure.output_artifact_ref.is_none());
+    assert!(failure.finish_reason.is_none());
+    assert!(failure.input_tokens.is_none());
+    assert!(failure.output_tokens.is_none());
+    assert!(failure.estimated_cost.is_none());
+
+    let failure_json = fs::read_to_string(directory.model_calls().with_extension("failures.jsonl"))
+        .expect("failure JSONL reads");
+    assert!(!failure_json.contains("network"));
+    assert!(!failure_json.contains("error"));
+}
+
+#[test]
+fn provider_failure_audit_write_failure_is_fail_closed() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let model_call_path = directory.model_calls();
+    fs::create_dir(model_call_path.with_extension("failures.jsonl"))
+        .expect("failure log directory fixture creates");
+    let mut controller = controller(&directory).with_model_call_store(
+        ModelCallStore::open(&model_call_path).expect("model call store opens"),
+    );
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, FakeTransport::failing()),
+        None,
+    );
+
+    let error = controller
+        .run_resolved_model_step(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-audit-provider-failure-store-error".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            "step-audit-provider-failure-store-error",
+        )
+        .expect_err("failure audit write error must fail closed");
+    assert!(matches!(error, LoopControllerError::ModelCallStore(_)));
+
+    let events = EventLog::open(directory.events())
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events.iter().any(|event| {
+        event.event_type == "model_call_failed" && event.payload["audit_failure"] == true
+    }));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "model_call_completed"));
+}
+
+#[test]
 fn resolved_model_repeat_is_rejected_before_second_provider_call() {
     let directory = TestDirectory::new();
     let (pack, route) = resolved_fixture();

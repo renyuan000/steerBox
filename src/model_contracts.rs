@@ -248,6 +248,89 @@ pub struct ModelCallRecord {
     pub created_at: String,
 }
 
+pub const MODEL_CALL_FAILURE_SCHEMA_VERSION: u32 = 1;
+
+/// A persisted audit record for a provider invocation that failed before a
+/// successful model-call record could be produced.
+///
+/// Only invocation identity, failure metadata, timing, and measurements that
+/// were actually available are retained. Provider error bodies, credentials,
+/// and sentinel replacements for unavailable fields are intentionally absent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelCallFailureRecord {
+    pub schema_version: u32,
+    pub model_call_id: String,
+    pub task_id: String,
+    pub task_run_id: String,
+    pub agent_role: String,
+    pub provider_id: String,
+    pub endpoint_id: String,
+    pub model_id: String,
+    pub route_decision_id: String,
+    pub resolved_prompt_pack_id: String,
+    pub started_at: String,
+    pub ended_at: String,
+    pub failure_stage: String,
+    pub failure_class: String,
+    pub input_context_hash: Option<String>,
+    pub output_artifact_ref: Option<String>,
+    pub finish_reason: Option<String>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub estimated_cost: Option<f64>,
+}
+
+impl ModelCallFailureRecord {
+    pub fn validate(&self) -> Result<(), ModelContractError> {
+        if self.schema_version != MODEL_CALL_FAILURE_SCHEMA_VERSION {
+            return Err(ModelContractError::InvalidField {
+                field: "schema_version",
+                reason: "unsupported model call failure schema version",
+            });
+        }
+        for (field, value) in [
+            ("model_call_id", self.model_call_id.as_str()),
+            ("task_id", self.task_id.as_str()),
+            ("task_run_id", self.task_run_id.as_str()),
+            ("agent_role", self.agent_role.as_str()),
+            ("provider_id", self.provider_id.as_str()),
+            ("endpoint_id", self.endpoint_id.as_str()),
+            ("model_id", self.model_id.as_str()),
+            ("route_decision_id", self.route_decision_id.as_str()),
+            (
+                "resolved_prompt_pack_id",
+                self.resolved_prompt_pack_id.as_str(),
+            ),
+            ("started_at", self.started_at.as_str()),
+            ("ended_at", self.ended_at.as_str()),
+        ] {
+            require_nonempty(field, value)?;
+            validate_failure_value(field, value)?;
+        }
+        for (field, value) in [
+            ("failure_stage", self.failure_stage.as_str()),
+            ("failure_class", self.failure_class.as_str()),
+        ] {
+            validate_failure_value(field, value)?;
+        }
+        validate_identifier("failure_stage", &self.failure_stage)?;
+        validate_identifier("failure_class", &self.failure_class)?;
+        validate_optional_failure_value("input_context_hash", self.input_context_hash.as_deref())?;
+        validate_optional_failure_value(
+            "output_artifact_ref",
+            self.output_artifact_ref.as_deref(),
+        )?;
+        validate_optional_failure_value("finish_reason", self.finish_reason.as_deref())?;
+        validate_cost("estimated_cost", self.estimated_cost)?;
+        self.validate_secret_free()
+    }
+
+    pub fn validate_secret_free(&self) -> Result<(), ModelContractError> {
+        validate_secret_free(self)
+    }
+}
+
 impl ModelCallRecord {
     /// Validate audit identifiers and costs without changing serialized fields.
     pub fn validate(&self) -> Result<(), ModelContractError> {
@@ -427,6 +510,45 @@ fn require_nonempty(field: &'static str, value: &str) -> Result<(), ModelContrac
         return Err(ModelContractError::InvalidField {
             field,
             reason: "must not be empty",
+        });
+    }
+    Ok(())
+}
+
+fn validate_optional_failure_value(
+    field: &'static str,
+    value: Option<&str>,
+) -> Result<(), ModelContractError> {
+    if let Some(value) = value {
+        require_nonempty(field, value)?;
+        validate_failure_value(field, value)?;
+    }
+    Ok(())
+}
+
+fn validate_failure_value(field: &'static str, value: &str) -> Result<(), ModelContractError> {
+    if value.chars().any(char::is_control) {
+        return Err(ModelContractError::InvalidField {
+            field,
+            reason: "must not contain control characters",
+        });
+    }
+    let normalized = value.to_ascii_lowercase();
+    const SENSITIVE_MARKERS: &[&str] = &[
+        "password=",
+        "api_key=",
+        "access_token=",
+        "client_secret=",
+        "authorization=",
+        "bearer token",
+    ];
+    if SENSITIVE_MARKERS
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        return Err(ModelContractError::InvalidField {
+            field,
+            reason: "must not contain credential material",
         });
     }
     Ok(())

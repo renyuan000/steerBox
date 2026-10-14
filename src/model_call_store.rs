@@ -1,4 +1,4 @@
-use crate::model_contracts::{ModelCallRecord, ModelContractError};
+use crate::model_contracts::{ModelCallFailureRecord, ModelCallRecord, ModelContractError};
 use serde_json::Error as JsonError;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -27,6 +27,7 @@ pub enum ModelCallStoreError {
 #[derive(Debug, Clone)]
 pub struct ModelCallStore {
     path: PathBuf,
+    failure_path: PathBuf,
 }
 
 impl ModelCallStore {
@@ -35,7 +36,8 @@ impl ModelCallStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        Ok(Self { path })
+        let failure_path = path.with_extension("failures.jsonl");
+        Ok(Self { path, failure_path })
     }
 
     /// Validate identifiers, cost and field schema before serialization or log
@@ -69,6 +71,73 @@ impl ModelCallStore {
     pub fn read_all(&self) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
         let _lock = self.acquire_lock()?;
         self.read_all_unlocked()
+    }
+
+    /// Append a provider invocation failure without inventing unavailable
+    /// response fields or persisting the provider's raw error body.
+    pub fn append_failure(
+        &self,
+        record: &ModelCallFailureRecord,
+    ) -> Result<(), ModelCallStoreError> {
+        record.validate()?;
+        let _lock = self.acquire_failure_lock()?;
+        let mut identical_match = false;
+        for existing in self.read_failures_unlocked()? {
+            if existing.model_call_id == record.model_call_id {
+                if existing == *record {
+                    identical_match = true;
+                    continue;
+                }
+                return Err(ModelCallStoreError::DuplicateModelCallId);
+            }
+        }
+        if identical_match {
+            return Ok(());
+        }
+        let encoded = serde_json::to_string(record)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.failure_path)?;
+        writeln!(file, "{encoded}")?;
+        file.sync_data()?;
+        Ok(())
+    }
+
+    pub fn read_failures(&self) -> Result<Vec<ModelCallFailureRecord>, ModelCallStoreError> {
+        let _lock = self.acquire_failure_lock()?;
+        self.read_failures_unlocked()
+    }
+
+    fn read_failures_unlocked(&self) -> Result<Vec<ModelCallFailureRecord>, ModelCallStoreError> {
+        if !self.failure_path.exists() {
+            return Ok(Vec::new());
+        }
+        let reader = BufReader::new(File::open(&self.failure_path)?);
+        reader
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| match line {
+                Ok(line) if line.trim().is_empty() => None,
+                Ok(line) => Some(
+                    serde_json::from_str::<ModelCallFailureRecord>(&line)
+                        .map_err(|source| ModelCallStoreError::InvalidJson {
+                            line: index + 1,
+                            source,
+                        })
+                        .and_then(|record| {
+                            record.validate().map_err(|source| {
+                                ModelCallStoreError::InvalidContractAtLine {
+                                    line: index + 1,
+                                    source,
+                                }
+                            })?;
+                            Ok(record)
+                        }),
+                ),
+                Err(error) => Some(Err(ModelCallStoreError::Io(error))),
+            })
+            .collect()
     }
 
     fn read_all_unlocked(&self) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
@@ -157,6 +226,19 @@ impl ModelCallStore {
 
     fn acquire_lock(&self) -> Result<File, ModelCallStoreError> {
         let mut lock_path = self.path.as_os_str().to_os_string();
+        lock_path.push(".lock");
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(PathBuf::from(lock_path))?;
+        lock_file.lock()?;
+        Ok(lock_file)
+    }
+
+    fn acquire_failure_lock(&self) -> Result<File, ModelCallStoreError> {
+        let mut lock_path = self.failure_path.as_os_str().to_os_string();
         lock_path.push(".lock");
         let lock_file = OpenOptions::new()
             .read(true)
