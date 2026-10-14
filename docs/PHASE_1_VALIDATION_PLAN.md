@@ -61,6 +61,7 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V5 Trace 可读性 | 已验证切片 | `tests/loop_controller.rs`、`tests/runtime_cli.rs`；完整回放工具仍未实现 |
 | V6 文件修改与 diff boundary | 已验证切片 | `tests/dev_vertical_slice.rs`、`tests/runtime_cli.rs`、`tests/workspace_edit_audit_gates.rs`；bounded Markdown controller 缺 checkpoint/ledger、pending pause/cancel、终态及前置审计故障均不修改原始字节；不保证后置故障自动 rollback |
 | V7 RecoveryCheckpoint metadata | 已验证写入与只读解释切片 | `tests/audit_store.rs`、`tests/dev_vertical_slice.rs`；覆盖 loop/step 最新追加查询、hash 格式/歧义、未知恢复状态、no-write 矛盾、日志错误行号及查询不修改文件；不重算 workspace hash、不验证快照、不执行 restore/replay |
+| V7.1 单文件 snapshot/显式恢复 | 已验证独立 primitive 与当前回归 | `tests/workspace_snapshot.rs`、`tests/workspace_edit.rs`；focused 42 + 11 = 53 passed，覆盖私有正文/metadata 分离、binding/scope/hash/foreign-owner 拒绝、restore 错误分类、hardlink/store 祖先替换与 exact-byte restore；master 全量 563 passed/0 failed/0 ignored，strict clippy/lib-bin build/fmt/diff 通过；未接 controller，不代表 task/process 恢复 |
 | V8 SideEffectLedger | 已验证记录与基础派生解释切片 | `tests/loop_controller.rs`、`tests/dev_vertical_slice.rs`、`tests/audit_store.rs`、`tests/workspace_edit_audit_gates.rs`；ledger 缺失或 mutation 前 append 故障阻止 controller Markdown 写入。disposition/status 是 metadata 派生解释，不改变 JSONL schema、不构成执行授权或完整恢复/补偿状态机 |
 | V9 GoalAlignmentCheck | 已验证切片 | `tests/drift_guard.rs`；结果写入完整 loop 仍待接线 |
 | V10 DriftGuard | 已验证切片 | `tests/drift_guard.rs` |
@@ -239,6 +240,28 @@ Focused 命令：`CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=
 - 写入失败或验证失败且 hash 改变时建议 `RestoreRequired`；有效已验证记录、相同 hash 或一致的 no-write 记录可为 `NoAction`，非法/歧义元数据不自动放行
 - 非匹配记录的 JSON 错误也传播，并保留物理行号；查询不创建缺失日志、不读取或重算 workspace hash、不修改 workspace/log，不执行恢复
 - 查询仍为全日志线性扫描，只保留最新匹配记录；单条记录大小仍影响内存，不代表已做内存压测
+
+### V7.1 单文件 snapshot 与显式条件恢复
+
+独立 `WorkspaceSnapshotStore` 的本地 Unix-only 验收入口：
+
+```bash
+CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 \
+  cargo test --locked --offline --test workspace_snapshot --test workspace_edit
+```
+
+master 提供的本次 focused 结果为 snapshot 42 项、workspace edit 11 项，合计 53 passed；修正新测试 strict clippy 警告后，master 的 `cargo clippy --locked --offline --lib --bins --tests -- -D warnings` 也已通过。随后 master 的 `cargo test --locked --offline` 退出 0，日志 `/tmp/steerbox-phase1-snapshot-full-20261014.log` 汇总为 563 passed、0 failed、0 ignored；53 段 test-result 包含 0 项 doctest 段，不称为 53 个测试 targets。lib/bin build、`cargo fmt --all -- --check` 和 `git diff --check` 也由 master 确认退出 0；构建/测试使用上述 `/tmp` target、jobs=2。这些回归结果不等于 controller snapshot 接线或完整恢复验收。
+
+已覆盖的 focused 场景与范围：
+
+- 既有 UTF-8 Markdown 文件 capture/reopen/显式 restore 保留 CRLF 原始字节；capture 不修改源文件，公共 metadata/Debug/错误不回显原文，重复 ID 不覆盖。
+- approval false、project/goal/canonical workspace 不匹配、capture 后 scope 收紧、当前文件被人类修改导致 content hash mismatch 均拒绝，目标保持当前字节；approval/expected hash 来自 trusted caller，不证明 harness 曾验证该当前状态。
+- traversal、非 Markdown/out-of-scope、缺失/非普通文件、文件/祖先/store symlink、hardlink、非法 ID、损坏/篡改 record 和 body/hash/size 不一致均拒绝；源码/当前目标/record 有界读取。
+- 新增独立断言区分 `ApprovalRequired`/`CurrentHashMismatch`/`BindingMismatch`/`InvalidRecord`，并验证当前目标 hash 相符但已 hardlink、store 祖先被替换为 symlink 时 restore 仍拒绝且不改当前正文。
+- 正文上限 1 MiB，JSON private record 上限 6 MiB + 64 KiB，测试包含边界正文、转义膨胀和超限 record。Unix 新 store/record 的 owner-only 权限、现有过宽权限拒绝及当前目标 permission mode 保留已有 focused 覆盖；foreign-owner store/record 拒绝由 root-only 测试覆盖，master 确认本次 effective UID=0，测试实际 chown 仅涉及 TempDir；非 root 运行该用例会提前返回，不能把那种结果当作 owner 场景的运行时证据。非 Unix 实现 fail-closed，未宣称 Windows ACL 已验证。
+- snapshot `before_hash`/restore `expected_after_hash` 为 `SHA256(file bytes)`；旧 controller checkpoint 为 `SHA256(relative_path + NUL + file bytes)`，不可混用。body hash 是完整性而非认证，本地 owner/权限不是加密或同用户/root 隔离，不能抵御同用户同时修改 body/hash。
+
+限制：private body 仅在 workspace 外本地存储，不自动注入 prompt/事件/trace/summary/model-call store。恢复只保留 Unix permission mode，不保留 inode/owner/ACL/xattrs；精确替换不是恶意并发 CAS、跨进程 writer 锁或完整 crash transaction，replacement 后 sync 失败可能已改变目标，须检查后重试，该错误阶段未以本次 focused 记录宣称独立故障注入通过。controller 默认不捕获或自动 restore，metadata 查询仍只读，TaskRun/Attempt/预算/进程及外部副作用恢复未完成。
 
 ### V8. SideEffectLedger
 

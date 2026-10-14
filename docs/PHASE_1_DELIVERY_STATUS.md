@@ -2,15 +2,15 @@
 
 ## 定位与证据边界
 
-状态核对日期：2026-10-14。已提交代码基线为 `e754d07`，核对时 `dev` 与 `origin/dev` 同步，正式源码无未提交修改；未跟踪的历史审核、参考资料与 benchmark 目录不计入交付。`202cec6` 已加入独立 `ModelCallFailureRecord`、failure JSONL 存储和 `MemoryStore::read_catalog`，`e754d07` 已加入 controller scoped memory retrieval。command submit/show CLI、provider stream 到安全进度事件 bridge、Anthropic profile binding、只读工具执行、模型动作闭环、bounded runtime tick、StreamReporter 进度刷新和 model-call 分页 CLI 切片已在先前提交中落地；验证范围仍以实际执行命令为准，不因文件出现或 subagent 报告自动计入已交付能力。
+状态核对日期：2026-10-14。`5a51851` 为本次 snapshot 实施基线；本批快照与共享 editor 改动验收见文末，提交状态以 Git 记录为准，不把旧全量结果覆盖到新代码。未跟踪的历史审核、参考资料与 benchmark 目录不计入交付。`202cec6` 已加入独立 `ModelCallFailureRecord`、failure JSONL 和 `MemoryStore::read_catalog`，`e754d07` 已加入 controller scoped memory retrieval，`5a51851` 已收紧 controller mutation 前审计门禁；验证范围仍以实际执行证据为准，不因文件出现或 subagent 报告自动计入完整交付。
 
 本文是剩余验收的归并视图，不替代 [PHASE_1_CONTRACTS.md](PHASE_1_CONTRACTS.md)、[PHASE_1_IMPLEMENTATION_SCOPE.md](PHASE_1_IMPLEMENTATION_SCOPE.md)、[PHASE_1_TODO.md](PHASE_1_TODO.md) 或 [PHASE_1_VALIDATION_PLAN.md](PHASE_1_VALIDATION_PLAN.md)。对象、身份、授权、事件及恢复语义以 Contracts 为准，范围以 Scope 为准，逐项状态和验收用例分别回查 TODO 与 Validation。
 
-188 项及此前 focused/build/fmt/all-targets 结果仅为历史证据，不覆盖当前基线。2026-10-14 `e754d07` 的实际重跑记录见本文末尾；未跟踪 benchmark 和历史资料不计入验收。本轮未调用 live provider，不能据本地/fake/localhost 回归宣称真实帐号或完整 Phase 1 通过。
+188 项及此前 focused/build/fmt/all-targets 结果仅为历史证据；`e754d07` 和 controller 门禁切片的回归记录见本文末尾，不覆盖本轮 snapshot 代码。未跟踪 benchmark 和历史资料不计入验收。本轮未调用 live provider，不能据本地/fake/localhost 回归宣称真实帐号或完整 Phase 1 通过。
 
 当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、bounded `read_file`、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。
 
-在 `e754d07` 基线之后，controller `execute_workspace_edit_action()` 已收紧为强制配置 `CheckpointStore` 与 `SideEffectLedger`，先应用生命周期/命令安全边界，再执行 policy 与 mutation 前审计。缺 store、待处理 pause/cancel、终态或 mutation 前审计写入错误均阻止修改，不增加低风险自主模式的审批请求。已有 started/completed/failed/verification_failed metadata 和 before/after hash；缺失 Markdown 链接不产生 verified 成功事件。此保证限定为该 controller API，不提供 snapshot、mutation 后自动 rollback 或完整恢复；不确定副作用状态和真实模型 E2E 仍未完成。
+controller `execute_workspace_edit_action()` 强制配置 `CheckpointStore` 与 `SideEffectLedger`，先应用生命周期/命令安全边界，再执行 policy 与 mutation 前审计。缺 store、待处理 pause/cancel、终态或 mutation 前审计写入错误均阻止修改，不增加低风险自主模式的审批请求。已有 started/completed/failed/verification_failed metadata 和 before/after hash；缺失 Markdown 链接不产生 verified 成功事件。该默认 controller API 尚不自动捕获或恢复 snapshot，不提供 mutation 后自动 rollback；新独立 primitive 的显式文件恢复不等于 controller/任务/进程恢复，不确定副作用状态和真实模型 E2E 仍未完成。
 
 ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 deterministic `RouteExplanation`；routed fixture/model-adapter fallback 已有 child Attempt 和共享预算，这不等于 resolved-provider/live fallback、并行调用、代理/中转健康路由或 prompt cache。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 支持 action/progress、非法进度拒绝、逐事件 flush，并可把已验证 provider delta 序列转换为不暴露正文的 lifecycle 进度；command submit/show CLI 只返回 metadata 并把 command 持久化到 inbox。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的修改／链接验证切片。当前不能作为任意 coding Agent 交付，也不能声明完整 Phase 1 已完成。
 
@@ -118,6 +118,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 - [domain.rs](../src/domain.rs) 已有 Task 状态迁移、GoalContract、LoopRun、LoopBudget 和 NoProgressTracker；[board_projection.rs](../src/board_projection.rs) 可重建最小只读 board。
 - [user_command_inbox.rs](../src/user_command_inbox.rs) 提供持久化、command_id 幂等和冲突拒绝；controller 目前应用 pause／resume／cancel，其余命令未实现的分支会拒绝。
 - [state_store.rs](../src/state_store.rs) 可重建／持久化／reopen loop/step projection；[audit_store.rs](../src/audit_store.rs) 的 checkpoint 是覆盖范围 metadata，不是完整 controller/process snapshot。
+- [workspace_snapshot.rs](../src/workspace_snapshot.rs) 新增 Unix-only 单个既有 UTF-8 Markdown 文件的独立 capture/显式 restore primitive，未接 controller。正文不超过 1 MiB，private record 不超过 6 MiB + 64 KiB，store 在 workspace 外且检查 effective owner/私有权限；正文不进入公共 metadata/错误或自动模型/事件上下文。restore 要求 trusted-caller approval、project/goal/canonical workspace/scope/path 绑定、record 完整性和预期当前 content hash 匹配；已检测到的人类后续修改拒绝覆盖。snapshot hash 是 `SHA256(file bytes)`，旧 controller checkpoint 是 `SHA256(relative_path + NUL + file bytes)`，不可混用。权限不是加密/同用户隔离，hash 不是认证；仅保留 Unix permission mode，不保留 inode/owner/ACL/xattrs，不抗恶意并发或保证完整 crash transaction，replacement 后 sync 错误须检查当前文件。
 
 剩余：
 
@@ -157,5 +158,9 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 2026-10-14 `e754d07` 基线重新执行了 `CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --tests --quiet`（507 passed、0 failed）和 `cargo clippy --locked --offline --lib --bins --tests -- -D warnings`（退出码 0）。这是本地/fake/localhost 回归，不包括 live provider 或完整 Phase 1 验收；后续源码变化须重新执行。项目原有 `target/` 目录仍存在，本轮构建输出在 `/tmp`，没有删除用户既有产物。
 
 同日 bounded Markdown controller 前置门禁修补由 master 测试先行验收：修补前 `workspace_edit_audit_gates` 为 4 passed/10 failed，失败证实缺审计或停态仍会修改文件；修补后 14 passed，连同 `loop_controller` 37 项与 `loop_approval` 4 项通过。最终 master 全量 `cargo test --locked --offline --tests --quiet` 为 51 targets、521 passed、0 failed；`cargo clippy --locked --offline --lib --bins --tests -- -D warnings`、`cargo build --locked --offline --lib --bins`、`cargo fmt --all -- --check`、`git diff --check` 均退出 0。编译/测试统一使用上述 `/tmp` target 和 jobs=2。代码及测试经独立审核，修补只覆盖 mutation 前拒绝，不提供 post-mutation rollback 或完整 Phase 1 验收。
+
+本轮 `5a51851` 基线后的 snapshot focused 验收由 master 提供：`workspace_snapshot` 42 项、`workspace_edit` 11 项，合计 53 passed。复现命令：`CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --test workspace_snapshot --test workspace_edit`。新增覆盖 restore 错误分类、当前目标 hardlink、store 祖先被替换为 symlink，以及 foreign-owner store/record 拒绝；master 确认本次 effective UID 为 0，ownership 测试实际执行且 chown 仅涉及 TempDir。replacement 后 sync 故障仍未登记独立注入测试，不能据此声称完整恢复或 Phase 1 完成。
+
+本轮 snapshot 全量回归由 master 实际完成：使用 `/tmp/steerbox-phase1-target`、jobs=2，`cargo test --locked --offline` 退出 0，日志 `/tmp/steerbox-phase1-snapshot-full-20261014.log` 汇总为 563 passed、0 failed、0 ignored；53 段 test-result 包含 0 项 doctest 段，不等于 53 个测试 targets。`cargo clippy --locked --offline --lib --bins --tests -- -D warnings`、lib/bin build、`cargo fmt --all -- --check` 和 `git diff --check` 均由 master 确认退出 0。此为本切片回归证据，不覆盖 controller snapshot 接线、实际 live provider、跨进程恢复或完整 Phase 1；后续源码变化必须重新验收。
 
 这六包不新增 SQLite 迁移、多 agent、TUI/Web、分布式 worker、向量／图数据库或无审批自动进化的交付要求。现有 JSONL／JSON 切片应先闭合规范要求，存储迁移不能替代真实模型闭环。CCG 和其他参考项目仅提供可核查的设计线索，不作为已证明最优的性能 benchmark，也不改变 Phase 1 正式范围。

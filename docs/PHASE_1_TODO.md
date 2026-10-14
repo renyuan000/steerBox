@@ -168,15 +168,16 @@ Memory 最小实现：
 
 - [x] 实现 checkpoint metadata JSONL 写入
 - [x] 记录 checkpoint 与 goal / loop / step 的关系（workspace-edit 路径写入三者标识）
-- [x] 记录 checkpoint 前后的文件 diff boundary（workspace-edit 路径记录 `before=sha256:<hash>;after=sha256:<hash>`；只保存边界 hash，不保存文件正文或实际 diff）
+- [x] 记录 checkpoint 前后的文件 diff boundary（workspace-edit checkpoint JSONL 只保存路径绑定的边界 hash，不保存正文或实际 diff；独立 snapshot private record 保存 bounded 正文，采用 content-only hash，与旧 checkpoint hash 不通用）
 - [x] 记录 checkpoint 覆盖范围（当前为 workspace-edit action 指定的相对文件路径，非通用多文件范围）
 - [x] 记录不可恢复 side effect 引用（当前写入 step 级 side_effect_ref；外部不可逆动作和 side_effect_uncertain 分支仍待完成）
 
 验收：
 
-- bounded Markdown controller 修改前强制 checkpoint/ledger 配置与审计成功，policy Allow/approved 不能绕过；修改后记录 before/after hash 和验证结果。不保存恢复快照，不保证后置审计故障自动 rollback
+- bounded Markdown controller 修改前强制 checkpoint/ledger 配置与审计成功，policy Allow/approved 不能绕过；修改后记录 before/after hash 和验证结果。默认 controller 不自动捕获 snapshot，不保证后置审计故障自动 rollback
+- 独立 `WorkspaceSnapshotStore` 已有 Unix-only 单个既有 UTF-8 Markdown 文件的 capture/显式 restore primitive：1 MiB 正文、6 MiB + 64 KiB record 上限，workspace 外私有 owner/权限与 project/goal/workspace/scope/path 绑定，trusted-caller approval 和当前 content hash 一致才恢复。人工修改导致 hash mismatch 时拒绝；正文不进入公共 metadata/错误或自动模型/事件上下文。权限非加密/同用户隔离、不抗恶意并发，replacement 后 sync 错误须检查；未接 controller capture/restore、统一恢复或外部补偿，不增加整体完成 checkbox
 - `CheckpointStore::latest_for` / `latest_for_loop_step` 可按 loop/step 流式查询最后追加的 checkpoint，解释已记录 hash 和 recoverability，给出 `NoAction` / `RestoreRequired` / `ManualIntervention`；非法或歧义 hash、未知 changed-hash 恢复状态和矛盾的 no-write 标记不自动放行
-- 查询不重算当前 workspace hash、不校验恢复快照、不执行 restore/replay；仍全日志扫描，单条记录大小仍影响内存
+- `CheckpointStore::latest_for*` 查询不重算当前 workspace hash、不校验 snapshot、不执行 restore/replay；这些限制属于只读查询，不否定独立 primitive 的显式文件恢复。查询仍全日志扫描，单条记录大小仍影响内存
 - checkpoint 不声称恢复未记录的外部动作；side_effect_uncertain 进入人工处理的分支仍待完成
 
 ### P8. SideEffectLedger

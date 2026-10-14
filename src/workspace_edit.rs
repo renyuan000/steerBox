@@ -1,6 +1,6 @@
 use crate::domain::GoalContract;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
@@ -61,7 +61,12 @@ pub fn edit_markdown(
         return Err(WorkspaceEditError::NotMarkdown(relative));
     }
     let target = checked_existing_file(workspace, &relative)?;
-    let before = fs::read_to_string(&target).map_err(io_error)?;
+    let mut before = String::new();
+    fs::File::open(&target)
+        .map_err(io_error)?
+        .take(expected.len() as u64 + 1)
+        .read_to_string(&mut before)
+        .map_err(io_error)?;
     if before != expected {
         return Err(WorkspaceEditError::ExpectedContentMismatch);
     }
@@ -81,22 +86,37 @@ pub fn edit_markdown(
             .unwrap_or("md"),
         std::process::id()
     ));
-    let mut temporary_file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(io_error)?;
-    temporary_file
-        .write_all(replacement.as_bytes())
-        .map_err(io_error)?;
-    temporary_file.flush().map_err(io_error)?;
+    let permissions = fs::metadata(&target).map_err(io_error)?.permissions();
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut temporary_file = options.open(&temporary).map_err(io_error)?;
+    let staged = (|| {
+        temporary_file.write_all(replacement.as_bytes())?;
+        temporary_file.set_permissions(permissions)?;
+        temporary_file.sync_all()
+    })();
     drop(temporary_file);
-    if let Err(error) = fs::rename(&temporary, &target) {
-        if error.kind() != std::io::ErrorKind::AlreadyExists {
-            let _ = fs::remove_file(&temporary);
-        }
+    if let Err(error) = staged {
+        let _ = fs::remove_file(&temporary);
         return Err(io_error(error));
     }
+    if let Err(error) = fs::rename(&temporary, &target) {
+        let _ = fs::remove_file(&temporary);
+        return Err(io_error(error));
+    }
+    #[cfg(unix)]
+    fs::File::open(
+        target
+            .parent()
+            .ok_or_else(|| WorkspaceEditError::InvalidPath(relative.clone()))?,
+    )
+    .and_then(|directory| directory.sync_all())
+    .map_err(io_error)?;
     Ok(EditResult {
         relative_path: relative,
         changed: true,
@@ -143,7 +163,10 @@ pub fn verify_markdown_links(
     })
 }
 
-fn checked_existing_file(workspace: &Path, relative: &str) -> Result<PathBuf, WorkspaceEditError> {
+pub(crate) fn checked_existing_file(
+    workspace: &Path,
+    relative: &str,
+) -> Result<PathBuf, WorkspaceEditError> {
     let target = workspace.join(relative);
     let metadata = fs::symlink_metadata(&target).map_err(io_error)?;
     if metadata.file_type().is_symlink() {
@@ -198,7 +221,7 @@ fn resolved_regular_file_within_workspace(workspace: &Path, path: &Path) -> bool
     path_canonical.starts_with(workspace_canonical)
 }
 
-fn safe_relative_path(path: &str) -> Option<String> {
+pub(crate) fn safe_relative_path(path: &str) -> Option<String> {
     if path.is_empty() || path.contains('\\') || Path::new(path).is_absolute() {
         return None;
     }

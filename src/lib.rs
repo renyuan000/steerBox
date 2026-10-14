@@ -32,3 +32,4 @@ pub mod tool_executor;
 pub mod tool_registry;
 pub mod user_command_inbox;
 pub mod workspace_edit;
+pub mod workspace_snapshot;
