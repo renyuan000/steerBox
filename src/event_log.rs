@@ -65,14 +65,14 @@ impl EventLog {
     pub fn append(&mut self, mut event: EventEnvelope) -> Result<u64, EventLogError> {
         let sequence = self.next_sequence;
         event.sequence_no = Some(sequence);
-        let encoded = serde_json::to_vec(&event)
+        let mut encoded = serde_json::to_vec(&event)
             .map_err(|source| EventLogError::InvalidEvent { line: 0, source })?;
+        encoded.push(b'\n');
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
         file.write_all(&encoded)?;
-        file.write_all(b"\n")?;
         file.sync_data()?;
         self.next_sequence = sequence
             .checked_add(1)

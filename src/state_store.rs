@@ -2,7 +2,8 @@ use crate::domain::{EventEnvelope, LoopStatus, LoopStepStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
@@ -96,12 +97,31 @@ impl StateStore {
             })?;
         let temp_id = NEXT_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
         let temporary = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), temp_id));
-        fs::write(&temporary, encoded).map_err(|error| StateStoreError::Io {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| StateStoreError::Io {
+                message: error.to_string(),
+            })?;
+        file.write_all(&encoded)
+            .map_err(|error| StateStoreError::Io {
+                message: error.to_string(),
+            })?;
+        file.sync_all().map_err(|error| StateStoreError::Io {
             message: error.to_string(),
         })?;
         fs::rename(&temporary, path).map_err(|error| StateStoreError::Io {
             message: error.to_string(),
         })?;
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| StateStoreError::Io {
+                    message: error.to_string(),
+                })?;
+        }
         Ok(())
     }
 
