@@ -481,12 +481,12 @@ impl ForegroundProviderRun {
 }
 
 /// Enforce caller authority before the controller sees a model proposal.
-struct MarkdownBoundAdapter<'a, T: ProviderTransport> {
-    inner: ProviderModelAdapter<T>,
+struct MarkdownBoundAdapter<'a, A: ResolvedModelAdapter> {
+    inner: A,
     config: &'a BoundedMarkdownRunConfig,
 }
 
-impl<T: ProviderTransport> ResolvedModelAdapter for MarkdownBoundAdapter<'_, T> {
+impl<A: ResolvedModelAdapter> ResolvedModelAdapter for MarkdownBoundAdapter<'_, A> {
     fn complete_resolved_with_action(
         &self,
         request: ModelRequest,
@@ -539,6 +539,47 @@ impl BoundedMarkdownProviderRun {
         if inner.profile.provider == "anthropic" {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
+        let adapter = ProviderModelAdapter::new(
+            OpenAiCompatibleAdapter::new(
+                inner.profile.provider.clone(),
+                inner.profile.endpoint.clone(),
+                transport,
+            ),
+            inner.profile.auth_ref.clone(),
+        )
+        .with_model_id(&inner.request.model_id);
+        Self::run_with_resolved_adapter(inner, run, adapter, events, model_calls, sink)
+    }
+
+    pub fn run_with_anthropic_transport<T: AnthropicTransport, S: ProgressSink + 'static>(
+        self,
+        transport: T,
+        events: EventLog,
+        model_calls: ModelCallStore,
+        sink: S,
+    ) -> Result<ProviderRunOutcome, ProviderRunError> {
+        let Self { inner, run } = self;
+        if inner.profile.provider != "anthropic" {
+            return Err(ProviderRunError::UnsupportedProtocol);
+        }
+        let adapter = AnthropicAdapter::new(
+            inner.profile.provider.clone(),
+            inner.profile.endpoint.clone(),
+            transport,
+            inner.profile.auth_ref.clone(),
+        )
+        .with_model_id(&inner.request.model_id);
+        Self::run_with_resolved_adapter(inner, run, adapter, events, model_calls, sink)
+    }
+
+    fn run_with_resolved_adapter<A: ResolvedModelAdapter, S: ProgressSink + 'static>(
+        inner: ForegroundProviderRun,
+        run: BoundedMarkdownRunConfig,
+        adapter: A,
+        events: EventLog,
+        model_calls: ModelCallStore,
+        sink: S,
+    ) -> Result<ProviderRunOutcome, ProviderRunError> {
         validate_markdown_storage_paths(&run, events.path(), &model_calls)?;
         let request = inner.request;
         let mut goal = GoalContract::new(
@@ -563,15 +604,7 @@ impl BoundedMarkdownProviderRun {
         .with_checkpoint_store(&run.checkpoint_path)
         .with_audit_stores(&run.trace_path, &run.side_effect_path);
         let adapter = MarkdownBoundAdapter {
-            inner: ProviderModelAdapter::new(
-                OpenAiCompatibleAdapter::new(
-                    inner.profile.provider,
-                    inner.profile.endpoint,
-                    transport,
-                ),
-                inner.profile.auth_ref,
-            )
-            .with_model_id(&request.model_id),
+            inner: adapter,
             config: &run,
         };
         let registry = ToolRegistry::baseline().map_err(|_| ProviderRunError::InvalidRequest)?;

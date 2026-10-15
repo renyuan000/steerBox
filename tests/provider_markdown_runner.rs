@@ -1,5 +1,6 @@
 use serde_json::json;
 use std::{cell::Cell, fs, path::Path, time::Duration};
+use steerbox::anthropic_adapter::{AnthropicHeaders, AnthropicTransport, AnthropicTransportError};
 use steerbox::domain::{HumanSteeringMode, LoopStatus};
 use steerbox::event_log::EventLog;
 use steerbox::model_call_store::ModelCallStore;
@@ -9,6 +10,48 @@ use steerbox::provider_runner::{
 };
 use steerbox::runtime_config::RuntimeConfig;
 use steerbox::stream_reporter::StreamReporter;
+
+struct AnthropicMarkdownTransport<'a> {
+    workspace: &'a Path,
+    replacement: &'a str,
+}
+
+impl AnthropicTransport for &AnthropicMarkdownTransport<'_> {
+    fn send(
+        &self,
+        _: &str,
+        headers: &AnthropicHeaders,
+        body: &str,
+        _: Duration,
+        streaming: bool,
+    ) -> Result<TransportResponse, AnthropicTransportError> {
+        assert_eq!(
+            headers.api_key_ref.as_deref(),
+            Some("secret-ref:anthropic-markdown")
+        );
+        assert!(!streaming);
+        assert!(!body.contains("secret-ref:anthropic-markdown"));
+        assert!(body.contains("edit_markdown"));
+        let response = json!({
+            "id": "anthropic-markdown-call",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-fixture",
+            "content": [{"type":"text","text":json!({
+                "decision":"complete_loop",
+                "summary":"bounded Anthropic edit",
+                "action":{"schema_version":1,"action_id":"anthropic-edit-1","tool_id":"edit_markdown",
+                    "parameters":{"path":"README.md","expected":"before\n","replacement":self.replacement},
+                    "path_scope":{"root":self.workspace,"allowed_paths":["README.md"]},
+                    "verification":{"verifier_tool_id":"markdown_link_check","parameters":{"path":"README.md"}}}
+            }).to_string()}],
+            "stop_reason":"end_turn",
+            "stop_sequence":null,
+            "usage":{"input_tokens":3,"output_tokens":2}
+        });
+        Ok(TransportResponse::body(200, response.to_string()))
+    }
+}
 
 struct FakeTransport<'a> {
     workspace: &'a Path,
@@ -168,6 +211,55 @@ fn markdown_provider_runs_policy_checkpoint_edit_verification_and_metadata_audit
     assert!(audit.contains("before-write"));
     assert!(!audit.contains("secret-ref:markdown-fixture"));
     assert!(!audit.contains("after\\n"));
+}
+
+#[test]
+fn anthropic_markdown_provider_runs_through_protocol_specific_adapter() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("README.md"), "before\n").unwrap();
+    let config = RuntimeConfig::from_json_str(&json!({
+        "schema_version":1,
+        "project_ref":"anthropic-markdown-fixture",
+        "data_root":"/temp/steerbox/anthropic-markdown-fixture",
+        "model_profiles":[{"model_id":"claude-fixture","provider":"anthropic",
+            "endpoint":"https://api.anthropic.example","auth_ref":"secret-ref:anthropic-markdown","capabilities":["text"]}]
+    }).to_string()).unwrap();
+    let request = ProviderRunRequest {
+        project_id: "project".into(),
+        goal_id: "goal".into(),
+        loop_run_id: "loop".into(),
+        task_run_id: "task".into(),
+        model_id: "claude-fixture".into(),
+        objective: "Update README.md".into(),
+        observation: "before\n".into(),
+    };
+    let run = BoundedMarkdownRunConfig {
+        workspace: directory.path().into(),
+        allowed_paths: vec!["README.md".into()],
+        checkpoint_path: directory.path().join("checkpoints.jsonl"),
+        trace_path: directory.path().join("traces.jsonl"),
+        side_effect_path: directory.path().join("effects.jsonl"),
+        approved: true,
+        human_steering_mode: HumanSteeringMode::HumanSteerableLoop,
+    };
+    let transport = AnthropicMarkdownTransport {
+        workspace: directory.path(),
+        replacement: "after\n",
+    };
+    let result = ForegroundProviderRun::prepare_markdown(&config, request, run)
+        .unwrap()
+        .run_with_anthropic_transport(
+            &transport,
+            EventLog::open(directory.path().join("events.jsonl")).unwrap(),
+            ModelCallStore::open(directory.path().join("calls.jsonl")).unwrap(),
+            StreamReporter::new(Vec::new()),
+        )
+        .unwrap();
+    assert_eq!(result.loop_status, LoopStatus::Completed);
+    assert_eq!(
+        fs::read_to_string(directory.path().join("README.md")).unwrap(),
+        "after\n"
+    );
 }
 
 #[test]
