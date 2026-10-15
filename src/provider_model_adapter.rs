@@ -36,6 +36,16 @@ pub struct ResolvedModelResponseWithAction {
     pub input_context_hash: String,
 }
 
+/// Common resolved-call seam used by the controller for provider protocols
+/// that have different wire formats but the same audit/decision contract.
+pub trait ResolvedModelAdapter {
+    fn complete_resolved_with_action(
+        &self,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+    ) -> Result<ResolvedModelResponseWithAction, ModelAdapterError>;
+}
+
 impl fmt::Debug for ResolvedModelResponse {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -287,7 +297,9 @@ impl<T: ProviderTransport> ModelAdapter for ProviderModelAdapter<T> {
     }
 }
 
-fn parse_decision_with_action(text: &str) -> Result<ModelResponseWithAction, ModelAdapterError> {
+pub(crate) fn parse_decision_with_action(
+    text: &str,
+) -> Result<ModelResponseWithAction, ModelAdapterError> {
     let envelope = serde_json::from_str::<DecisionEnvelope>(text)
         .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?;
     if envelope.summary.trim().is_empty() {
@@ -305,4 +317,14 @@ fn parse_decision_with_action(text: &str) -> Result<ModelResponseWithAction, Mod
             .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?,
         action: envelope.action,
     })
+}
+
+impl<T: ProviderTransport> ResolvedModelAdapter for ProviderModelAdapter<T> {
+    fn complete_resolved_with_action(
+        &self,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+    ) -> Result<ResolvedModelResponseWithAction, ModelAdapterError> {
+        ProviderModelAdapter::complete_resolved_with_action(self, request, pack)
+    }
 }

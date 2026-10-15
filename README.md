@@ -21,7 +21,7 @@ Its core question is not simply whether an agent can do work, but how to combine
 
 ### Current Phase 1 Runtime Slice
 
-The repository currently contains a verified Rust domain and local runtime slice, including EventLog/StateStore, trace/checkpoint metadata, a read-only board fixture, and an approved Markdown edit-and-verify development slice. A verification failure is persisted and returns a non-zero exit code. It is not yet a model-connected coding agent. The reproducible commands are:
+The repository currently contains a verified Rust domain and local runtime slice, including EventLog/StateStore, trace/checkpoint metadata, a read-only board fixture, and an approved Markdown edit-and-verify development slice. A verification failure is persisted and returns a non-zero exit code. A bounded `loop provider` foreground entry now exists, but the standalone CLI uses a permanently rejecting credential resolver and therefore fails closed without a trusted injected resolver; it is not yet a live model-connected coding agent. The reproducible commands are:
 
 ```bash
 cargo test

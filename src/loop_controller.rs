@@ -25,8 +25,8 @@ use crate::model_router::{
     next_fallback_model, ModelRouter, ModelRouterError, RiskLevel as RouteRiskLevel, RouteRequest,
 };
 use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequest};
-use crate::provider_adapter::{ProviderErrorClass, ProviderTransport};
-use crate::provider_model_adapter::ProviderModelAdapter;
+use crate::provider_adapter::ProviderErrorClass;
+use crate::provider_model_adapter::ResolvedModelAdapter;
 use crate::redaction::{Redactor, FAIL_CLOSED_MARKER};
 use crate::resolved_prompt::ResolvedPromptPack;
 use crate::strategy_selector::{StrategyDecision, StrategySelectionError, StrategySelector};
@@ -895,9 +895,9 @@ impl ReadOnlyLoopController {
     /// Execute a resolved provider call and persist its audit record before
     /// publishing completion events. This path is intentionally separate from
     /// the legacy fixture adapter path, which has no resolved prompt or wire hash.
-    pub fn run_resolved_model_step<T: ProviderTransport>(
+    pub fn run_resolved_model_step<A: ResolvedModelAdapter + ?Sized>(
         &mut self,
-        adapter: &ProviderModelAdapter<T>,
+        adapter: &A,
         request: ModelRequest,
         pack: &ResolvedPromptPack,
         route: &RouteDecision,
@@ -906,9 +906,9 @@ impl ReadOnlyLoopController {
         self.run_resolved_model_step_internal(adapter, request, pack, route, step_id, None)
     }
 
-    pub fn run_resolved_model_step_with_action<T: ProviderTransport>(
+    pub fn run_resolved_model_step_with_action<A: ResolvedModelAdapter + ?Sized>(
         &mut self,
-        adapter: &ProviderModelAdapter<T>,
+        adapter: &A,
         request: ModelRequest,
         pack: &ResolvedPromptPack,
         route: &RouteDecision,
@@ -918,9 +918,9 @@ impl ReadOnlyLoopController {
         self.run_resolved_model_step_internal(adapter, request, pack, route, step_id, Some(runtime))
     }
 
-    fn run_resolved_model_step_internal<T: ProviderTransport>(
+    fn run_resolved_model_step_internal<A: ResolvedModelAdapter + ?Sized>(
         &mut self,
-        adapter: &ProviderModelAdapter<T>,
+        adapter: &A,
         request: ModelRequest,
         pack: &ResolvedPromptPack,
         route: &RouteDecision,

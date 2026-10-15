@@ -21,6 +21,7 @@ pub mod policy_gate;
 pub mod prompt_registry;
 pub mod provider_adapter;
 pub mod provider_model_adapter;
+pub mod provider_runner;
 pub mod redaction;
 pub mod resolved_prompt;
 pub mod runtime_config;

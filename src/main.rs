@@ -12,10 +12,12 @@ use steerbox::domain::{
 };
 use steerbox::event_log::EventLog;
 use steerbox::execution_query::ExecutionQuery;
+use steerbox::http_transport::{CredentialError, CredentialResolver, ResolvedCredential};
 use steerbox::loop_controller::ReadOnlyLoopController;
 use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
 use steerbox::model_call_store::ModelCallStore;
 use steerbox::policy_gate::{PolicyDecision, PolicyGate, PolicyRequest};
+use steerbox::provider_runner::{ForegroundProviderRun, ProviderRunRequest};
 use steerbox::runtime_config::RuntimeConfig;
 use steerbox::state_store::StateStore;
 use steerbox::stream_reporter::StreamReporter;
@@ -377,6 +379,38 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 controller_status(&controller)
             );
         }
+        (Some("loop"), Some("provider")) => {
+            let config_path = args.next().ok_or("missing config path")?;
+            let request = ProviderRunRequest {
+                project_id: args.next().ok_or("missing project_id")?,
+                goal_id: args.next().ok_or("missing goal_id")?,
+                loop_run_id: args.next().ok_or("missing loop_run_id")?,
+                task_run_id: args.next().ok_or("missing task_run_id")?,
+                model_id: args.next().ok_or("missing model_id")?,
+                objective: args.next().ok_or("missing objective")?,
+                observation: args.next().ok_or("missing observation")?,
+            };
+            if args.next().is_some() {
+                return Err(
+                    "unexpected provider argument; inline credentials are not accepted".into(),
+                );
+            }
+            let config = RuntimeConfig::load(config_path)?;
+            let prepared = ForegroundProviderRun::prepare(&config, request)?;
+            let result = prepared.run_with_resolver(
+                UnconfiguredCredentialResolver,
+                EventLog::open(config.events_path())?,
+                ModelCallStore::open(config.model_calls_path())?,
+                StreamReporter::new(std::io::stdout()),
+            );
+            let events = EventLog::open(config.events_path())?.read_all()?;
+            StateStore::rebuild(&events)?.persist(config.state_path())?;
+            let outcome = result?;
+            println!(
+                "decision={:?} loop_status={:?}",
+                outcome.decision, outcome.loop_status
+            );
+        }
         (Some("dev"), Some("markdown")) => {
             let config_path = args.next().ok_or("missing config path")?;
             let project_id = args.next().ok_or("missing project_id")?;
@@ -677,6 +711,8 @@ fn print_usage() {
     eprintln!("  steerbox board list <config.json>");
     eprintln!("  steerbox loop readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <objective> <observation>");
     eprintln!("  steerbox loop fixture <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> [continue_observation|complete_loop|request_human] <observation> [summary]");
+    eprintln!("  steerbox loop provider <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> <objective> <observation>");
+    eprintln!("    Provider entry requires a trusted injected credential resolver; the standalone CLI currently fails closed without one.");
     eprintln!("  steerbox dev markdown <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <path> <expected> <replacement> <auto|ask|approved>");
 }
 
@@ -737,4 +773,14 @@ fn parse_model_decision(value: &str) -> Result<ModelDecision, Box<dyn Error>> {
 
 fn controller_status(controller: &ReadOnlyLoopController) -> LoopStatus {
     controller.status()
+}
+
+/// No implicit environment, config, or disk secret lookup. A trusted embedding
+/// supplies its resolver through ForegroundProviderRun::run_with_resolver.
+struct UnconfiguredCredentialResolver;
+
+impl CredentialResolver for UnconfiguredCredentialResolver {
+    fn resolve(&self, _: &str) -> Result<ResolvedCredential, CredentialError> {
+        Err(CredentialError::Unavailable)
+    }
 }

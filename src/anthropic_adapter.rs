@@ -7,7 +7,9 @@ use crate::provider_adapter::{
     ProviderMessage, ProviderRequest, ProviderResponse, ProviderUsage, TransportResponse,
     MAX_TIMEOUT_MS,
 };
+use crate::provider_model_adapter::{ResolvedModelAdapter, ResolvedModelResponseWithAction};
 use crate::redaction::Redactor;
+use crate::resolved_prompt::ResolvedPromptPack;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -293,6 +295,62 @@ impl<T: AnthropicTransport> AnthropicAdapter<T> {
         } else {
             format!("{base}/v1/messages")
         }
+    }
+}
+
+impl<T: AnthropicTransport> ResolvedModelAdapter for AnthropicAdapter<T> {
+    fn complete_resolved_with_action(
+        &self,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+    ) -> Result<ResolvedModelResponseWithAction, ModelAdapterError> {
+        if pack.endpoint_protocol() != "anthropic" {
+            return Err(ModelAdapterError::ResolvedBindingMismatch {
+                field: "endpoint_protocol",
+            });
+        }
+        for (actual, expected, field) in [
+            (self.provider_id.as_str(), pack.provider_id(), "provider_id"),
+            (
+                self.base_url.trim_end_matches('/'),
+                pack.endpoint_base_url().trim_end_matches('/'),
+                "endpoint_base_url",
+            ),
+            (request.model_id.as_str(), pack.model_id(), "model_id"),
+            (request.objective.as_str(), pack.objective(), "objective"),
+            (
+                request.observation.as_str(),
+                pack.observation(),
+                "observation",
+            ),
+        ] {
+            if actual != expected {
+                return Err(ModelAdapterError::ResolvedBindingMismatch { field });
+            }
+        }
+        let provider_request = ProviderRequest {
+            model: pack.model_name().to_owned(),
+            messages: pack.messages().to_vec(),
+            auth_ref: self.auth_ref.clone(),
+            timeout_ms: self.timeout_ms,
+            stream: false,
+        };
+        let input_context_hash =
+            self.input_hash(&provider_request)
+                .map_err(|error| ModelAdapterError::Provider {
+                    class: error.class(),
+                })?;
+        let provider_response =
+            self.complete(provider_request)
+                .map_err(|error| ModelAdapterError::Provider {
+                    class: error.class(),
+                })?;
+        let response = parse_decision_with_action(&provider_response.text)?;
+        Ok(ResolvedModelResponseWithAction {
+            response,
+            provider_response,
+            input_context_hash,
+        })
     }
 }
 

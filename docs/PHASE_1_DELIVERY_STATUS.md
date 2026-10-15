@@ -2,7 +2,7 @@
 
 ## 定位与证据边界
 
-状态核对日期：2026-10-14。`5a51851` 为本次 snapshot 实施基线；本批快照与共享 editor 改动验收见文末，提交状态以 Git 记录为准，不把旧全量结果覆盖到新代码。未跟踪的历史审核、参考资料与 benchmark 目录不计入交付。`202cec6` 已加入独立 `ModelCallFailureRecord`、failure JSONL 和 `MemoryStore::read_catalog`，`e754d07` 已加入 controller scoped memory retrieval，`5a51851` 已收紧 controller mutation 前审计门禁；验证范围仍以实际执行证据为准，不因文件出现或 subagent 报告自动计入完整交付。
+状态核对日期：2026-10-15。`5a51851` 为本次 snapshot 实施基线；本批快照与共享 editor 改动验收见文末，提交状态以 Git 记录为准，不把旧全量结果覆盖到新代码。未跟踪的历史审核、参考资料与 benchmark 目录不计入交付。`202cec6` 已加入独立 `ModelCallFailureRecord`、failure JSONL 和 `MemoryStore::read_catalog`，`e754d07` 已加入 controller scoped memory retrieval，`5a51851` 已收紧 controller mutation 前审计门禁；本轮 provider runner 不属于此前历史验证基线，必须以本轮新增的 focused/full regression 证据核验；验证范围仍以实际执行证据为准，不因文件出现或 subagent 报告自动计入完整交付。
 
 本文是剩余验收的归并视图，不替代 [PHASE_1_CONTRACTS.md](PHASE_1_CONTRACTS.md)、[PHASE_1_IMPLEMENTATION_SCOPE.md](PHASE_1_IMPLEMENTATION_SCOPE.md)、[PHASE_1_TODO.md](PHASE_1_TODO.md) 或 [PHASE_1_VALIDATION_PLAN.md](PHASE_1_VALIDATION_PLAN.md)。对象、身份、授权、事件及恢复语义以 Contracts 为准，范围以 Scope 为准，逐项状态和验收用例分别回查 TODO 与 Validation。
 
@@ -12,7 +12,7 @@
 
 controller `execute_workspace_edit_action()` 强制配置 `CheckpointStore` 与 `SideEffectLedger`，先应用生命周期/命令安全边界，再执行 policy 与 mutation 前审计。缺 store、待处理 pause/cancel、终态或 mutation 前审计写入错误均阻止修改，不增加低风险自主模式的审批请求。已有 started/completed/failed/verification_failed metadata 和 before/after hash；缺失 Markdown 链接不产生 verified 成功事件。bounded Markdown controller 现在支持通过 `with_snapshot_store(...)` opt in，在 mutation 前 capture，并由 trusted caller 显式调用 restore；默认路径仍不自动 capture，verification failure 不自动 rollback。snapshot 的显式文件恢复不等于 controller/任务/进程恢复，不确定副作用状态和真实模型 E2E 仍未完成。
 
-ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 deterministic `RouteExplanation`；routed fixture/model-adapter fallback 已有 child Attempt 和共享预算，这不等于 resolved-provider/live fallback、并行调用、代理/中转健康路由或 prompt cache。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 支持 action/progress、非法进度拒绝、逐事件 flush，并可把已验证 provider delta 序列转换为不暴露正文的 lifecycle 进度；command submit/show CLI 只返回 metadata 并把 command 持久化到 inbox。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的修改／链接验证切片。当前不能作为任意 coding Agent 交付，也不能声明完整 Phase 1 已完成。
+ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 deterministic `RouteExplanation`；routed fixture/model-adapter fallback 已有 child Attempt 和共享预算，这不等于 resolved-provider/live fallback、并行调用、代理/中转健康路由或 prompt cache。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 支持 action/progress、非法进度拒绝、逐事件 flush，并可把已验证 provider delta 序列转换为不暴露正文的 lifecycle 进度；command submit/show CLI 只返回 metadata 并把 command 持久化到 inbox。新增 `loop provider` bounded foreground 入口，但 standalone CLI 固定使用拒绝型 credential resolver，未配置可信 resolver 时 fail-closed，因此尚不构成可运行的真实模型开发任务入口，也不代表 live provider 已验收。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的修改／链接验证切片。当前不能作为任意 coding Agent 交付，也不能声明完整 Phase 1 已完成。
 
 ## 六个交付包
 
@@ -164,5 +164,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 本轮 `5a51851` 基线后的 snapshot focused 验收由 master 提供：`workspace_snapshot` 42 项、`workspace_edit` 11 项，合计 53 passed。复现命令：`CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --test workspace_snapshot --test workspace_edit`。新增覆盖 restore 错误分类、当前目标 hardlink、store 祖先被替换为 symlink，以及 foreign-owner store/record 拒绝；master 确认本次 effective UID 为 0，ownership 测试实际执行且 chown 仅涉及 TempDir。replacement 后 sync 故障仍未登记独立注入测试，不能据此声称完整恢复或 Phase 1 完成。
 
 本轮 snapshot 全量回归由 master 实际完成：使用 `/tmp/steerbox-phase1-target`、jobs=2，`cargo test --locked --offline` 退出 0，日志 `/tmp/steerbox-phase1-snapshot-full-20261014.log` 汇总为 563 passed、0 failed、0 ignored；53 段 test-result 包含 0 项 doctest 段，不等于 53 个测试 targets。`cargo clippy --locked --offline --lib --bins --tests -- -D warnings`、lib/bin build、`cargo fmt --all -- --check` 和 `git diff --check` 均由 master 确认退出 0。此为本切片回归证据，不覆盖 controller snapshot 接线、实际 live provider、跨进程恢复或完整 Phase 1；后续源码变化必须重新验收。
+
+2026-10-15 provider foreground runner 切片由 master 重新验收：`CARGO_TARGET_DIR=/tmp/steerbox-phase1-provider-review CARGO_BUILD_JOBS=2 cargo test --locked --offline --test provider_foreground_runner --test loop_controller` 通过（6 + 37）；同一 target 下 `cargo test --locked --offline --tests --quiet` 全量离线回归退出 0，`cargo clippy --locked --offline --lib --bins --tests -- -D warnings`、`cargo fmt --all -- --check` 和 `git diff --check` 均退出 0。该证据覆盖 bounded library runner、resolved controller wiring、Anthropic 协议拒绝、错误审计脱敏和本地/fake 回归；不覆盖真实 credential resolver、live provider、真实模型驱动编辑或完整 Phase 1。
 
 这六包不新增 SQLite 迁移、多 agent、TUI/Web、分布式 worker、向量／图数据库或无审批自动进化的交付要求。现有 JSONL／JSON 切片应先闭合规范要求，存储迁移不能替代真实模型闭环。CCG 和其他参考项目仅提供可核查的设计线索，不作为已证明最优的性能 benchmark，也不改变 Phase 1 正式范围。
