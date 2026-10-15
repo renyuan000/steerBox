@@ -2273,6 +2273,7 @@ fn controller_redacts_raw_search_output_from_persisted_audit_records() {
         .find(|event| event.event_type == "tool_call_completed")
         .expect("completed event exists");
     assert_eq!(completed.payload["tool_id"], "rg_fixed");
+    assert_eq!(completed.payload["recipe_ref"], "rg-fixed-search");
     assert_eq!(completed.payload["output_redacted"], true);
     assert!(completed.payload.get("stdout").is_none());
     assert!(completed.payload.get("query").is_none());
@@ -2327,6 +2328,7 @@ fn controller_records_tool_failure_after_policy_allows_request() {
     assert_eq!(events[2].event_type, "tool_call_requested");
     assert_eq!(events[3].event_type, "tool_call_failed");
     assert_eq!(events[3].payload["failure_category"], "permission");
+    assert_eq!(events[3].payload["recipe_ref"], "git-status-readonly");
     assert_eq!(
         events[3].payload["tool_call_id"],
         "loop-tool-failure:step-tool-failure:git_status"

@@ -1943,6 +1943,7 @@ impl ReadOnlyLoopController {
         step_id: impl Into<String>,
     ) -> Result<ToolCallOutput, LoopControllerError> {
         let step_id = step_id.into();
+        let recipe_ref = tool_recipe_ref(registry, &input.tool_id);
         self.request_tool_call(registry, gate, input.tool_id.clone(), step_id.clone())?;
         let output = match executor.execute(registry, workspace, input.clone()) {
             Ok(output) => output,
@@ -1953,7 +1954,13 @@ impl ReadOnlyLoopController {
                 self.append_model_event(
                     "tool_call_failed",
                     &failure_event_id,
-                    tool_failure_payload(&failure_event_id, &tool_call_id, &input.tool_id, &error),
+                    tool_failure_payload(
+                        &failure_event_id,
+                        &tool_call_id,
+                        &input.tool_id,
+                        recipe_ref.as_deref(),
+                        &error,
+                    ),
                 )?;
                 self.record_tool_audit(
                     registry,
@@ -1975,7 +1982,7 @@ impl ReadOnlyLoopController {
         self.append_model_event(
             "tool_call_completed",
             &format!("{step_id}:tool_completed"),
-            redacted_tool_success_payload(&input.tool_id, &output),
+            redacted_tool_success_payload(&input.tool_id, recipe_ref.as_deref(), &output),
         )?;
         self.record_tool_audit(
             registry,
@@ -2029,6 +2036,7 @@ impl ReadOnlyLoopController {
     ) -> Result<ToolCallOutput, LoopControllerError> {
         self.prepare_action()?;
         action.validate()?;
+        let recipe_ref = tool_recipe_ref(registry, &action.tool_id);
         workspace_executor
             .map_action(registry, workspace, action)
             .map_err(|error| LoopControllerError::WorkspaceToolExecution(error.to_string()))?;
@@ -2185,7 +2193,7 @@ impl ReadOnlyLoopController {
                 self.append_model_event(
                     "model_action_failed",
                     &format!("{step_id}:action_failed"),
-                    json!({"action_id": action.action_id, "tool_id": action.tool_id, "phase": "execute"}),
+                    json!({"action_id": action.action_id, "tool_id": action.tool_id, "recipe_ref": recipe_ref, "phase": "execute"}),
                 )?;
                 if let Some(store) = &self.checkpoint_store {
                     let after_boundary = workspace_file_hash(workspace, relative_path)
@@ -2211,7 +2219,7 @@ impl ReadOnlyLoopController {
         self.append_model_event(
             "file_change_recorded",
             &format!("{step_id}:file_change_recorded"),
-            json!({"action_id": action.action_id, "tool_id": action.tool_id, "path": action.parameters.get("path").and_then(|value| value.as_str())}),
+            json!({"action_id": action.action_id, "tool_id": action.tool_id, "recipe_ref": recipe_ref, "path": action.parameters.get("path").and_then(|value| value.as_str())}),
         )?;
         self.record_tool_audit(
             registry,
@@ -2254,7 +2262,7 @@ impl ReadOnlyLoopController {
                 self.append_model_event(
                     "model_action_failed",
                     &format!("{step_id}:verification_failed"),
-                    json!({"action_id": action.action_id, "tool_id": action.tool_id, "phase": "verification"}),
+                    json!({"action_id": action.action_id, "tool_id": action.tool_id, "recipe_ref": recipe_ref, "phase": "verification"}),
                 )?;
                 if let Some(store) = &self.checkpoint_store {
                     store.append(&CheckpointMetadata {
@@ -2289,7 +2297,7 @@ impl ReadOnlyLoopController {
             self.append_model_event(
                 "model_action_failed",
                 &format!("{step_id}:verification_failed"),
-                json!({"action_id": action.action_id, "tool_id": action.tool_id, "phase": "verification"}),
+                json!({"action_id": action.action_id, "tool_id": action.tool_id, "recipe_ref": recipe_ref, "phase": "verification"}),
             )?;
             if let Some(store) = &self.checkpoint_store {
                 store.append(&CheckpointMetadata {
@@ -2325,7 +2333,7 @@ impl ReadOnlyLoopController {
         self.append_model_event(
             "model_action_verified",
             &format!("{step_id}:action_verified"),
-            json!({"action_id": action.action_id, "tool_id": action.tool_id, "verifier_tool_id": action.verification.verifier_tool_id}),
+            json!({"action_id": action.action_id, "tool_id": action.tool_id, "recipe_ref": recipe_ref, "verifier_tool_id": action.verification.verifier_tool_id}),
         )?;
         Ok(ToolCallOutput {
             summary: format!(
@@ -2884,10 +2892,17 @@ fn with_goal_risk_floor(mut features: TaskFeatures, goal_risk: RiskLevel) -> Tas
     features
 }
 
+fn tool_recipe_ref(registry: &ToolRegistry, tool_id: &str) -> Option<String> {
+    registry
+        .get(tool_id)
+        .and_then(|profile| profile.recipe_ref.clone())
+}
+
 fn tool_failure_payload(
     failure_event_id: &str,
     tool_call_id: &str,
     tool_id: &str,
+    recipe_ref: Option<&str>,
     error: &ToolExecutionError,
 ) -> serde_json::Value {
     let category = match error {
@@ -2906,6 +2921,7 @@ fn tool_failure_payload(
     json!({
         "tool_id": tool_id,
         "tool_call_id": tool_call_id,
+        "recipe_ref": recipe_ref,
         "failure_category": category,
         "summary": redact_audit_text(&error.to_string()),
         "lesson_candidate": {
@@ -2920,10 +2936,15 @@ fn tool_failure_payload(
     })
 }
 
-fn redacted_tool_success_payload(tool_id: &str, output: &ToolCallOutput) -> serde_json::Value {
+fn redacted_tool_success_payload(
+    tool_id: &str,
+    recipe_ref: Option<&str>,
+    output: &ToolCallOutput,
+) -> serde_json::Value {
     let result = &output.result;
     json!({
         "tool_id": tool_id,
+        "recipe_ref": recipe_ref,
         "executed": result.get("executed").and_then(serde_json::Value::as_bool),
         "exit_code": result.get("exit_code"),
         "stdout_truncated": result.get("stdout_truncated"),
