@@ -40,6 +40,22 @@ impl ModelCallStore {
         Ok(Self { path, failure_path })
     }
 
+    /// Return every path used by this store, including the two advisory lock
+    /// files. Callers that place the store beside mutable workspace data must
+    /// validate all four paths before starting a side-effecting run.
+    pub fn storage_paths(&self) -> [PathBuf; 4] {
+        let mut main_lock = self.path.as_os_str().to_os_string();
+        main_lock.push(".lock");
+        let mut failure_lock = self.failure_path.as_os_str().to_os_string();
+        failure_lock.push(".lock");
+        [
+            self.path.clone(),
+            self.failure_path.clone(),
+            PathBuf::from(main_lock),
+            PathBuf::from(failure_lock),
+        ]
+    }
+
     /// Validate identifiers, cost and field schema before serialization or log
     /// creation. This does not scan arbitrary string values for credentials.
     pub fn append(&self, record: &ModelCallRecord) -> Result<(), ModelCallStoreError> {

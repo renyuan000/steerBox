@@ -5,8 +5,11 @@
 //! The caller must verify a skill's governance evidence before passing it here;
 //! a governance reference is provenance, not an authorization grant.
 
-use crate::model_adapter::DECISION_SYSTEM_PROMPT;
-pub use crate::model_adapter::{DECISION_OUTPUT_CONTRACT_ID, DECISION_OUTPUT_CONTRACT_VERSION};
+pub use crate::model_adapter::{
+    DECISION_OUTPUT_CONTRACT_ID, DECISION_OUTPUT_CONTRACT_VERSION,
+    MARKDOWN_EDIT_OUTPUT_CONTRACT_ID, MARKDOWN_EDIT_OUTPUT_CONTRACT_VERSION,
+};
+use crate::model_adapter::{DECISION_SYSTEM_PROMPT, MARKDOWN_EDIT_SYSTEM_PROMPT};
 use crate::model_contracts::{ModelContractError, RouteDecision};
 use crate::model_registry::ModelRegistry;
 use crate::prompt_registry::PromptRegistry;
@@ -327,10 +330,29 @@ pub fn resolve_prompt(
 
     // All instruction bodies come from explicit trusted configuration. There is
     // no interpolation of user-controlled objective, observation, or context.
+    let bounded_markdown_contract = route.prompt_profile_id == "bounded-markdown-edit"
+        && version == 1
+        && route.agent_role == "software_developer"
+        && route.task_type == "bounded_markdown_edit";
+    let output_contract_id = if bounded_markdown_contract {
+        MARKDOWN_EDIT_OUTPUT_CONTRACT_ID
+    } else {
+        DECISION_OUTPUT_CONTRACT_ID
+    };
+    let output_contract_version = if bounded_markdown_contract {
+        MARKDOWN_EDIT_OUTPUT_CONTRACT_VERSION
+    } else {
+        DECISION_OUTPUT_CONTRACT_VERSION
+    };
+    let output_contract_prompt = if bounded_markdown_contract {
+        MARKDOWN_EDIT_SYSTEM_PROMPT
+    } else {
+        DECISION_SYSTEM_PROMPT
+    };
     let system = format!(
         "Base harness instructions:\n{}\n\nProvider instructions:\n{}\n\nModel instructions:\n{}\n\nFixed decision-output contract:\n{}",
         input.base.content, input.provider.fragment.content, input.model.fragment.content,
-        DECISION_SYSTEM_PROMPT,
+        output_contract_prompt,
     );
     let skills = input
         .skills
@@ -384,8 +406,8 @@ pub fn resolve_prompt(
             version: profile.version,
         },
         output_contract: PromptVersion {
-            id: DECISION_OUTPUT_CONTRACT_ID.into(),
-            version: DECISION_OUTPUT_CONTRACT_VERSION,
+            id: output_contract_id.into(),
+            version: output_contract_version,
         },
         skills: input
             .skills

@@ -4,9 +4,11 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use steerbox::domain::{BudgetKind, GoalContract, LoopBudget};
+use steerbox::domain::{BudgetKind, GoalContract, HumanSteeringMode, LoopBudget};
 use steerbox::event_log::EventLog;
-use steerbox::loop_controller::{LoopControllerError, ModelActionRuntime, ReadOnlyLoopController};
+use steerbox::loop_controller::{
+    LoopControllerError, ModelActionRuntime, ReadOnlyLoopController, WorkspaceEditActionRuntime,
+};
 use steerbox::model_adapter::ModelRequest;
 use steerbox::model_call_store::ModelCallStore;
 use steerbox::model_contracts::RouteDecision;
@@ -21,7 +23,7 @@ use steerbox::resolved_prompt::{
     resolve_prompt, AgentRolePrompt, ModelPromptFragment, ProviderPromptFragment,
     ResolvePromptInput, ResolvedPromptPack, TaskPromptPack, VersionedPromptFragment,
 };
-use steerbox::tool_executor::ReadOnlyToolExecutor;
+use steerbox::tool_executor::{ReadOnlyToolExecutor, WorkspaceToolExecutor};
 use steerbox::tool_registry::ToolRegistry;
 
 const BASE_URL: &str = "https://fixture.example.test/v1";
@@ -891,4 +893,203 @@ fn resolved_action_audit_write_failure_keeps_evidence_without_claiming_completio
         event.event_type == "step_completed"
             && event.step_id.as_deref() == Some("step-resolved-audit-failure")
     }));
+}
+
+fn resolved_workspace_edit(
+    directory: &TestDirectory,
+    max_tool_calls: u32,
+    checkpoint: bool,
+    ledger: bool,
+    permit_edit: bool,
+    expected: &str,
+) -> (
+    ReadOnlyLoopController,
+    Result<steerbox::model_adapter::ModelDecision, LoopControllerError>,
+) {
+    let (pack, route) = resolved_fixture();
+    fs::write(directory.path.join("README.md"), "# Before\n").unwrap();
+    let mut goal = GoalContract::new(
+        "goal-model-audit",
+        "project-model-audit",
+        pack.objective(),
+        vec!["README.md".into()],
+        Vec::new(),
+        vec!["verified".into()],
+    );
+    goal.allowed_tools = vec!["markdown_link_check".into()];
+    if permit_edit {
+        goal.allowed_tools.push("edit_markdown".into());
+    }
+    goal.human_steering_mode = HumanSteeringMode::AutonomousLoop;
+    let calls = ModelCallStore::open(directory.model_calls()).unwrap();
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.events()).unwrap(),
+        goal,
+        "loop-model-audit",
+        "task-run-model-audit",
+        LoopBudget::new(2, max_tool_calls, 1, 1, 0, 2, 2, 1),
+    )
+    .unwrap()
+    .with_model_call_store(calls);
+    if checkpoint {
+        controller = controller.with_checkpoint_store(directory.path.join("checkpoints.jsonl"));
+    }
+    if ledger {
+        controller = controller.with_audit_stores(
+            directory.path.join("traces.jsonl"),
+            directory.path.join("side-effects.jsonl"),
+        );
+    }
+    let transport = FakeTransport::with_decision_content(
+        json!({
+            "decision": "continue_observation",
+            "summary": "bounded fixture edit",
+            "action": {
+                "schema_version": 1,
+                "action_id": "workspace-audit-action",
+                "tool_id": "edit_markdown",
+                "parameters": {
+                    "path": "README.md",
+                    "expected": expected,
+                    "replacement": "# After\n"
+                },
+                "path_scope": {
+                    "root": directory.path.display().to_string(),
+                    "allowed_paths": ["README.md"]
+                },
+                "verification": {
+                    "verifier_tool_id": "markdown_link_check",
+                    "parameters": {"path": "README.md"}
+                }
+            }
+        })
+        .to_string(),
+    );
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let registry = ToolRegistry::baseline().unwrap();
+    let gate = PolicyGate::new();
+    let workspace_executor = WorkspaceToolExecutor;
+    let read_only_executor = ReadOnlyToolExecutor;
+    let runtime = WorkspaceEditActionRuntime::new(
+        &registry,
+        &gate,
+        &workspace_executor,
+        &read_only_executor,
+        &directory.path,
+        false,
+    );
+    let result = controller.run_resolved_model_step_with_workspace_edit(
+        &adapter,
+        ModelRequest {
+            model_id: pack.model_id().into(),
+            goal_id: "goal-model-audit".into(),
+            loop_run_id: "loop-model-audit".into(),
+            step_id: "workspace-audit-step".into(),
+            objective: pack.objective().into(),
+            observation: pack.observation().into(),
+        },
+        &pack,
+        &route,
+        &runtime,
+        "workspace-audit-step",
+    );
+    (controller, result)
+}
+
+fn assert_workspace_audit(directory: &TestDirectory, tool_count: u32, verification_status: &str) {
+    let records = ModelCallStore::open(directory.model_calls())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].tool_call_count, tool_count);
+    assert_eq!(records[0].verification_status, verification_status);
+}
+
+#[test]
+fn resolved_workspace_missing_checkpoint_records_no_tool_attempt() {
+    let directory = TestDirectory::new();
+    let (_, result) = resolved_workspace_edit(&directory, 2, false, true, true, "# Before\n");
+    assert!(result.is_err());
+    assert_eq!(
+        fs::read_to_string(directory.path.join("README.md")).unwrap(),
+        "# Before\n"
+    );
+    assert_workspace_audit(&directory, 0, "not_run");
+}
+
+#[test]
+fn resolved_workspace_missing_ledger_records_no_tool_attempt() {
+    let directory = TestDirectory::new();
+    let (_, result) = resolved_workspace_edit(&directory, 2, true, false, true, "# Before\n");
+    assert!(result.is_err());
+    assert_eq!(
+        fs::read_to_string(directory.path.join("README.md")).unwrap(),
+        "# Before\n"
+    );
+    assert_workspace_audit(&directory, 0, "not_run");
+}
+
+#[test]
+fn resolved_workspace_policy_denial_records_no_tool_attempt() {
+    let directory = TestDirectory::new();
+    let (_, result) = resolved_workspace_edit(&directory, 2, true, true, false, "# Before\n");
+    assert!(matches!(
+        result,
+        Err(LoopControllerError::PolicyDenied { .. })
+    ));
+    assert_eq!(
+        fs::read_to_string(directory.path.join("README.md")).unwrap(),
+        "# Before\n"
+    );
+    assert_workspace_audit(&directory, 0, "not_run");
+}
+
+#[test]
+fn resolved_workspace_expected_mismatch_records_only_edit_attempt() {
+    let directory = TestDirectory::new();
+    let (_, result) =
+        resolved_workspace_edit(&directory, 2, true, true, true, "not current content");
+    assert!(result.is_err());
+    assert_eq!(
+        fs::read_to_string(directory.path.join("README.md")).unwrap(),
+        "# Before\n"
+    );
+    assert_workspace_audit(&directory, 1, "not_run");
+}
+
+#[test]
+fn resolved_workspace_success_consumes_both_tool_calls() {
+    let directory = TestDirectory::new();
+    let (controller, result) =
+        resolved_workspace_edit(&directory, 2, true, true, true, "# Before\n");
+    result.unwrap();
+    assert_eq!(
+        fs::read_to_string(directory.path.join("README.md")).unwrap(),
+        "# After\n"
+    );
+    assert_eq!(controller.budget().tool_calls_used, 2);
+    assert_workspace_audit(&directory, 2, "passed");
+}
+
+#[test]
+fn resolved_workspace_insufficient_tool_budget_prevents_mutation() {
+    for max_tool_calls in [0, 1] {
+        let directory = TestDirectory::new();
+        let (_, result) =
+            resolved_workspace_edit(&directory, max_tool_calls, true, true, true, "# Before\n");
+        assert!(matches!(
+            result,
+            Err(LoopControllerError::BudgetExhausted(BudgetKind::ToolCalls))
+        ));
+        assert_eq!(
+            fs::read_to_string(directory.path.join("README.md")).unwrap(),
+            "# Before\n",
+            "budget {max_tool_calls} must reject before mutation"
+        );
+        assert_workspace_audit(&directory, 0, "not_run");
+    }
 }

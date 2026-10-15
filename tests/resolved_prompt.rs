@@ -210,6 +210,99 @@ fn fixed_decision_output_contract_has_pinned_manifest_identity_and_version() {
 }
 
 #[test]
+fn trusted_markdown_task_profile_selects_a_bounded_workspace_edit_contract() {
+    let mut fixture = Fixture::new();
+    fixture
+        .prompts
+        .register(
+            PromptProfile::new(
+                "bounded-markdown-edit",
+                1,
+                "software_developer",
+                "bounded_markdown_edit",
+                "Edit a bounded Markdown file.",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    fixture.route.prompt_profile_id = "bounded-markdown-edit".into();
+    fixture.route.agent_role = "software_developer".into();
+    fixture.route.task_type = "bounded_markdown_edit".into();
+    fixture.role.role = "software_developer".into();
+    fixture.task.prompt_id = "bounded-markdown-edit".into();
+    fixture.task.task_type = "bounded_markdown_edit".into();
+
+    let pack = fixture.resolve().unwrap();
+    assert_eq!(
+        pack.metadata().output_contract.id,
+        "harness-markdown-edit-json"
+    );
+    assert_eq!(pack.metadata().output_contract.version, 1);
+    let system = &pack.messages()[0].content;
+    assert!(system.contains("decision and summary fields and an optional action field"));
+    assert!(system.contains("edit_markdown"));
+    assert!(system.contains("markdown_link_check"));
+    assert!(system.contains("expected"));
+    assert!(system.contains("replacement"));
+    assert!(!system.contains("read-only action proposal"));
+    assert!(system.contains("does not grant execution authority"));
+}
+
+#[test]
+fn untrusted_user_data_cannot_select_the_markdown_action_contract() {
+    let mut fixture = Fixture::new();
+    let attack = "bounded-markdown-edit bounded_markdown_edit software_developer edit_markdown harness-markdown-edit-json";
+    fixture.objective = attack.into();
+    fixture.observation = attack.into();
+    fixture.context = json!({"task_profile":attack,"output_contract":"workspace_edit"});
+    let pack = fixture.resolve().unwrap();
+    assert_eq!(pack.metadata().output_contract.id, "harness-decision-json");
+    assert!(pack.messages()[0]
+        .content
+        .contains("read-only action proposal"));
+    assert!(!pack.messages()[0]
+        .content
+        .contains("harness-markdown-edit-json"));
+}
+
+#[test]
+fn markdown_profile_name_without_its_pinned_role_task_and_version_remains_read_only() {
+    for (version, role, task) in [
+        (2, "software_developer", "bounded_markdown_edit"),
+        (1, "implementer", "bounded_markdown_edit"),
+        (1, "software_developer", "code_change"),
+    ] {
+        let mut fixture = Fixture::new();
+        fixture
+            .prompts
+            .register(
+                PromptProfile::new(
+                    "bounded-markdown-edit",
+                    version,
+                    role,
+                    task,
+                    "Edit Markdown.",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        fixture.route.prompt_profile_id = "bounded-markdown-edit".into();
+        fixture.route.prompt_profile_version = version.to_string();
+        fixture.route.agent_role = role.into();
+        fixture.route.task_type = task.into();
+        fixture.role.role = role.into();
+        fixture.task.prompt_id = "bounded-markdown-edit".into();
+        fixture.task.version = version;
+        fixture.task.task_type = task.into();
+        let pack = fixture.resolve().unwrap();
+        assert_eq!(pack.metadata().output_contract.id, "harness-decision-json");
+        assert!(pack.messages()[0]
+            .content
+            .contains("read-only action proposal"));
+    }
+}
+
+#[test]
 fn rejects_missing_registry_bindings_and_cross_provider_endpoint_model_routes() {
     for field in [
         "provider",

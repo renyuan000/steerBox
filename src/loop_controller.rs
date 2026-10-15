@@ -183,6 +183,13 @@ struct ModelActionFailure {
     verification_started: bool,
 }
 
+#[derive(Default)]
+struct WorkspaceActionProgress {
+    tool_calls: u32,
+    verification_started: bool,
+    verification_passed: bool,
+}
+
 pub struct ModelActionRuntime<'a> {
     pub registry: &'a ToolRegistry,
     pub gate: &'a PolicyGate,
@@ -1224,6 +1231,7 @@ impl ReadOnlyLoopController {
         let mut verification_status = "not_run".to_owned();
         let mut error_class = None;
         if let Some(action) = resolved.response.action.as_ref() {
+            let mut workspace_verification_passed = false;
             let failure = match action_runtime {
                 Some(ResolvedModelActionRuntime::ReadOnly(runtime)) => self
                     .execute_model_action_with_audit(
@@ -1235,8 +1243,9 @@ impl ReadOnlyLoopController {
                         step_id.clone(),
                     )
                     .err(),
-                Some(ResolvedModelActionRuntime::WorkspaceEdit(runtime)) => self
-                    .execute_workspace_edit_action(
+                Some(ResolvedModelActionRuntime::WorkspaceEdit(runtime)) => {
+                    let mut progress = WorkspaceActionProgress::default();
+                    let result = self.execute_workspace_edit_action_recorded(
                         runtime.registry,
                         runtime.gate,
                         runtime.workspace_executor,
@@ -1245,24 +1254,16 @@ impl ReadOnlyLoopController {
                         action,
                         step_id.clone(),
                         runtime.approved,
-                    )
-                    .map(|_| ModelActionExecution {
-                        action_id: action.action_id.clone(),
-                        action_output: ToolCallOutput {
-                            summary: "workspace edit completed".into(),
-                            result: serde_json::json!({"action_id": action.action_id}),
-                        },
-                        verification_output: ToolCallOutput {
-                            summary: "workspace edit verified".into(),
-                            result: serde_json::json!({"verified": true}),
-                        },
-                    })
-                    .err()
-                    .map(|error| ModelActionFailure {
+                        true,
+                        &mut progress,
+                    );
+                    workspace_verification_passed = progress.verification_passed;
+                    result.err().map(|error| ModelActionFailure {
                         error,
-                        attempted_tool_calls: 2,
-                        verification_started: true,
-                    }),
+                        attempted_tool_calls: progress.tool_calls,
+                        verification_started: progress.verification_started,
+                    })
+                }
                 None => Some(ModelActionFailure {
                     error: LoopControllerError::ModelAdapter(
                         ModelAdapterError::ProviderTextUnmappable,
@@ -1273,16 +1274,20 @@ impl ReadOnlyLoopController {
             };
             if let Some(failure) = failure {
                 tool_call_count = failure.attempted_tool_calls;
-                verification_status = if failure.verification_started {
+                verification_status = if workspace_verification_passed {
+                    "passed".into()
+                } else if failure.verification_started {
                     "failed".into()
                 } else {
                     "not_run".into()
                 };
-                error_class = Some(if failure.verification_started {
-                    "verification_failed".into()
-                } else {
-                    model_action_error_class(&failure.error)
-                });
+                error_class = Some(
+                    if failure.verification_started && !workspace_verification_passed {
+                        "verification_failed".into()
+                    } else {
+                        model_action_error_class(&failure.error)
+                    },
+                );
                 action_failure = Some(failure.error);
             } else {
                 tool_call_count = 2;
@@ -1351,7 +1356,7 @@ impl ReadOnlyLoopController {
             )?;
             self.report_progress(
                 ProgressSubject::Model,
-                step.step_id.clone(),
+                model_progress_id.clone(),
                 ProgressStatus::Failed,
                 Some("model audit failed"),
                 None,
@@ -2034,9 +2039,36 @@ impl ReadOnlyLoopController {
         input: ToolCallInput,
         step_id: impl Into<String>,
     ) -> Result<ToolCallOutput, LoopControllerError> {
+        self.execute_read_only_tool_recorded(
+            registry, gate, executor, workspace, input, step_id, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_read_only_tool_recorded(
+        &mut self,
+        registry: &ToolRegistry,
+        gate: &PolicyGate,
+        executor: &ReadOnlyToolExecutor,
+        workspace: &std::path::Path,
+        input: ToolCallInput,
+        step_id: impl Into<String>,
+        progress: Option<(&mut WorkspaceActionProgress, bool)>,
+    ) -> Result<ToolCallOutput, LoopControllerError> {
         let step_id = step_id.into();
         let recipe_ref = tool_recipe_ref(registry, &input.tool_id);
         self.request_tool_call(registry, gate, input.tool_id.clone(), step_id.clone())?;
+        if let Some((progress, enforce_budget)) = progress {
+            // Strategy-aware request_tool_call already accounts for this call.
+            if enforce_budget && self.strategy.is_none() {
+                self.budget
+                    .consume_tool_call()
+                    .map_err(LoopControllerError::BudgetExhausted)?;
+                self.sync_task_run_budget();
+            }
+            progress.tool_calls += 1;
+            progress.verification_started = true;
+        }
         let output = match executor.execute(registry, workspace, input.clone()) {
             Ok(output) => output,
             Err(error) => {
@@ -2126,6 +2158,36 @@ impl ReadOnlyLoopController {
         step_id: impl Into<String>,
         approved: bool,
     ) -> Result<ToolCallOutput, LoopControllerError> {
+        // Preserve the legacy explicit-action API's budgeting contract. The
+        // resolved provider entry point enforces its shared tool-call budget.
+        self.execute_workspace_edit_action_recorded(
+            registry,
+            gate,
+            workspace_executor,
+            read_only_executor,
+            workspace,
+            action,
+            step_id,
+            approved,
+            false,
+            &mut WorkspaceActionProgress::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_workspace_edit_action_recorded(
+        &mut self,
+        registry: &ToolRegistry,
+        gate: &PolicyGate,
+        workspace_executor: &WorkspaceToolExecutor,
+        read_only_executor: &ReadOnlyToolExecutor,
+        workspace: &std::path::Path,
+        action: &ModelActionEnvelope,
+        step_id: impl Into<String>,
+        approved: bool,
+        enforce_budget: bool,
+        progress: &mut WorkspaceActionProgress,
+    ) -> Result<ToolCallOutput, LoopControllerError> {
         self.prepare_action()?;
         action.validate()?;
         let recipe_ref = tool_recipe_ref(registry, &action.tool_id);
@@ -2187,6 +2249,20 @@ impl ReadOnlyLoopController {
             return Err(LoopControllerError::WorkspaceToolExecution(
                 "workspace edit requires a side-effect ledger".into(),
             ));
+        }
+        if enforce_budget
+            && self
+                .budget
+                .max_tool_calls
+                .saturating_sub(self.budget.tool_calls_used)
+                < 2
+        {
+            self.append_model_event(
+                "loop_budget_exhausted",
+                &format!("{step_id}:budget:workspace_edit"),
+                json!({"budget_kind": "ToolCalls", "required_calls": 2}),
+            )?;
+            return Err(LoopControllerError::BudgetExhausted(BudgetKind::ToolCalls));
         }
         let execution_approved = permitted;
         let relative_path = action
@@ -2263,6 +2339,13 @@ impl ReadOnlyLoopController {
                 },
             );
         }
+        if enforce_budget {
+            self.budget
+                .consume_tool_call()
+                .map_err(LoopControllerError::BudgetExhausted)?;
+            self.sync_task_run_budget();
+        }
+        progress.tool_calls += 1;
         let _action_output = match workspace_executor.execute(
             registry,
             workspace,
@@ -2331,7 +2414,7 @@ impl ReadOnlyLoopController {
                 parameters: action.verification.parameters.clone(),
             },
         };
-        let verification_output = match self.execute_read_only_tool(
+        let verification_output = match self.execute_read_only_tool_recorded(
             registry,
             gate,
             read_only_executor,
@@ -2341,6 +2424,7 @@ impl ReadOnlyLoopController {
                 arguments: verification_action.parameters,
             },
             format!("{step_id}:verification"),
+            Some((progress, enforce_budget)),
         ) {
             Ok(output) => output,
             Err(error) => {
@@ -2409,6 +2493,7 @@ impl ReadOnlyLoopController {
                 "workspace edit verification reported missing local links".into(),
             ));
         }
+        progress.verification_passed = true;
         if let Some(store) = &self.checkpoint_store {
             store.append(&CheckpointMetadata {
                 checkpoint_id: format!("{step_id}:checkpoint:after-write"),
