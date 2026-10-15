@@ -22,7 +22,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 |---|---|---|---|
 | 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | non-stream OpenAI-compatible/Anthropic HTTP transport、注入式 credential resolver、secret-free provider profile binding、Anthropic profile binding、Anthropic library-only foreground runner 和 localhost 安全集成测试已通过；standalone CLI 仍固定 fail-closed，live 凭据与 live 调用仍未交付 |
 | 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | opt-in resolved bridge、成功 ModelCallStore 和 adapter-error 的独立 failure JSONL 已接线；routed fixture/model-adapter fallback 已有 child Attempt/共享预算；live provider、resolved-provider fallback 和完整恢复绑定未交付 |
-| 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 只读动作已连成 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的 controller 闭环并有 focused 覆盖；新增 bounded `read_file`，仍尚未从真实模型响应解析动作，也没有文件写入/Bash/副作用验证闭环 |
+| 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 只读动作已连成 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的 controller 闭环；另有 fake/injected transport 驱动的 bounded Markdown 写入、`markdown_link_check`、checkpoint/trace/side-effect/ModelCallStore 审计切片，并覆盖预算与路径碰撞门禁；仍不包含真实模型驱动的通用编辑、通用文件写入、Bash 或多步 coding loop |
 | 4 | 用户入口、preflight、状态／取消及真实开发任务 E2E | 首个受限可用版本门槛 | fixture CLI、注入式安全进度报告、逐事件 flush、bounded RuntimeTick/controller safe-boundary 和可测试的完整行命令轮询已有；真实 OS stdin、常驻 Agent 入口、live 控制及 E2E 未交付 |
 | 5 | TaskRun／Attempt、目标／计划修订与 controller 恢复 | 完整 Phase 1 补齐项；fallback lineage／总预算是包 2 前置门禁 | TaskRun／Attempt 领域 schema、父关系、跨 Attempt 总预算校验以及初始 Attempt 到 controller 完成的最小绑定已通过；尚未接入 EventLog/StateStore 恢复、目标/计划修订或跨进程 resume |
 | 6 | 项目范围 recipe／memory／wiki 候选与验证回链 | 完整 Phase 1 补齐项 | LessonCandidate 来源回链、MemoryCandidate/Catalog、JSONL store 和 scoped retrieval 三阶段审计已有；PolicyGate、promotion、WorkingMemory 与 Wiki/EvidencePack 完整链未交付 |
