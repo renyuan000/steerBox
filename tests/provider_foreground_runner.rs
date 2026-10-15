@@ -1,6 +1,7 @@
 use serde_json::json;
 use std::cell::Cell;
 use std::time::Duration;
+use steerbox::anthropic_adapter::{AnthropicHeaders, AnthropicTransport, AnthropicTransportError};
 use steerbox::domain::LoopStatus;
 use steerbox::event_log::EventLog;
 use steerbox::model_adapter::ModelDecision;
@@ -79,6 +80,66 @@ fn request() -> ProviderRunRequest {
     }
 }
 
+struct AnthropicTestTransport {
+    calls: Cell<usize>,
+}
+
+impl AnthropicTransport for &AnthropicTestTransport {
+    fn send(
+        &self,
+        endpoint: &str,
+        headers: &AnthropicHeaders,
+        body: &str,
+        _: Duration,
+        streaming: bool,
+    ) -> Result<TransportResponse, AnthropicTransportError> {
+        self.calls.set(self.calls.get() + 1);
+        assert_eq!(endpoint, "https://provider.example.test/v1/messages");
+        assert_eq!(
+            headers.api_key_ref.as_deref(),
+            Some("secret-ref:provider-fixture")
+        );
+        assert!(!streaming);
+        let payload: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(payload["model"], "test-model");
+        assert_eq!(payload["messages"][0]["role"], "user");
+        Ok(TransportResponse::body(200, json!({
+            "id": "message-1", "type": "message", "role": "assistant",
+            "model": "test-model",
+            "content": [{"type": "text", "text": "{\"decision\":\"complete_loop\",\"summary\":\"anthropic done\"}"}],
+            "stop_reason": "end_turn", "usage": {"input_tokens": 17, "output_tokens": 5}
+        }).to_string()))
+    }
+}
+
+#[test]
+fn anthropic_runner_uses_injected_transport_and_persists_common_audit() {
+    let directory = tempfile::tempdir().unwrap();
+    let calls = ModelCallStore::open(directory.path().join("model-calls.jsonl")).unwrap();
+    let transport = AnthropicTestTransport {
+        calls: Cell::new(0),
+    };
+    let mut config = config(Some("secret-ref:provider-fixture"), "anthropic");
+    config.model_profiles[0].endpoint = "https://provider.example.test/v1".into();
+    let result = ForegroundProviderRun::prepare(&config, request())
+        .unwrap()
+        .run_anthropic_with_transport(
+            &transport,
+            EventLog::open(directory.path().join("events.jsonl")).unwrap(),
+            calls.clone(),
+            StreamReporter::new(Vec::new()),
+        )
+        .unwrap();
+    assert_eq!(result.decision, ModelDecision::CompleteLoop);
+    assert_eq!(result.loop_status, LoopStatus::Completed);
+    assert_eq!(transport.calls.get(), 1);
+    let records = calls.read_all().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].provider_id, "anthropic");
+    assert_eq!(records[0].input_tokens, Some(17));
+    assert_eq!(records[0].output_tokens, Some(5));
+}
+
 #[test]
 fn runner_wires_resolved_prompt_controller_and_model_call_audit() {
     let directory = tempfile::tempdir().unwrap();
@@ -147,13 +208,25 @@ fn missing_auth_ref_is_not_silently_treated_as_unauthenticated_access() {
 
 #[test]
 fn anthropic_is_not_silently_sent_to_an_openai_wire_protocol() {
-    assert!(matches!(
-        ForegroundProviderRun::prepare(
-            &config(Some("secret-ref:provider-fixture"), "anthropic"),
-            request()
-        ),
-        Err(ProviderRunError::UnsupportedProtocol)
-    ));
+    let directory = tempfile::tempdir().unwrap();
+    let calls = ModelCallStore::open(directory.path().join("model-calls.jsonl")).unwrap();
+    let transport = TestTransport {
+        calls: Cell::new(0),
+        status: 200,
+    };
+    let result = ForegroundProviderRun::prepare(
+        &config(Some("secret-ref:provider-fixture"), "anthropic"),
+        request(),
+    )
+    .unwrap()
+    .run_with_transport(
+        &transport,
+        EventLog::open(directory.path().join("events.jsonl")).unwrap(),
+        calls,
+        StreamReporter::new(Vec::new()),
+    );
+    assert!(matches!(result, Err(ProviderRunError::UnsupportedProtocol)));
+    assert_eq!(transport.calls.get(), 0);
 }
 
 #[test]

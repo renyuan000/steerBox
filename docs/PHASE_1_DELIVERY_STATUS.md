@@ -20,7 +20,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 | 包 | 交付结果 | 验收层级 | 当前边界 |
 |---|---|---|---|
-| 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | non-stream OpenAI-compatible/Anthropic HTTP transport、注入式 credential resolver、secret-free provider profile binding、Anthropic profile binding 和 localhost 安全集成测试已通过；live 凭据与 live 调用仍未交付 |
+| 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | non-stream OpenAI-compatible/Anthropic HTTP transport、注入式 credential resolver、secret-free provider profile binding、Anthropic profile binding、Anthropic library-only foreground runner 和 localhost 安全集成测试已通过；standalone CLI 仍固定 fail-closed，live 凭据与 live 调用仍未交付 |
 | 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | opt-in resolved bridge、成功 ModelCallStore 和 adapter-error 的独立 failure JSONL 已接线；routed fixture/model-adapter fallback 已有 child Attempt/共享预算；live provider、resolved-provider fallback 和完整恢复绑定未交付 |
 | 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 只读动作已连成 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的 controller 闭环并有 focused 覆盖；新增 bounded `read_file`，仍尚未从真实模型响应解析动作，也没有文件写入/Bash/副作用验证闭环 |
 | 4 | 用户入口、preflight、状态／取消及真实开发任务 E2E | 首个受限可用版本门槛 | fixture CLI、注入式安全进度报告、逐事件 flush、bounded RuntimeTick/controller safe-boundary 和可测试的完整行命令轮询已有；真实 OS stdin、常驻 Agent 入口、live 控制及 E2E 未交付 |

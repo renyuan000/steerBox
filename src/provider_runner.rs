@@ -1,6 +1,7 @@
 //! A bounded foreground provider call. Credentials and storage are supplied by
 //! the trusted caller; this module does not load secrets or execute model tools.
 
+use crate::anthropic_adapter::{AnthropicAdapter, AnthropicTransport};
 use crate::domain::{GoalContract, LoopBudget, LoopStatus};
 use crate::event_log::EventLog;
 use crate::http_transport::{CredentialResolver, HttpProviderTransport};
@@ -30,7 +31,7 @@ pub enum ProviderRunError {
     Config(#[from] ConfigError),
     #[error("foreground provider run requires an opaque auth_ref and a caller-supplied resolver")]
     AuthRefRequired,
-    #[error("foreground resolved runner currently supports only OpenAI-compatible protocol; Anthropic binding is not implemented")]
+    #[error("foreground provider transport does not match the selected provider protocol")]
     UnsupportedProtocol,
     #[error("foreground provider request or profile is invalid")]
     InvalidRequest,
@@ -89,9 +90,6 @@ impl ForegroundProviderRun {
         if profiles.next().is_some() {
             return Err(ProviderRunError::InvalidRequest);
         }
-        if profile.provider == "anthropic" {
-            return Err(ProviderRunError::UnsupportedProtocol);
-        }
         if profile.auth_ref.is_none() {
             return Err(ProviderRunError::AuthRefRequired);
         }
@@ -113,6 +111,11 @@ impl ForegroundProviderRun {
         }
         let mut models = ModelRegistry::default();
         let endpoint_id = format!("foreground:{}", profile.model_id);
+        let endpoint_protocol = if profile.provider == "anthropic" {
+            "anthropic"
+        } else {
+            "openai-compatible"
+        };
         models
             .register_provider(
                 ProviderProfile::new(
@@ -129,7 +132,7 @@ impl ForegroundProviderRun {
                     &endpoint_id,
                     &profile.provider,
                     &profile.endpoint,
-                    "openai-compatible",
+                    endpoint_protocol,
                 )
                 .map_err(|_| ProviderRunError::InvalidRequest)?,
             )
@@ -221,6 +224,9 @@ impl ForegroundProviderRun {
         model_calls: ModelCallStore,
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
+        if self.profile.provider == "anthropic" {
+            return Err(ProviderRunError::UnsupportedProtocol);
+        }
         let request = self.request;
         let goal = GoalContract::new(
             &request.goal_id,
@@ -243,6 +249,64 @@ impl ForegroundProviderRun {
             OpenAiCompatibleAdapter::new(self.profile.provider, self.profile.endpoint, transport);
         let adapter = ProviderModelAdapter::new(provider, self.profile.auth_ref)
             .with_model_id(&request.model_id);
+        let decision = controller.run_resolved_model_step(
+            &adapter,
+            ModelRequest {
+                model_id: request.model_id,
+                goal_id: request.goal_id,
+                loop_run_id: request.loop_run_id,
+                step_id: "step-1".into(),
+                objective: request.objective,
+                observation: request.observation,
+            },
+            &self.prompt,
+            &self.route,
+            "step-1",
+        )?;
+        Ok(ProviderRunOutcome {
+            decision,
+            loop_status: controller.status(),
+        })
+    }
+
+    /// Library-only injection seam for Anthropic's independent wire protocol.
+    /// The standalone CLI intentionally has no credential resolver and remains
+    /// fail-closed.
+    pub fn run_anthropic_with_transport<T: AnthropicTransport, S: ProgressSink + 'static>(
+        self,
+        transport: T,
+        events: EventLog,
+        model_calls: ModelCallStore,
+        sink: S,
+    ) -> Result<ProviderRunOutcome, ProviderRunError> {
+        if self.profile.provider != "anthropic" {
+            return Err(ProviderRunError::UnsupportedProtocol);
+        }
+        let request = self.request;
+        let goal = GoalContract::new(
+            &request.goal_id,
+            &request.project_id,
+            &request.objective,
+            Vec::new(),
+            Vec::new(),
+            vec!["model_result_recorded".into()],
+        );
+        let mut controller = ReadOnlyLoopController::start_with_progress_sink(
+            events,
+            goal,
+            &request.loop_run_id,
+            &request.task_run_id,
+            LoopBudget::new(1, 0, 1, 1, 0, 1, 1, 1),
+            sink,
+        )?
+        .with_model_call_store(model_calls);
+        let adapter = AnthropicAdapter::new(
+            self.profile.provider,
+            self.profile.endpoint,
+            transport,
+            self.profile.auth_ref,
+        )
+        .with_model_id(&request.model_id);
         let decision = controller.run_resolved_model_step(
             &adapter,
             ModelRequest {
