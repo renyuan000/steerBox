@@ -190,6 +190,44 @@ pub struct ModelActionRuntime<'a> {
     pub workspace: &'a std::path::Path,
 }
 
+/// Resolved provider actions may use either the observation-only executor or
+/// the explicitly bounded Markdown workspace-edit path. The latter is kept
+/// separate so a provider runner cannot accidentally gain arbitrary write
+/// access by reusing the read-only runtime.
+pub struct WorkspaceEditActionRuntime<'a> {
+    pub registry: &'a ToolRegistry,
+    pub gate: &'a PolicyGate,
+    pub workspace_executor: &'a WorkspaceToolExecutor,
+    pub read_only_executor: &'a ReadOnlyToolExecutor,
+    pub workspace: &'a std::path::Path,
+    pub approved: bool,
+}
+
+impl<'a> WorkspaceEditActionRuntime<'a> {
+    pub fn new(
+        registry: &'a ToolRegistry,
+        gate: &'a PolicyGate,
+        workspace_executor: &'a WorkspaceToolExecutor,
+        read_only_executor: &'a ReadOnlyToolExecutor,
+        workspace: &'a std::path::Path,
+        approved: bool,
+    ) -> Self {
+        Self {
+            registry,
+            gate,
+            workspace_executor,
+            read_only_executor,
+            workspace,
+            approved,
+        }
+    }
+}
+
+enum ResolvedModelActionRuntime<'a> {
+    ReadOnly(&'a ModelActionRuntime<'a>),
+    WorkspaceEdit(&'a WorkspaceEditActionRuntime<'a>),
+}
+
 impl<'a> ModelActionRuntime<'a> {
     pub fn new(
         registry: &'a ToolRegistry,
@@ -915,7 +953,33 @@ impl ReadOnlyLoopController {
         runtime: &ModelActionRuntime<'_>,
         step_id: impl Into<String>,
     ) -> Result<ModelDecision, LoopControllerError> {
-        self.run_resolved_model_step_internal(adapter, request, pack, route, step_id, Some(runtime))
+        self.run_resolved_model_step_internal(
+            adapter,
+            request,
+            pack,
+            route,
+            step_id,
+            Some(ResolvedModelActionRuntime::ReadOnly(runtime)),
+        )
+    }
+
+    pub fn run_resolved_model_step_with_workspace_edit<A: ResolvedModelAdapter + ?Sized>(
+        &mut self,
+        adapter: &A,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+        route: &RouteDecision,
+        runtime: &WorkspaceEditActionRuntime<'_>,
+        step_id: impl Into<String>,
+    ) -> Result<ModelDecision, LoopControllerError> {
+        self.run_resolved_model_step_internal(
+            adapter,
+            request,
+            pack,
+            route,
+            step_id,
+            Some(ResolvedModelActionRuntime::WorkspaceEdit(runtime)),
+        )
     }
 
     fn run_resolved_model_step_internal<A: ResolvedModelAdapter + ?Sized>(
@@ -925,7 +989,7 @@ impl ReadOnlyLoopController {
         pack: &ResolvedPromptPack,
         route: &RouteDecision,
         step_id: impl Into<String>,
-        action_runtime: Option<&ModelActionRuntime<'_>>,
+        action_runtime: Option<ResolvedModelActionRuntime<'_>>,
     ) -> Result<ModelDecision, LoopControllerError> {
         let store = self
             .model_call_store
@@ -1161,7 +1225,7 @@ impl ReadOnlyLoopController {
         let mut error_class = None;
         if let Some(action) = resolved.response.action.as_ref() {
             let failure = match action_runtime {
-                Some(runtime) => self
+                Some(ResolvedModelActionRuntime::ReadOnly(runtime)) => self
                     .execute_model_action_with_audit(
                         runtime.registry,
                         runtime.gate,
@@ -1171,6 +1235,34 @@ impl ReadOnlyLoopController {
                         step_id.clone(),
                     )
                     .err(),
+                Some(ResolvedModelActionRuntime::WorkspaceEdit(runtime)) => self
+                    .execute_workspace_edit_action(
+                        runtime.registry,
+                        runtime.gate,
+                        runtime.workspace_executor,
+                        runtime.read_only_executor,
+                        runtime.workspace,
+                        action,
+                        step_id.clone(),
+                        runtime.approved,
+                    )
+                    .map(|_| ModelActionExecution {
+                        action_id: action.action_id.clone(),
+                        action_output: ToolCallOutput {
+                            summary: "workspace edit completed".into(),
+                            result: serde_json::json!({"action_id": action.action_id}),
+                        },
+                        verification_output: ToolCallOutput {
+                            summary: "workspace edit verified".into(),
+                            result: serde_json::json!({"verified": true}),
+                        },
+                    })
+                    .err()
+                    .map(|error| ModelActionFailure {
+                        error,
+                        attempted_tool_calls: 2,
+                        verification_started: true,
+                    }),
                 None => Some(ModelActionFailure {
                     error: LoopControllerError::ModelAdapter(
                         ModelAdapterError::ProviderTextUnmappable,

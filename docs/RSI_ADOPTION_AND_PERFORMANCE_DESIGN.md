@@ -231,12 +231,12 @@ RollbackReference
 当前 Phase 1 只实现 RSI 的地基，不实现完整 Evolution Plane：
 
 1. 保持 EventLog、Trace、Checkpoint、ModelCallStore 和 ToolRegistry 的事实边界；
-2. 完成 bounded Markdown provider runner，产生可验证的 action/verification 事实；
+2. 完成 bounded foreground provider runner，产生可审计的 model-call、decision 和 failure metadata；Markdown 写入、action 执行和 verification 闭环仍待后续接线；
 3. 将工具失败和验证失败映射为候选，而不是自动改行为；
 4. 补最小 `LessonCandidate`/recipe candidate 的来源回链和 project scope；
 5. 记录性能指标，不在主循环中运行 consolidation 或 evaluator。
 
-这意味着 Phase 1 仍不能称为完整 RSI，也不能称为完整模型连接型自主 Agent。真实 provider、受控开发闭环、后台 worker、恢复和 live credential 验收仍按现有 Phase 1 文档执行。
+这意味着 Phase 1 仍不能称为完整 RSI，也不能称为完整模型连接型自主 Agent。当前已有 OpenAI-compatible library runner、Anthropic library-only injected transport seam、CredentialResolver 注入边界和 ModelCallStore 审计接线；standalone CLI 的生产 credential resolver、真实账号/live provider 验收、受控开发闭环、后台 worker 和恢复仍按现有 Phase 1 文档执行。
 
 ## 7. 参考来源
 
@@ -267,4 +267,3 @@ RollbackReference
 - [MCP Specification](https://modelcontextprotocol.io/specification/2025-06-18)
 
 来源状态：上述论文的题名和摘要已从 arXiv 一手页面核验；业界页面和协议资料部分沿用项目已有研究记录，若本轮未重新取得正文，则不把其细节当作独立实验证据。论文 benchmark 数字不是 steerBox 承诺。
-

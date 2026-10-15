@@ -248,7 +248,7 @@ impl<T: AnthropicTransport> AnthropicAdapter<T> {
         let mut messages = Vec::new();
         for message in &request.messages {
             match message.role.as_str() {
-                "system" => {
+                "system" | "developer" => {
                     system_parts.push(Redactor::default().redact_text(&message.content).map_err(
                         |_| AnthropicAdapterError::InvalidRequest {
                             reason: "message content redaction failed",

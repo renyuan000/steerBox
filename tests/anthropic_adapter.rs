@@ -202,6 +202,50 @@ fn builds_anthropic_envelope_with_independent_auth_header_reference() {
 }
 
 #[test]
+fn maps_developer_prompt_into_redacted_anthropic_system_field() {
+    let transport = FakeTransport::response(&response_body(
+        r#"{"decision":"complete_loop","summary":"done"}"#,
+    ));
+    let captured = transport.captured.clone();
+    let adapter = AnthropicAdapter::new(
+        "anthropic",
+        "https://fixture.example.test/v1",
+        transport,
+        Some("keychain:anthropic".into()),
+    );
+
+    adapter
+        .complete(ProviderRequest {
+            model: "claude-fixture".into(),
+            messages: vec![
+                ProviderMessage::system("system contract"),
+                ProviderMessage {
+                    role: "developer".into(),
+                    content: "developer password=synthetic-developer-secret".into(),
+                },
+                ProviderMessage::user("inspect repository"),
+            ],
+            auth_ref: None,
+            timeout_ms: 30_000,
+            stream: false,
+        })
+        .expect("fixture response succeeds");
+
+    let captured_request = captured
+        .lock()
+        .expect("capture lock")
+        .clone()
+        .expect("captured request");
+    let body: Value = serde_json::from_str(&captured_request.body).expect("valid request JSON");
+    assert_eq!(
+        body["system"],
+        "system contract\ndeveloper password=[REDACTED:PASSWORD]"
+    );
+    assert!(!captured_request.body.contains("synthetic-developer-secret"));
+    assert_eq!(body["messages"][0]["role"], "user");
+}
+
+#[test]
 fn model_adapter_parses_only_the_decision_envelope() {
     let adapter = AnthropicAdapter::new(
         "anthropic",
