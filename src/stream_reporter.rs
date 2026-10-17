@@ -66,6 +66,140 @@ pub trait ProgressSink {
     fn report(&mut self, event: ProgressEvent) -> io::Result<()>;
 }
 
+/// Incremental, non-token provider stream lifecycle bridge.
+///
+/// This state machine accepts already parsed provider events one at a time so a
+/// transport can report progress before the complete response is available.
+/// It deliberately emits only lifecycle text and cumulative character counts;
+/// provider delta contents, token counts, and finish details never reach the
+/// progress sink. It does not implement network I/O or claim that a transport
+/// is capable of live streaming.
+pub struct ProviderStreamLifecycle<'a, S: ProgressSink + ?Sized> {
+    sink: &'a mut S,
+    model_id: String,
+    request_id: Option<String>,
+    cumulative_chars: u32,
+    saw_delta: bool,
+    completed: bool,
+}
+
+impl<'a, S: ProgressSink + ?Sized> ProviderStreamLifecycle<'a, S> {
+    pub fn new(sink: &'a mut S, model_id: &str) -> io::Result<Self> {
+        if model_id.trim().is_empty() {
+            return Err(stream_contract_error("provider stream model id is empty"));
+        }
+        sink.report(ProgressEvent {
+            subject: ProgressSubject::Model,
+            subject_id: model_id.to_owned(),
+            status: ProgressStatus::Started,
+            summary: Some("model stream started".into()),
+            progress: None,
+        })?;
+        Ok(Self {
+            sink,
+            model_id: model_id.to_owned(),
+            request_id: None,
+            cumulative_chars: 0,
+            saw_delta: false,
+            completed: false,
+        })
+    }
+
+    pub fn accept(&mut self, event: ProviderStreamEvent) -> io::Result<()> {
+        if self.completed {
+            return Err(stream_contract_error(
+                "provider stream event arrived after completed event",
+            ));
+        }
+        match event {
+            ProviderStreamEvent::Delta {
+                request_id,
+                model,
+                text,
+            } => {
+                self.validate_identity(&request_id, &model)?;
+                let delta_chars = text.chars().count().try_into().map_err(|_| {
+                    stream_contract_error("provider stream delta character count overflow")
+                })?;
+                let cumulative_chars =
+                    self.cumulative_chars
+                        .checked_add(delta_chars)
+                        .ok_or_else(|| {
+                            stream_contract_error("provider stream character count overflow")
+                        })?;
+                let result = self.sink.report(ProgressEvent {
+                    subject: ProgressSubject::Model,
+                    subject_id: self.model_id.clone(),
+                    status: ProgressStatus::Progress,
+                    summary: Some(format!(
+                        "model stream received {} characters",
+                        cumulative_chars
+                    )),
+                    progress: None,
+                });
+                result?;
+                self.request_id = Some(request_id);
+                self.cumulative_chars = cumulative_chars;
+                self.saw_delta = true;
+                Ok(())
+            }
+            ProviderStreamEvent::Completed {
+                request_id, model, ..
+            } => {
+                self.validate_identity(&request_id, &model)?;
+                if !self.saw_delta {
+                    return Err(stream_contract_error(
+                        "provider stream has no delta before completed event",
+                    ));
+                }
+                self.sink.report(ProgressEvent {
+                    subject: ProgressSubject::Model,
+                    subject_id: self.model_id.clone(),
+                    status: ProgressStatus::Completed,
+                    summary: Some(format!(
+                        "model stream completed ({} characters)",
+                        self.cumulative_chars
+                    )),
+                    progress: None,
+                })?;
+                self.completed = true;
+                Ok(())
+            }
+        }
+    }
+
+    pub fn finish(&mut self) -> io::Result<()> {
+        if self.completed {
+            Ok(())
+        } else {
+            Err(stream_contract_error(
+                "provider stream has no completed event",
+            ))
+        }
+    }
+
+    fn validate_identity(&self, request_id: &str, model: &str) -> io::Result<()> {
+        if request_id.trim().is_empty() || model.trim().is_empty() {
+            return Err(stream_contract_error(
+                "provider stream event identity fields must be non-empty",
+            ));
+        }
+        if model != self.model_id {
+            return Err(stream_contract_error(
+                "provider stream event identity does not match",
+            ));
+        }
+        if let Some(expected_request_id) = self.request_id.as_deref() {
+            if request_id != expected_request_id {
+                return Err(stream_contract_error(
+                    "provider stream event identity does not match",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Bridge a validated provider stream into safe, user-visible lifecycle
 /// events. Delta payloads are intentionally reduced to cumulative character
 /// counts; the provider text and token counts never enter the progress sink.

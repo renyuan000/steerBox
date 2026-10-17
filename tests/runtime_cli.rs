@@ -850,3 +850,35 @@ fn model_call_page_cli_reads_bounded_audit_records() {
 
     let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
 }
+
+#[test]
+fn provider_cli_rejects_unknown_credential_source_before_loading_config() {
+    let binary = env!("CARGO_BIN_EXE_steerbox");
+    let output = Command::new(binary)
+        .args([
+            "loop",
+            "provider",
+            "/tmp/steerbox-nonexistent-config.json",
+            "project-cli",
+            "goal-cli",
+            "loop-cli",
+            "task-run-cli",
+            "fixture-model",
+            "objective",
+            "observation",
+            "--credential-source",
+            "file",
+        ])
+        .output()
+        .expect("provider command starts");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("credential source must be `env`"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("configuration file read failed"),
+        "{stderr}"
+    );
+}

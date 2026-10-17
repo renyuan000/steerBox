@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use steerbox::provider_adapter::ProviderStreamEvent;
 use steerbox::stream_reporter::{
     report_provider_stream, ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject,
-    StreamReporter,
+    ProviderStreamLifecycle, StreamReporter,
 };
 
 #[test]
@@ -397,4 +397,161 @@ fn propagates_writer_errors() {
         .started(ProgressSubject::Loop, "loop-4", None, None)
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Other);
+}
+
+#[test]
+fn incremental_provider_stream_reports_lifecycle_without_emitting_delta_text() {
+    #[derive(Clone)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for SharedWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let mut reporter = StreamReporter::new(SharedWriter(Arc::clone(&output)));
+    let mut lifecycle = ProviderStreamLifecycle::new(&mut reporter, "provider-model")
+        .expect("model stream starts immediately");
+
+    let started = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+    assert_eq!(
+        started,
+        "model provider-model started - model stream started\n"
+    );
+
+    lifecycle
+        .accept(ProviderStreamEvent::delta(
+            "request-5",
+            "provider-model",
+            "sensitive provider output",
+        ))
+        .expect("delta is accepted");
+    let after_delta = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+    assert!(after_delta.contains("model provider-model progress"));
+    assert!(after_delta.contains("25 characters"));
+    assert!(!after_delta.contains("sensitive provider output"));
+
+    lifecycle
+        .accept(ProviderStreamEvent::completed(
+            "request-5",
+            "provider-model",
+            "stop",
+        ))
+        .expect("completion is accepted");
+    lifecycle.finish().expect("completed stream closes");
+
+    let lines = String::from_utf8(output.lock().unwrap().clone())
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[2].contains("model provider-model completed"));
+    assert!(lines
+        .iter()
+        .all(|line| !line.contains("sensitive provider output")));
+}
+
+#[test]
+fn incremental_provider_stream_requires_delta_before_completion_and_finish() {
+    let mut output = Vec::new();
+    {
+        let mut reporter = StreamReporter::new(&mut output);
+        let mut lifecycle = ProviderStreamLifecycle::new(&mut reporter, "provider-model").unwrap();
+
+        let error = lifecycle
+            .accept(ProviderStreamEvent::completed(
+                "request-6",
+                "provider-model",
+                "stop",
+            ))
+            .expect_err("completion without delta must fail closed");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        let finish_error = lifecycle
+            .finish()
+            .expect_err("unfinished stream must fail closed");
+        assert_eq!(finish_error.kind(), io::ErrorKind::InvalidData);
+    }
+    assert!(!String::from_utf8(output.clone())
+        .unwrap()
+        .contains("completed"));
+}
+
+#[test]
+fn incremental_provider_stream_rejects_identity_mismatch_before_reporting_progress() {
+    let mut output = Vec::new();
+    {
+        let mut reporter = StreamReporter::new(&mut output);
+        let mut lifecycle = ProviderStreamLifecycle::new(&mut reporter, "provider-model").unwrap();
+
+        let error = lifecycle
+            .accept(ProviderStreamEvent::delta(
+                "request-7",
+                "other-model",
+                "provider output",
+            ))
+            .expect_err("model identity mismatch must fail closed");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+    assert!(!String::from_utf8(output).unwrap().contains("progress"));
+}
+
+#[test]
+fn incremental_provider_stream_does_not_commit_delta_state_when_sink_fails() {
+    struct FailFirstProgressSink {
+        events: Vec<ProgressEvent>,
+        failed: bool,
+    }
+
+    impl ProgressSink for FailFirstProgressSink {
+        fn report(&mut self, event: ProgressEvent) -> io::Result<()> {
+            if event.status == ProgressStatus::Progress && !self.failed {
+                self.failed = true;
+                return Err(io::Error::other("progress sink failed"));
+            }
+            self.events.push(event);
+            Ok(())
+        }
+    }
+
+    let mut sink = FailFirstProgressSink {
+        events: Vec::new(),
+        failed: false,
+    };
+    let mut lifecycle = ProviderStreamLifecycle::new(&mut sink, "provider-model").unwrap();
+    let delta =
+        ProviderStreamEvent::delta("request-8", "provider-model", "sensitive provider output");
+    let error = lifecycle
+        .accept(delta.clone())
+        .expect_err("first progress write must fail");
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    lifecycle
+        .accept(delta)
+        .expect("retry must not double-count");
+    lifecycle
+        .accept(ProviderStreamEvent::completed(
+            "request-8",
+            "provider-model",
+            "stop",
+        ))
+        .unwrap();
+    lifecycle.finish().unwrap();
+    drop(lifecycle);
+
+    let progress = sink
+        .events
+        .iter()
+        .find(|event| event.status == ProgressStatus::Progress)
+        .expect("successful retry reports progress");
+    assert_eq!(
+        progress.summary.as_deref(),
+        Some("model stream received 25 characters")
+    );
 }

@@ -12,7 +12,9 @@ use steerbox::domain::{
 };
 use steerbox::event_log::EventLog;
 use steerbox::execution_query::ExecutionQuery;
-use steerbox::http_transport::{CredentialError, CredentialResolver, ResolvedCredential};
+use steerbox::http_transport::{
+    CredentialError, CredentialResolver, EnvironmentCredentialResolver, ResolvedCredential,
+};
 use steerbox::loop_controller::ReadOnlyLoopController;
 use steerbox::model_adapter::{LocalFixtureModelAdapter, ModelDecision};
 use steerbox::model_call_store::ModelCallStore;
@@ -397,15 +399,31 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 objective: args.next().ok_or("missing objective")?,
                 observation: args.next().ok_or("missing observation")?,
             };
+            let credential_source = match args.next() {
+                None => CliCredentialResolver::Unconfigured,
+                Some(flag) if flag == "--credential-source" => match args.next().as_deref() {
+                    Some("env") => CliCredentialResolver::Environment,
+                    Some(_) => {
+                        return Err(
+                            "credential source must be `env`; inline credentials are not accepted"
+                                .into(),
+                        )
+                    }
+                    None => return Err("missing credential source after --credential-source".into()),
+                },
+                Some(_) => {
+                    return Err(
+                        "unexpected provider argument; use --credential-source env; inline credentials are not accepted".into(),
+                    )
+                }
+            };
             if args.next().is_some() {
-                return Err(
-                    "unexpected provider argument; inline credentials are not accepted".into(),
-                );
+                return Err("unexpected provider argument after credential source".into());
             }
             let config = RuntimeConfig::load(config_path)?;
             let prepared = ForegroundProviderRun::prepare(&config, request)?;
             let result = prepared.run_with_resolver(
-                UnconfiguredCredentialResolver,
+                credential_source,
                 EventLog::open(config.events_path())?,
                 ModelCallStore::open(config.model_calls_path())?,
                 StreamReporter::new(std::io::stdout()),
@@ -719,8 +737,8 @@ fn print_usage() {
     eprintln!("  steerbox board list <config.json>");
     eprintln!("  steerbox loop readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <objective> <observation>");
     eprintln!("  steerbox loop fixture <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> [continue_observation|complete_loop|request_human] <observation> [summary]");
-    eprintln!("  steerbox loop provider <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> <objective> <observation>");
-    eprintln!("    Provider entry requires a trusted injected credential resolver; the standalone CLI currently fails closed without one.");
+    eprintln!("  steerbox loop provider <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> <objective> <observation> [--credential-source env]");
+    eprintln!("    Default credential source is fail-closed; `--credential-source env` resolves only opaque env:NAME references.");
     eprintln!("  steerbox dev markdown <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <path> <expected> <replacement> <auto|ask|approved>");
 }
 
@@ -790,5 +808,19 @@ struct UnconfiguredCredentialResolver;
 impl CredentialResolver for UnconfiguredCredentialResolver {
     fn resolve(&self, _: &str) -> Result<ResolvedCredential, CredentialError> {
         Err(CredentialError::Unavailable)
+    }
+}
+
+enum CliCredentialResolver {
+    Unconfigured,
+    Environment,
+}
+
+impl CredentialResolver for CliCredentialResolver {
+    fn resolve(&self, auth_ref: &str) -> Result<ResolvedCredential, CredentialError> {
+        match self {
+            Self::Unconfigured => UnconfiguredCredentialResolver.resolve(auth_ref),
+            Self::Environment => EnvironmentCredentialResolver.resolve(auth_ref),
+        }
     }
 }
