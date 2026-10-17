@@ -114,7 +114,7 @@ Memory 最小实现：
 
 - [x] 定义 `ToolProfile`
 - [x] 注册只读工具
-- [x] 注册 shell / command 工具的受控包装（当前仅固定 argv 的只读 `git status`；不接受 shell 字符串）
+- [x] 注册 shell / command 工具的受控包装（固定 argv 的只读 `git status` / `git diff`；不接受 shell 字符串）
 - [x] 为每个工具配置 side-effect class
 - [x] 为每个工具绑定 risk level
 - [x] 读取 baseline tool recipes
@@ -227,8 +227,8 @@ Memory 最小实现：
 
 - [ ] 写入 shell safe quoting recipe
 - [ ] 写入 `rg -F` recipe
-- [ ] 写入 git status / diff read-only recipe
-- [ ] 写入 Markdown link check recipe
+- [x] 写入 git status / diff read-only recipe（固定 executable/argv、workspace scope、bounded 输出与超时）
+- [x] 写入 Markdown link check recipe
 - [ ] 写入 file write verification recipe
 
 验收：

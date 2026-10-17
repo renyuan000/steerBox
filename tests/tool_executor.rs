@@ -46,6 +46,25 @@ fn git_status_recipe_executes_fixed_read_only_command() {
 }
 
 #[test]
+fn git_diff_recipe_executes_fixed_argv_without_shell_interpolation() {
+    let workspace = std::env::current_dir().expect("current directory exists");
+    let output = ReadOnlyToolExecutor
+        .execute(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &workspace,
+            ToolCallInput {
+                tool_id: "git_diff".into(),
+                arguments: json!({"scope": "workspace"}),
+            },
+        )
+        .expect("fixture tool executes");
+    assert_eq!(output.result["tool_id"], "git_diff");
+    assert!(output.result["executed"].as_bool().unwrap());
+    assert_eq!(output.result["scope"], "workspace");
+    assert!(output.result["command"].as_array().is_some());
+}
+
+#[test]
 fn baseline_read_only_recipes_execute_without_shell_arguments() {
     let workspace = std::env::current_dir().expect("current directory exists");
     let registry = ToolRegistry::baseline().expect("baseline tools register");
@@ -182,6 +201,36 @@ fn structured_action_maps_git_status_without_execution() {
         )
         .expect("git status maps");
     assert_eq!(mapped, StructuredToolAction::GitStatus);
+}
+
+#[test]
+fn structured_action_maps_git_diff_without_accepting_command_arguments() {
+    let workspace = std::env::current_dir().expect("current directory exists");
+    let action = action("git_diff", json!({"scope": "workspace"}), "Cargo.toml");
+    let mapped = ReadOnlyToolExecutor
+        .map_action(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &workspace,
+            &action,
+        )
+        .expect("git diff maps");
+    assert_eq!(mapped, StructuredToolAction::GitDiff);
+}
+
+#[test]
+fn git_diff_rejects_shell_like_extra_arguments() {
+    let workspace = std::env::current_dir().expect("current directory exists");
+    let error = ReadOnlyToolExecutor
+        .execute(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &workspace,
+            ToolCallInput {
+                tool_id: "git_diff".into(),
+                arguments: json!({"scope": "workspace", "command": "; rm -rf /"}),
+            },
+        )
+        .expect_err("shell-like input is rejected");
+    assert_eq!(error, ToolExecutionError::InvalidArguments);
 }
 
 #[test]

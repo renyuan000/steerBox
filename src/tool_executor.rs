@@ -30,6 +30,7 @@ pub struct ToolCallOutput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StructuredToolAction {
     GitStatus,
+    GitDiff,
     ReadFile {
         path: String,
     },
@@ -123,6 +124,13 @@ impl ReadOnlyToolExecutor {
                 }
                 Ok(StructuredToolAction::GitStatus)
             }
+            Some("git-diff-readonly") => {
+                require_exact_keys(&action.parameters, &["scope"])?;
+                if action.parameters["scope"] != "workspace" {
+                    return Err(ToolExecutionError::InvalidArguments);
+                }
+                Ok(StructuredToolAction::GitDiff)
+            }
             Some("rg-fixed-search") => {
                 require_exact_keys(&action.parameters, &["path", "query"])?;
                 let path = required_string(&action.parameters, "path")?;
@@ -176,6 +184,35 @@ impl ReadOnlyToolExecutor {
                     "tool_id": input.tool_id,
                     "workspace": workspace,
                     "executed": true,
+                    "exit_code": output.status.code(),
+                    "stdout": summary,
+                    "stdout_truncated": output.stdout.truncated,
+                    "stderr": output.stderr.text,
+                    "stderr_truncated": output.stderr.truncated,
+                }),
+            });
+        }
+        if profile.recipe_ref.as_deref() == Some("git-diff-readonly") {
+            require_exact_keys(&input.arguments, &["scope"])?;
+            if input.arguments["scope"] != "workspace" {
+                return Err(ToolExecutionError::InvalidArguments);
+            }
+            let mut command = Command::new("git");
+            command
+                .args(["diff", "--no-ext-diff", "--no-color", "--"])
+                .current_dir(workspace)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let output = run_bounded_command(command)?;
+            let summary = output.stdout.text.clone();
+            return Ok(ToolCallOutput {
+                summary: summary.clone(),
+                result: serde_json::json!({
+                    "tool_id": input.tool_id,
+                    "workspace": workspace,
+                    "scope": "workspace",
+                    "executed": true,
+                    "command": ["git", "diff", "--no-ext-diff", "--no-color", "--"],
                     "exit_code": output.status.code(),
                     "stdout": summary,
                     "stdout_truncated": output.stdout.truncated,

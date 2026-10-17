@@ -8,7 +8,7 @@
 
 188 项及此前 focused/build/fmt/all-targets 结果仅为历史证据；`e754d07` 和 controller 门禁切片的回归记录见本文末尾，不覆盖本轮 snapshot 代码。未跟踪 benchmark 和历史资料不计入验收。本轮未调用 live provider，不能据本地/fake/localhost 回归宣称真实帐号或完整 Phase 1 通过。
 
-当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、bounded `read_file`、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。
+当前可运行的是只读 observation、secret-free fixture 决策、固定只读 recipe（git status、git diff、bounded `read_file`、rg fixed search、Markdown link check），以及经过 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的只读动作闭环。`git status` / `git diff` 使用固定 executable 与固定 argv；recipe 不接受 shell 字符串、额外命令参数或任意 Bash。
 
 controller `execute_workspace_edit_action()` 强制配置 `CheckpointStore` 与 `SideEffectLedger`，先应用生命周期/命令安全边界，再执行 policy 与 mutation 前审计。缺 store、待处理 pause/cancel、终态或 mutation 前审计写入错误均阻止修改，不增加低风险自主模式的审批请求。已有 started/completed/failed/verification_failed metadata 和 before/after hash；缺失 Markdown 链接不产生 verified 成功事件。bounded Markdown controller 现在支持通过 `with_snapshot_store(...)` opt in，在 mutation 前 capture，并由 trusted caller 显式调用 restore；默认路径仍不自动 capture，verification failure 不自动 rollback。snapshot 的显式文件恢复不等于 controller/任务/进程恢复，不确定副作用状态和真实模型 E2E 仍未完成。
 
@@ -78,7 +78,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 - [model_adapter.rs](../src/model_adapter.rs) 保留旧的 continue_observation／complete_loop／request_human 与摘要兼容接口，并新增可选的 `ModelResponseWithAction`；[provider_model_adapter.rs](../src/provider_model_adapter.rs) 对 action 做严格 JSON、路径、shell 和敏感字段校验。
 - [loop_controller.rs](../src/loop_controller.rs) 新增 `run_model_step_with_action`：模型响应中的有限只读 action 会经过 `PolicyGate → ReadOnlyToolExecutor → verification`，并记录 `model_action_started`／`model_action_failed`／`model_action_verified` 事件；旧 `run_model_step` 不执行 action，保持兼容。
-- [loop_controller.rs](../src/loop_controller.rs) 已有模型步骤、policy 检查、固定 argv 的只读 `git_status` 执行，以及事件／trace／side-effect 记录。
+- [loop_controller.rs](../src/loop_controller.rs) 已有模型步骤、policy 检查、固定 argv 的只读 `git_status` / `git_diff` 执行，以及事件／trace／side-effect 记录。
 - resolved action 与只读工具的持久化审计只保留安全元数据；原始 stdout、stderr、query、路径结果不再进入 EventLog、TraceStore 或 SideEffectLedger。`CommandPoller::poll_many` 和 controller 批量提交接口已限制每个 tick 的命令数，但尚未接入常驻后台 worker。
 - [workspace_edit.rs](../src/workspace_edit.rs)、[tool_executor.rs](../src/tool_executor.rs)、[main.rs](../src/main.rs) 已有受审批的 Markdown 精确修改、链接验证、checkpoint metadata 和成功／失败 RunSummary；`WorkspaceToolExecutor` 仅允许注册的 Markdown edit recipe，必须显式 approval，且 PolicyGate 对 baseline profile 返回 `RequireHumanApproval`；[drift_guard.rs](../src/drift_guard.rs) 已有静态对齐／偏离检查。
 
@@ -174,3 +174,5 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 同日持久化收紧：EventLog 将事件正文与换行合并为一次 `write_all` 后 `sync_data`；StateStore 使用独占临时文件、`sync_all` 后 rename，并在 Unix 上同步父目录。此举缩小 partial-tail／rename durability 窗口，但不提供跨进程锁、崩溃尾部修复或 controller resume 保证。
 
 这六包不新增 SQLite 迁移、多 agent、TUI/Web、分布式 worker、向量／图数据库或无审批自动进化的交付要求。现有 JSONL／JSON 切片应先闭合规范要求，存储迁移不能替代真实模型闭环。CCG 和其他参考项目仅提供可核查的设计线索，不作为已证明最优的性能 benchmark，也不改变 Phase 1 正式范围。
+
+2026-10-17 受控命令 recipe 增量由 master 验收：新增 baseline `git_diff`，仅接受 `{"scope":"workspace"}`，固定执行 `git diff --no-ext-diff --no-color --`，不接受 shell 字符串或额外 argv；沿用 workspace 校验、5 秒超时和 16 KiB stdout/stderr 上限。`tool_executor` focused 14 项、`tool_policy` 2 项、`tool_capability_display` 12 项通过；`cargo test --locked --offline --all-targets --quiet`、`cargo clippy --locked --offline --all-targets -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check` 均通过。该切片扩大的是受控只读 recipe，不是任意 Bash、文件写入、live provider 或完整 coding loop。

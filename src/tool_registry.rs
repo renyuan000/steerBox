@@ -197,6 +197,12 @@ impl ToolRegistry {
                 "git-status-readonly",
             ),
             readonly_profile(
+                "git_diff",
+                "git diff",
+                "inspect tracked workspace changes without changing files",
+                "git-diff-readonly",
+            ),
+            readonly_profile(
                 "rg_fixed",
                 "fixed-string search",
                 "search repository text with fixed-string semantics",
@@ -230,6 +236,7 @@ impl ToolRegistry {
 fn capability_metadata(tool_id: &str) -> (&'static str, &'static str) {
     match tool_id {
         "git_status" => ("极低/按需", "查看仓库状态"),
+        "git_diff" => ("极低/按需", "查看受限工作区变更"),
         "rg_fixed" => ("极低/按需", "搜索受限工作区文本"),
         "read_file" => ("极低/按需", "读取受限工作区文件"),
         "edit_markdown" => ("极低/按需", "审批后修改 Markdown"),
