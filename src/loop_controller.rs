@@ -28,7 +28,7 @@ use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequ
 use crate::provider_adapter::ProviderErrorClass;
 use crate::provider_model_adapter::ResolvedModelAdapter;
 use crate::redaction::{RedactionError, Redactor, FAIL_CLOSED_MARKER};
-use crate::resolved_prompt::ResolvedPromptPack;
+use crate::resolved_prompt::{PromptResolutionError, ResolvedPromptPack};
 use crate::strategy_selector::{StrategyDecision, StrategySelectionError, StrategySelector};
 use crate::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
 use crate::task_features::TaskFeatures;
@@ -118,6 +118,8 @@ pub enum LoopControllerError {
     ModelToolContextRedaction(#[from] RedactionError),
     #[error("model tool context exceeds configured limit of {limit} bytes")]
     ModelToolContextTooLarge { limit: usize },
+    #[error("resolved prompt derivation failed: {0}")]
+    PromptResolution(#[from] PromptResolutionError),
 }
 
 struct ProgressSinkHolder {
@@ -1130,6 +1132,50 @@ impl ReadOnlyLoopController {
             step_id,
             Some(ResolvedModelActionRuntime::ReadOnly(runtime)),
             true,
+        )
+    }
+
+    /// Continue a resolved-provider run from already verified local tool
+    /// results. The next prompt pack is derived immutably, after both outputs
+    /// are redacted and bounded; the previous pack is never reused with a new
+    /// observation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_resolved_model_step_with_tool_results<A: ResolvedModelAdapter + ?Sized>(
+        &mut self,
+        adapter: &A,
+        prior_request: ModelRequest,
+        prior_pack: &ResolvedPromptPack,
+        route: &RouteDecision,
+        runtime: &ModelActionRuntime<'_>,
+        action_id: &str,
+        tool_id: &str,
+        action_output: &ToolCallOutput,
+        verification_output: &ToolCallOutput,
+        step_id: impl Into<String>,
+    ) -> Result<ModelDecision, LoopControllerError> {
+        let observation = build_model_tool_observation(
+            Some(action_id),
+            Some(tool_id),
+            action_output,
+            Some(verification_output),
+        )?;
+        let next_pack = prior_pack.next_step(observation)?;
+        let step_id = step_id.into();
+        let next_request = ModelRequest {
+            model_id: next_pack.model_id().into(),
+            goal_id: prior_request.goal_id,
+            loop_run_id: prior_request.loop_run_id,
+            step_id: step_id.clone(),
+            objective: next_pack.objective().into(),
+            observation: next_pack.observation().into(),
+        };
+        self.run_resolved_model_step_with_action(
+            adapter,
+            next_request,
+            &next_pack,
+            route,
+            runtime,
+            step_id,
         )
     }
 

@@ -554,6 +554,63 @@ fn actual_instruction_and_user_data_changes_are_covered_by_pack_and_rendered_mes
 }
 
 #[test]
+fn next_step_rebuilds_only_user_observation_and_preserves_original_pack() {
+    let fixture = Fixture::new();
+    let original = fixture.resolve().unwrap();
+    let original_messages = original.messages().to_vec();
+    let original_metadata = original.metadata().clone();
+
+    let next = original.next_step("next-step observation").unwrap();
+
+    assert_eq!(original.observation(), fixture.observation);
+    assert_eq!(original.messages(), original_messages.as_slice());
+    assert_eq!(original.metadata(), &original_metadata);
+    assert_eq!(next.objective(), original.objective());
+    assert_eq!(next.observation(), "next-step observation");
+    assert_eq!(next.messages()[0], original.messages()[0]);
+    assert_eq!(next.messages()[1], original.messages()[1]);
+
+    let next_user: Value = serde_json::from_str(&next.messages()[2].content).unwrap();
+    assert_eq!(next_user["objective"], fixture.objective);
+    assert_eq!(next_user["observation"], "next-step observation");
+    assert_eq!(next_user["context_package"], fixture.context);
+
+    assert_eq!(next.provider_id(), original.provider_id());
+    assert_eq!(next.endpoint_id(), original.endpoint_id());
+    assert_eq!(next.endpoint_protocol(), original.endpoint_protocol());
+    assert_eq!(next.endpoint_base_url(), original.endpoint_base_url());
+    assert_eq!(next.model_id(), original.model_id());
+    assert_eq!(next.model_name(), original.model_name());
+    assert_eq!(
+        next.metadata().route_decision_id,
+        original.metadata().route_decision_id
+    );
+    assert_eq!(next.metadata().provider_id, original.metadata().provider_id);
+    assert_eq!(next.metadata().endpoint_id, original.metadata().endpoint_id);
+    assert_eq!(next.metadata().model_id, original.metadata().model_id);
+    assert_eq!(
+        next.metadata().policy_summary_hash,
+        original.metadata().policy_summary_hash
+    );
+    assert_eq!(
+        next.metadata().tool_summary_hash,
+        original.metadata().tool_summary_hash
+    );
+    assert_eq!(
+        next.metadata().context_package_hash,
+        original.metadata().context_package_hash
+    );
+    assert_ne!(
+        next.metadata().rendered_messages_hash,
+        original.metadata().rendered_messages_hash
+    );
+    assert_ne!(
+        next.metadata().prompt_pack_id,
+        original.metadata().prompt_pack_id
+    );
+}
+
+#[test]
 fn rejects_blank_goal_reason_and_invalid_resolution_timestamp() {
     let mut fixture = Fixture::new();
     fixture.objective = " \t".into();

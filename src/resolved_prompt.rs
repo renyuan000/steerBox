@@ -132,6 +132,7 @@ pub struct ResolvedPromptPack {
     model_name: String,
     objective: String,
     observation: String,
+    context_package: Value,
     messages: Vec<ProviderMessage>,
     metadata: ResolvedPromptMetadata,
 }
@@ -188,6 +189,53 @@ impl ResolvedPromptPack {
 
     pub fn metadata(&self) -> &ResolvedPromptMetadata {
         &self.metadata
+    }
+
+    /// Derive the next model-call prompt without mutating this resolved pack.
+    ///
+    /// System/developer instructions and all resolved bindings remain pinned;
+    /// only the untrusted observation in the user message changes. The derived
+    /// pack receives fresh message and pack identity hashes so it can be
+    /// audited as a distinct model-call input. Callers must pass an already
+    /// redacted, bounded observation; this method is not a redaction boundary.
+    pub fn next_step(&self, observation: impl Into<String>) -> Result<Self, PromptResolutionError> {
+        let observation = observation.into();
+        let user = serde_json::json!({
+            "objective": self.objective,
+            "observation": observation,
+            "context_package": self.context_package,
+        })
+        .to_string();
+        let mut messages = self.messages.clone();
+        let user_indexes = messages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, message)| (message.role == "user").then_some(index))
+            .collect::<Vec<_>>();
+        if user_indexes.len() != 1 {
+            return Err(PromptResolutionError::Serialization);
+        }
+        let user_message = messages
+            .get_mut(user_indexes[0])
+            .ok_or(PromptResolutionError::Serialization)?;
+        user_message.content = user;
+
+        let mut metadata = self.metadata.clone();
+        metadata.rendered_messages_hash = hash_json(&messages)?;
+        metadata.prompt_pack_id =
+            prompt_pack_id(&metadata, &self.endpoint_base_url, &self.model_name)?;
+        Ok(Self {
+            provider_id: self.provider_id.clone(),
+            endpoint_id: self.endpoint_id.clone(),
+            endpoint_base_url: self.endpoint_base_url.clone(),
+            model_id: self.model_id.clone(),
+            model_name: self.model_name.clone(),
+            objective: self.objective.clone(),
+            observation,
+            context_package: self.context_package.clone(),
+            messages,
+            metadata,
+        })
     }
 }
 
@@ -426,14 +474,7 @@ pub fn resolve_prompt(
     };
     // The identity includes message bytes through rendered_messages_hash, not
     // just claimed fragment versions. Endpoint/model wire bindings are covered.
-    metadata.prompt_pack_id = format!(
-        "prompt-pack:{}",
-        hash_json(&serde_json::json!({
-            "metadata": metadata,
-            "endpoint_base_url": endpoint.base_url,
-            "model_name": model.model_name,
-        }))?
-    );
+    metadata.prompt_pack_id = prompt_pack_id(&metadata, &endpoint.base_url, &model.model_name)?;
     Ok(ResolvedPromptPack {
         provider_id: provider.provider_id.clone(),
         endpoint_id: endpoint.endpoint_id.clone(),
@@ -442,6 +483,7 @@ pub fn resolve_prompt(
         model_name: model.model_name.clone(),
         objective: input.objective.into(),
         observation: input.observation.into(),
+        context_package: input.context_package.clone(),
         messages,
         metadata,
     })
@@ -488,4 +530,19 @@ fn fragment_version(fragment: &VersionedPromptFragment) -> PromptVersion {
 fn hash_json(value: &impl Serialize) -> Result<String, PromptResolutionError> {
     let encoded = serde_json::to_vec(value).map_err(|_| PromptResolutionError::Serialization)?;
     Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
+}
+
+fn prompt_pack_id(
+    metadata: &ResolvedPromptMetadata,
+    endpoint_base_url: &str,
+    model_name: &str,
+) -> Result<String, PromptResolutionError> {
+    Ok(format!(
+        "prompt-pack:{}",
+        hash_json(&serde_json::json!({
+            "metadata": metadata,
+            "endpoint_base_url": endpoint_base_url,
+            "model_name": model_name,
+        }))?
+    ))
 }

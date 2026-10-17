@@ -23,7 +23,7 @@ use steerbox::resolved_prompt::{
     resolve_prompt, AgentRolePrompt, ModelPromptFragment, ProviderPromptFragment,
     ResolvePromptInput, ResolvedPromptPack, TaskPromptPack, VersionedPromptFragment,
 };
-use steerbox::tool_executor::{ReadOnlyToolExecutor, WorkspaceToolExecutor};
+use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallOutput, WorkspaceToolExecutor};
 use steerbox::tool_registry::ToolRegistry;
 
 const BASE_URL: &str = "https://fixture.example.test/v1";
@@ -240,6 +240,141 @@ fn controller_with_allowed_tools(
         allowed_tools,
         LoopBudget::new(2, 0, 1, 1, 0, 1, 1, 1),
     )
+}
+
+#[test]
+fn resolved_handoff_uses_derived_pack_and_redacts_tool_results() {
+    let directory = TestDirectory::new();
+    let workspace = tempfile::tempdir().expect("workspace creates");
+    let (pack, route) = resolved_fixture();
+    let original_pack_id = pack.metadata().prompt_pack_id.clone();
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, workspace.path());
+    let action_output = ToolCallOutput {
+        summary: "action completed".into(),
+        result: json!({
+            "api_key": "synthetic-action-secret",
+            "safe": "action metadata"
+        }),
+    };
+    let verification_output = ToolCallOutput {
+        summary: "verification completed".into(),
+        result: json!({
+            "password": "synthetic-verification-secret",
+            "safe": "verification metadata"
+        }),
+    };
+
+    controller
+        .run_resolved_model_step_with_tool_results(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-before-handoff".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            "action-1",
+            "git_status",
+            &action_output,
+            &verification_output,
+            "step-after-handoff",
+        )
+        .expect("resolved handoff step succeeds");
+
+    assert_eq!(pack.metadata().prompt_pack_id, original_pack_id);
+    let request_body = sends
+        .lock()
+        .expect("send capture lock")
+        .first()
+        .cloned()
+        .expect("one provider request");
+    assert!(request_body.contains("action metadata"));
+    assert!(request_body.contains("verification metadata"));
+    for secret in [
+        "synthetic-action-secret",
+        "synthetic-action-token",
+        "synthetic-verification-secret",
+        "synthetic-verification-password",
+    ] {
+        assert!(!request_body.contains(secret), "secret leaked: {secret}");
+    }
+}
+
+#[test]
+fn resolved_handoff_rejects_oversized_tool_result_before_provider_call() {
+    let directory = TestDirectory::new();
+    let workspace = tempfile::tempdir().expect("workspace creates");
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, workspace.path());
+    let action_output = ToolCallOutput {
+        summary: "x".repeat(steerbox::redaction::DEFAULT_MAX_INPUT_BYTES + 1),
+        result: json!({"safe": "action"}),
+    };
+    let verification_output = ToolCallOutput {
+        summary: "verification".into(),
+        result: json!({"safe": "verification"}),
+    };
+
+    assert!(matches!(
+        controller.run_resolved_model_step_with_tool_results(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-before-handoff-limit".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            "action-oversized",
+            "git_status",
+            &action_output,
+            &verification_output,
+            "step-after-handoff-limit",
+        ),
+        Err(LoopControllerError::ModelToolContextRedaction(_))
+    ));
+    assert!(sends.lock().expect("send capture lock").is_empty());
 }
 
 fn controller_with_budget(
