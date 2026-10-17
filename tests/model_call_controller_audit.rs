@@ -1,5 +1,6 @@
 use serde_json::json;
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -86,6 +87,55 @@ impl ProviderTransport for FakeTransport {
             .push(request_body.into());
         self.result.clone()
     }
+}
+
+#[derive(Clone)]
+struct SequenceTransport {
+    responses: Arc<Mutex<VecDeque<String>>>,
+    sends: Arc<Mutex<Vec<String>>>,
+}
+
+impl SequenceTransport {
+    fn new(responses: Vec<String>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses.into_iter().collect())),
+            sends: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl ProviderTransport for SequenceTransport {
+    fn send(
+        &self,
+        _endpoint: &str,
+        _auth_ref: Option<&str>,
+        request_body: &str,
+        _timeout: Duration,
+        _streaming: bool,
+    ) -> Result<TransportResponse, TransportError> {
+        self.sends
+            .lock()
+            .expect("sequence send capture lock")
+            .push(request_body.into());
+        self.responses
+            .lock()
+            .expect("sequence response lock")
+            .pop_front()
+            .map(|body| TransportResponse::body(200, body))
+            .ok_or(TransportError::Network)
+    }
+}
+
+fn openai_response(content: String) -> String {
+    serde_json::json!({
+        "id": "fixture-response",
+        "model": "wire-model",
+        "choices": [{
+            "message": {"role": "assistant", "content": content},
+            "finish_reason": "stop"
+        }]
+    })
+    .to_string()
 }
 
 fn fragment(id: &str, content: &str) -> VersionedPromptFragment {
@@ -373,6 +423,237 @@ fn resolved_handoff_rejects_oversized_tool_result_before_provider_call() {
             "step-after-handoff-limit",
         ),
         Err(LoopControllerError::ModelToolContextRedaction(_))
+    ));
+    assert!(sends.lock().expect("send capture lock").is_empty());
+}
+
+#[test]
+fn resolved_model_loop_runs_only_after_verified_action_and_stops_on_completion() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let action = json!({
+        "schema_version": 1,
+        "action_id": "action-resolved-loop",
+        "tool_id": "git_status",
+        "parameters": {"scope": "workspace"},
+        "path_scope": {
+            "root": workspace.display().to_string(),
+            "allowed_paths": ["README.md"]
+        },
+        "verification": {
+            "verifier_tool_id": "markdown_link_check",
+            "parameters": {"path": "README.md"}
+        }
+    });
+    let first = json!({
+        "decision": "continue_observation",
+        "summary": "fixture action observed",
+        "action": action
+    })
+    .to_string();
+    let second = json!({
+        "decision": "complete_loop",
+        "summary": "fixture loop completed"
+    })
+    .to_string();
+    let transport = SequenceTransport::new(vec![openai_response(first), openai_response(second)]);
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_budget(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+        LoopBudget::new(3, 4, 3, 1, 0, 3, 2, 1),
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+
+    let outcome = controller
+        .run_resolved_model_loop(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-resolved-loop".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            3,
+        )
+        .expect("bounded resolved loop succeeds");
+
+    assert_eq!(
+        outcome.decision,
+        steerbox::model_adapter::ModelDecision::CompleteLoop
+    );
+    assert_eq!(outcome.iterations, 2);
+    assert_eq!(sends.lock().expect("sequence send capture lock").len(), 2);
+    let records = ModelCallStore::open(directory.model_calls())
+        .expect("model call store reopens")
+        .read_all()
+        .expect("model call records read");
+    assert_eq!(records.len(), 2);
+    assert_ne!(
+        records[0].resolved_prompt_pack_id,
+        records[1].resolved_prompt_pack_id
+    );
+}
+
+#[test]
+fn resolved_handoff_rejects_unsafe_identifier_before_provider_call() {
+    let directory = TestDirectory::new();
+    let workspace = tempfile::tempdir().expect("workspace creates");
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, workspace.path());
+    let output = ToolCallOutput {
+        summary: "safe".into(),
+        result: json!({"safe": true}),
+    };
+    assert!(matches!(
+        controller.run_resolved_model_step_with_tool_results(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-unsafe-id".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            "token=synthetic-secret",
+            "git_status",
+            &output,
+            &output,
+            "step-unsafe-id-next",
+        ),
+        Err(LoopControllerError::ModelToolContextIdentifierInvalid { .. })
+    ));
+    assert!(sends.lock().expect("send capture lock").is_empty());
+}
+
+#[test]
+fn resolved_model_loop_rejects_request_lineage_before_provider_call() {
+    let directory = TestDirectory::new();
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+
+    let error = controller
+        .run_resolved_model_loop(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "wrong-goal".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-lineage-mismatch".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            1,
+        )
+        .expect_err("lineage mismatch must fail before provider call");
+
+    assert!(matches!(
+        error,
+        LoopControllerError::ModelAdapter(
+            steerbox::model_adapter::ModelAdapterError::ResolvedBindingMismatch {
+                field: "goal_id"
+            }
+        )
+    ));
+    assert!(sends.lock().expect("send capture lock").is_empty());
+}
+
+#[test]
+fn resolved_model_loop_zero_iterations_fails_closed_before_provider_call() {
+    let directory = TestDirectory::new();
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+
+    assert!(matches!(
+        controller.run_resolved_model_loop(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-zero-iterations".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            0,
+        ),
+        Err(LoopControllerError::BudgetExhausted(BudgetKind::Steps))
     ));
     assert!(sends.lock().expect("send capture lock").is_empty());
 }

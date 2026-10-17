@@ -118,6 +118,8 @@ pub enum LoopControllerError {
     ModelToolContextRedaction(#[from] RedactionError),
     #[error("model tool context exceeds configured limit of {limit} bytes")]
     ModelToolContextTooLarge { limit: usize },
+    #[error("model tool context identifier is invalid: {field}")]
+    ModelToolContextIdentifierInvalid { field: &'static str },
     #[error("resolved prompt derivation failed: {0}")]
     PromptResolution(#[from] PromptResolutionError),
 }
@@ -166,8 +168,23 @@ pub struct ReadOnlyLoopController {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelActionExecution {
     pub action_id: String,
+    pub tool_id: String,
     pub action_output: ToolCallOutput,
     pub verification_output: ToolCallOutput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModelLoopOutcome {
+    pub decision: ModelDecision,
+    pub iterations: u32,
+    pub last_step_id: String,
+    pub last_prompt_pack_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedStepOutcome {
+    decision: ModelDecision,
+    action_execution: Option<ModelActionExecution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1008,6 +1025,7 @@ impl ReadOnlyLoopController {
         step_id: impl Into<String>,
     ) -> Result<ModelDecision, LoopControllerError> {
         self.run_resolved_model_step_internal(adapter, request, pack, route, step_id, None, true)
+            .map(|outcome| outcome.decision)
     }
 
     /// Run a resolved route with a bounded, sequential provider fallback.
@@ -1030,15 +1048,17 @@ impl ReadOnlyLoopController {
         let primary = resolve_candidate(route, &primary_model)?;
         validate_resolved_candidate(&primary, route, &primary_model)?;
         self.bind_current_attempt_route(&primary.route)?;
-        let mut result = self.run_resolved_model_step_internal(
-            primary.adapter.as_ref(),
-            primary.request,
-            &primary.pack,
-            &primary.route,
-            step_id.clone(),
-            None,
-            true,
-        );
+        let mut result = self
+            .run_resolved_model_step_internal(
+                primary.adapter.as_ref(),
+                primary.request,
+                &primary.pack,
+                &primary.route,
+                step_id.clone(),
+                None,
+                true,
+            )
+            .map(|outcome| outcome.decision);
         attempted_models.push(primary_model);
 
         loop {
@@ -1103,15 +1123,17 @@ impl ReadOnlyLoopController {
             )?;
             attempted_models.push(fallback_model);
             current_route = candidate.route.clone();
-            result = self.run_resolved_model_step_internal(
-                candidate.adapter.as_ref(),
-                candidate.request,
-                &candidate.pack,
-                &candidate.route,
-                fallback_step_id,
-                None,
-                false,
-            );
+            result = self
+                .run_resolved_model_step_internal(
+                    candidate.adapter.as_ref(),
+                    candidate.request,
+                    &candidate.pack,
+                    &candidate.route,
+                    fallback_step_id,
+                    None,
+                    false,
+                )
+                .map(|outcome| outcome.decision);
         }
     }
 
@@ -1133,6 +1155,7 @@ impl ReadOnlyLoopController {
             Some(ResolvedModelActionRuntime::ReadOnly(runtime)),
             true,
         )
+        .map(|outcome| outcome.decision)
     }
 
     /// Continue a resolved-provider run from already verified local tool
@@ -1153,9 +1176,12 @@ impl ReadOnlyLoopController {
         verification_output: &ToolCallOutput,
         step_id: impl Into<String>,
     ) -> Result<ModelDecision, LoopControllerError> {
+        validate_resolved_request_binding(&prior_request, prior_pack, &self.goal, &self.loop_run)?;
+        let action_id = validate_model_context_identifier(action_id, "action_id")?;
+        let tool_id = validate_model_context_identifier(tool_id, "tool_id")?;
         let observation = build_model_tool_observation(
-            Some(action_id),
-            Some(tool_id),
+            Some(&action_id),
+            Some(&tool_id),
             action_output,
             Some(verification_output),
         )?;
@@ -1179,6 +1205,92 @@ impl ReadOnlyLoopController {
         )
     }
 
+    /// Run a bounded read-only resolved-provider loop. A subsequent provider
+    /// call is made only when the previous model call returned a validated
+    /// action that completed with verification output. Continue-without-action
+    /// returns to the caller instead of spinning without new evidence.
+    pub fn run_resolved_model_loop<A: ResolvedModelAdapter + ?Sized>(
+        &mut self,
+        adapter: &A,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+        route: &RouteDecision,
+        runtime: &ModelActionRuntime<'_>,
+        max_iterations: u32,
+    ) -> Result<ResolvedModelLoopOutcome, LoopControllerError> {
+        if max_iterations == 0 {
+            return Err(LoopControllerError::BudgetExhausted(BudgetKind::Steps));
+        }
+        validate_resolved_request_binding(&request, pack, &self.goal, &self.loop_run)?;
+        let base_step_id = request.step_id.clone();
+        let mut current_request = request;
+        let mut current_pack = pack.clone();
+
+        for iteration in 0..max_iterations {
+            let step_id = if iteration == 0 {
+                base_step_id.clone()
+            } else {
+                format!("{base_step_id}:loop:{}", iteration + 1)
+            };
+            let outcome = self.run_resolved_model_step_internal(
+                adapter,
+                current_request.clone(),
+                &current_pack,
+                route,
+                step_id.clone(),
+                Some(ResolvedModelActionRuntime::ReadOnly(runtime)),
+                true,
+            )?;
+            match (outcome.decision, outcome.action_execution) {
+                (decision @ ModelDecision::CompleteLoop, _)
+                | (decision @ ModelDecision::RequestHuman, _) => {
+                    return Ok(ResolvedModelLoopOutcome {
+                        decision,
+                        iterations: iteration + 1,
+                        last_step_id: step_id,
+                        last_prompt_pack_id: current_pack.metadata().prompt_pack_id.clone(),
+                    });
+                }
+                (ModelDecision::ContinueObservation, None) => {
+                    return Ok(ResolvedModelLoopOutcome {
+                        decision: ModelDecision::ContinueObservation,
+                        iterations: iteration + 1,
+                        last_step_id: step_id,
+                        last_prompt_pack_id: current_pack.metadata().prompt_pack_id.clone(),
+                    });
+                }
+                (ModelDecision::ContinueObservation, Some(execution)) => {
+                    let action_id =
+                        validate_model_context_identifier(&execution.action_id, "action_id")?;
+                    let tool_id = validate_model_context_identifier(&execution.tool_id, "tool_id")?;
+                    let observation = build_model_tool_observation(
+                        Some(&action_id),
+                        Some(&tool_id),
+                        &execution.action_output,
+                        Some(&execution.verification_output),
+                    )?;
+                    let next_pack = current_pack.next_step(observation.clone())?;
+                    current_request = ModelRequest {
+                        model_id: next_pack.model_id().into(),
+                        goal_id: self.goal.goal_id.clone(),
+                        loop_run_id: self.loop_run.loop_run_id.clone(),
+                        step_id: format!("{base_step_id}:loop:{}", iteration + 2),
+                        objective: next_pack.objective().into(),
+                        observation: next_pack.observation().into(),
+                    };
+                    current_pack = next_pack;
+                }
+            }
+        }
+
+        self.append_model_event(
+            "resolved_loop_budget_exhausted",
+            &format!("{}:resolved_loop_budget", self.loop_run.loop_run_id),
+            json!({"max_iterations": max_iterations}),
+        )?;
+        Err(LoopControllerError::BudgetExhausted(BudgetKind::Steps))
+    }
+
     pub fn run_resolved_model_step_with_workspace_edit<A: ResolvedModelAdapter + ?Sized>(
         &mut self,
         adapter: &A,
@@ -1197,6 +1309,7 @@ impl ReadOnlyLoopController {
             Some(ResolvedModelActionRuntime::WorkspaceEdit(runtime)),
             true,
         )
+        .map(|outcome| outcome.decision)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1209,7 +1322,7 @@ impl ReadOnlyLoopController {
         step_id: impl Into<String>,
         action_runtime: Option<ResolvedModelActionRuntime<'_>>,
         check_no_progress: bool,
-    ) -> Result<ModelDecision, LoopControllerError> {
+    ) -> Result<ResolvedStepOutcome, LoopControllerError> {
         let store = self
             .model_call_store
             .clone()
@@ -1439,13 +1552,14 @@ impl ReadOnlyLoopController {
             }
         };
         let mut action_failure = None;
+        let mut action_execution = None;
         let mut tool_call_count = 0;
         let mut verification_status = "not_run".to_owned();
         let mut error_class = None;
         if let Some(action) = resolved.response.action.as_ref() {
             let mut workspace_verification_passed = false;
             let failure = match action_runtime {
-                Some(ResolvedModelActionRuntime::ReadOnly(runtime)) => self
+                Some(ResolvedModelActionRuntime::ReadOnly(runtime)) => match self
                     .execute_model_action_with_audit(
                         runtime.registry,
                         runtime.gate,
@@ -1453,8 +1567,13 @@ impl ReadOnlyLoopController {
                         runtime.workspace,
                         action,
                         step_id.clone(),
-                    )
-                    .err(),
+                    ) {
+                    Ok(execution) => {
+                        action_execution = Some(execution);
+                        None
+                    }
+                    Err(failure) => Some(failure),
+                },
                 Some(ResolvedModelActionRuntime::WorkspaceEdit(runtime)) => {
                     let mut progress = WorkspaceActionProgress::default();
                     let result = self.execute_workspace_edit_action_recorded(
@@ -1663,7 +1782,10 @@ impl ReadOnlyLoopController {
         if decision == ModelDecision::CompleteLoop {
             self.complete()?;
         }
-        Ok(decision)
+        Ok(ResolvedStepOutcome {
+            decision,
+            action_execution,
+        })
     }
 
     fn run_model_step_with_route<A: ModelAdapter + ?Sized>(
@@ -2844,6 +2966,7 @@ impl ReadOnlyLoopController {
         }
         Ok(ModelActionExecution {
             action_id: action.action_id.clone(),
+            tool_id: action.tool_id.clone(),
             action_output,
             verification_output,
         })
@@ -3356,6 +3479,36 @@ fn validate_resolved_candidate(
     Ok(())
 }
 
+fn validate_resolved_request_binding(
+    request: &ModelRequest,
+    pack: &ResolvedPromptPack,
+    goal: &GoalContract,
+    loop_run: &LoopRun,
+) -> Result<(), LoopControllerError> {
+    for (actual, expected, field) in [
+        (request.model_id.as_str(), pack.model_id(), "model_id"),
+        (request.objective.as_str(), pack.objective(), "objective"),
+        (
+            request.observation.as_str(),
+            pack.observation(),
+            "observation",
+        ),
+        (request.goal_id.as_str(), goal.goal_id.as_str(), "goal_id"),
+        (
+            request.loop_run_id.as_str(),
+            loop_run.loop_run_id.as_str(),
+            "loop_run_id",
+        ),
+    ] {
+        if actual != expected {
+            return Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::ResolvedBindingMismatch { field },
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn model_call_failure_metadata(error: &ModelAdapterError) -> (&'static str, &'static str) {
     match error {
         ModelAdapterError::Provider { class } => (
@@ -3540,9 +3693,11 @@ fn build_model_tool_observation(
     let mut observation = serde_json::Map::new();
     observation.insert("kind".into(), json!("tool_result"));
     if let Some(action_id) = action_id {
+        let action_id = validate_model_context_identifier(action_id, "action_id")?;
         observation.insert("action_id".into(), json!(action_id));
     }
     if let Some(tool_id) = tool_id {
+        let tool_id = validate_model_context_identifier(tool_id, "tool_id")?;
         observation.insert("tool_id".into(), json!(tool_id));
     }
     observation.insert(
@@ -3568,6 +3723,21 @@ fn build_model_tool_observation(
         });
     }
     Ok(observation)
+}
+
+fn validate_model_context_identifier(
+    value: &str,
+    field: &'static str,
+) -> Result<String, LoopControllerError> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(LoopControllerError::ModelToolContextIdentifierInvalid { field });
+    }
+    Ok(value.to_owned())
 }
 
 #[allow(clippy::too_many_arguments)]
