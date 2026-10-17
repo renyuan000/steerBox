@@ -8,7 +8,8 @@ use std::time::Duration;
 use steerbox::domain::{BudgetKind, GoalContract, HumanSteeringMode, LoopBudget};
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{
-    LoopControllerError, ModelActionRuntime, ReadOnlyLoopController, WorkspaceEditActionRuntime,
+    LoopControllerError, ModelActionRuntime, ReadOnlyLoopController, ResolvedModelLoopStopReason,
+    WorkspaceEditActionRuntime,
 };
 use steerbox::model_adapter::ModelRequest;
 use steerbox::model_call_store::ModelCallStore;
@@ -498,6 +499,10 @@ fn resolved_model_loop_runs_only_after_verified_action_and_stops_on_completion()
         outcome.decision,
         steerbox::model_adapter::ModelDecision::CompleteLoop
     );
+    assert_eq!(
+        outcome.stop_reason,
+        ResolvedModelLoopStopReason::CompleteLoop
+    );
     assert_eq!(outcome.iterations, 2);
     assert_eq!(sends.lock().expect("sequence send capture lock").len(), 2);
     let records = ModelCallStore::open(directory.model_calls())
@@ -509,6 +514,202 @@ fn resolved_model_loop_runs_only_after_verified_action_and_stops_on_completion()
         records[0].resolved_prompt_pack_id,
         records[1].resolved_prompt_pack_id
     );
+    let events = EventLog::open(directory.events())
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    let stopped = events
+        .iter()
+        .find(|event| event.event_type == "resolved_loop_stopped")
+        .expect("resolved loop stop event exists");
+    assert_eq!(stopped.payload["reason"], "complete_loop");
+}
+
+#[test]
+fn resolved_model_loop_reports_request_human_stop_without_spinning() {
+    let directory = TestDirectory::new();
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::with_decision_content(
+        json!({"decision":"request_human","summary":"fixture needs review"}).to_string(),
+    );
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+    let outcome = controller
+        .run_resolved_model_loop(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-request-human".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            3,
+        )
+        .expect("request human is a normal bounded stop");
+
+    assert_eq!(
+        outcome.stop_reason,
+        ResolvedModelLoopStopReason::RequestHuman
+    );
+    assert_eq!(sends.lock().expect("send capture lock").len(), 1);
+    let events = EventLog::open(directory.events())
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events.iter().any(|event| {
+        event.event_type == "resolved_loop_stopped" && event.payload["reason"] == "request_human"
+    }));
+}
+
+#[test]
+fn resolved_model_loop_reports_no_action_stop_without_spinning() {
+    let directory = TestDirectory::new();
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::with_decision_content(
+        json!({"decision":"continue_observation","summary":"fixture awaits evidence"}).to_string(),
+    );
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+    let outcome = controller
+        .run_resolved_model_loop(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-no-action".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            3,
+        )
+        .expect("no action is a normal bounded stop");
+
+    assert_eq!(
+        outcome.stop_reason,
+        ResolvedModelLoopStopReason::ContinueObservationWithoutAction
+    );
+    assert_eq!(sends.lock().expect("send capture lock").len(), 1);
+    let events = EventLog::open(directory.events())
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events.iter().any(|event| {
+        event.event_type == "resolved_loop_stopped"
+            && event.payload["reason"] == "continue_observation_without_action"
+    }));
+}
+
+#[test]
+fn resolved_model_loop_records_budget_stop_before_returning_error() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let action = json!({
+        "schema_version": 1,
+        "action_id": "action-budget-stop",
+        "tool_id": "git_status",
+        "parameters": {"scope": "workspace"},
+        "path_scope": {
+            "root": workspace.display().to_string(),
+            "allowed_paths": ["README.md"]
+        },
+        "verification": {
+            "verifier_tool_id": "markdown_link_check",
+            "parameters": {"path": "README.md"}
+        }
+    });
+    let transport = SequenceTransport::new(vec![openai_response(
+        json!({
+            "decision": "continue_observation",
+            "summary": "fixture action observed",
+            "action": action
+        })
+        .to_string(),
+    )]);
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_budget(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+        LoopBudget::new(2, 4, 2, 1, 0, 3, 2, 1),
+    )
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+    assert!(matches!(
+        controller.run_resolved_model_loop(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-budget-stop".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            1,
+        ),
+        Err(LoopControllerError::BudgetExhausted(BudgetKind::Steps))
+    ));
+    assert_eq!(sends.lock().expect("send capture lock").len(), 1);
+    let events = EventLog::open(directory.events())
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events.iter().any(|event| {
+        event.event_type == "resolved_loop_stopped"
+            && event.payload["reason"] == "budget_exhausted"
+            && event.payload["iterations"] == 1
+    }));
 }
 
 #[test]

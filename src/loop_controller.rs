@@ -179,6 +179,14 @@ pub struct ResolvedModelLoopOutcome {
     pub iterations: u32,
     pub last_step_id: String,
     pub last_prompt_pack_id: String,
+    pub stop_reason: ResolvedModelLoopStopReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedModelLoopStopReason {
+    CompleteLoop,
+    RequestHuman,
+    ContinueObservationWithoutAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1244,19 +1252,39 @@ impl ReadOnlyLoopController {
             match (outcome.decision, outcome.action_execution) {
                 (decision @ ModelDecision::CompleteLoop, _)
                 | (decision @ ModelDecision::RequestHuman, _) => {
+                    let stop_reason = if decision == ModelDecision::CompleteLoop {
+                        ResolvedModelLoopStopReason::CompleteLoop
+                    } else {
+                        ResolvedModelLoopStopReason::RequestHuman
+                    };
+                    self.append_resolved_loop_stopped(
+                        &step_id,
+                        &current_pack,
+                        iteration + 1,
+                        stop_reason,
+                    )?;
                     return Ok(ResolvedModelLoopOutcome {
                         decision,
                         iterations: iteration + 1,
                         last_step_id: step_id,
                         last_prompt_pack_id: current_pack.metadata().prompt_pack_id.clone(),
+                        stop_reason,
                     });
                 }
                 (ModelDecision::ContinueObservation, None) => {
+                    let stop_reason = ResolvedModelLoopStopReason::ContinueObservationWithoutAction;
+                    self.append_resolved_loop_stopped(
+                        &step_id,
+                        &current_pack,
+                        iteration + 1,
+                        stop_reason,
+                    )?;
                     return Ok(ResolvedModelLoopOutcome {
                         decision: ModelDecision::ContinueObservation,
                         iterations: iteration + 1,
                         last_step_id: step_id,
                         last_prompt_pack_id: current_pack.metadata().prompt_pack_id.clone(),
+                        stop_reason,
                     });
                 }
                 (ModelDecision::ContinueObservation, Some(execution)) => {
@@ -1288,7 +1316,37 @@ impl ReadOnlyLoopController {
             &format!("{}:resolved_loop_budget", self.loop_run.loop_run_id),
             json!({"max_iterations": max_iterations}),
         )?;
+        self.append_model_event(
+            "resolved_loop_stopped",
+            &format!("{}:resolved_loop_stopped", self.loop_run.loop_run_id),
+            json!({
+                "reason": "budget_exhausted",
+                "iterations": max_iterations,
+                "last_step_id": format!("{base_step_id}:loop:{max_iterations}"),
+                "last_prompt_pack_id": current_pack.metadata().prompt_pack_id,
+            }),
+        )?;
         Err(LoopControllerError::BudgetExhausted(BudgetKind::Steps))
+    }
+
+    fn append_resolved_loop_stopped(
+        &mut self,
+        step_id: &str,
+        pack: &ResolvedPromptPack,
+        iterations: u32,
+        reason: ResolvedModelLoopStopReason,
+    ) -> Result<(), LoopControllerError> {
+        self.append_model_event(
+            "resolved_loop_stopped",
+            &format!("{step_id}:resolved_loop_stopped"),
+            json!({
+                "reason": reason.as_str(),
+                "iterations": iterations,
+                "last_step_id": step_id,
+                "last_prompt_pack_id": pack.metadata().prompt_pack_id,
+            }),
+        )
+        .map(|_| ())
     }
 
     pub fn run_resolved_model_step_with_workspace_edit<A: ResolvedModelAdapter + ?Sized>(
@@ -3507,6 +3565,16 @@ fn validate_resolved_request_binding(
         }
     }
     Ok(())
+}
+
+impl ResolvedModelLoopStopReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CompleteLoop => "complete_loop",
+            Self::RequestHuman => "request_human",
+            Self::ContinueObservationWithoutAction => "continue_observation_without_action",
+        }
+    }
 }
 
 fn model_call_failure_metadata(error: &ModelAdapterError) -> (&'static str, &'static str) {
