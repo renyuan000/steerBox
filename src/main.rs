@@ -77,10 +77,36 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
         }
         (Some("event"), Some("list")) => {
             let path = args.next().ok_or("missing config path")?;
+            let offset = args
+                .next()
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .map_err(|error| format!("invalid offset: {error}"))
+                })
+                .transpose()?;
+            let limit = args
+                .next()
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .map_err(|error| format!("invalid limit: {error}"))
+                })
+                .transpose()?;
+            if offset.is_some() != limit.is_some() {
+                return Err("event list requires both offset and limit".into());
+            }
             let config = RuntimeConfig::load(path)?;
             let log = EventLog::open(config.events_path())?;
-            let events = log.read_all()?;
-            println!("events={}", events.len());
+            let (events, header) = match (offset, limit) {
+                (Some(offset), Some(limit)) => (
+                    log.read_page(offset, limit)?,
+                    format!("offset={offset} limit={limit} "),
+                ),
+                (None, None) => (log.read_all()?, String::new()),
+                _ => unreachable!("offset and limit are checked together"),
+            };
+            println!("{header}events={}", events.len());
             for event in events {
                 println!(
                     "sequence={} type={} aggregate={}:{}",
@@ -726,7 +752,7 @@ fn print_usage() {
     eprintln!("  steerbox runtime init <project_ref>");
     eprintln!("  steerbox config validate <config.json>");
     eprintln!("  steerbox tool list");
-    eprintln!("  steerbox event list <config.json>");
+    eprintln!("  steerbox event list <config.json> [offset limit]");
     eprintln!("  steerbox event append <config.json> <event_type> <aggregate_type> <aggregate_id> <event_id> <correlation_id> [payload_json]");
     eprintln!("  steerbox execution list <config.json>");
     eprintln!("  steerbox execution show <config.json> <loop_run_id>");

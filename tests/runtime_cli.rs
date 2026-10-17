@@ -152,6 +152,65 @@ fn command_cli_rejects_unknown_command_fields() {
 }
 
 #[test]
+fn event_list_cli_reads_a_bounded_page() {
+    let project_ref = project_ref();
+    let config = RuntimeConfig::default_for_project(project_ref.clone()).expect("config builds");
+    let _ = fs::remove_dir_all(&config.data_root);
+    let binary = env!("CARGO_BIN_EXE_steerbox");
+
+    let init = Command::new(binary)
+        .args(["runtime", "init", &project_ref])
+        .output()
+        .expect("runtime init starts");
+    assert!(init.status.success());
+
+    for (index, event_type) in ["first", "second", "third"].iter().enumerate() {
+        let append = Command::new(binary)
+            .args([
+                "event",
+                "append",
+                &config.config_path().display().to_string(),
+                event_type,
+                "task",
+                "task-cli",
+                &format!("event-cli-{index}"),
+                &format!("corr-cli-{index}"),
+                "{}",
+            ])
+            .output()
+            .expect("event append starts");
+        assert!(
+            append.status.success(),
+            "append stderr: {}",
+            String::from_utf8_lossy(&append.stderr)
+        );
+    }
+
+    let page = Command::new(binary)
+        .args([
+            "event",
+            "list",
+            &config.config_path().display().to_string(),
+            "1",
+            "1",
+        ])
+        .output()
+        .expect("event page starts");
+    assert!(
+        page.status.success(),
+        "page stderr: {}",
+        String::from_utf8_lossy(&page.stderr)
+    );
+    let page_text = String::from_utf8_lossy(&page.stdout);
+    assert!(page_text.contains("offset=1 limit=1 events=1"));
+    assert!(page_text.contains("type=second"));
+    assert!(!page_text.contains("type=first"));
+    assert!(!page_text.contains("type=third"));
+
+    let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
+}
+
+#[test]
 fn readonly_cli_reopens_event_state_and_trace_artifacts() {
     let project_ref = project_ref();
     let config = RuntimeConfig::default_for_project(project_ref.clone()).expect("config builds");

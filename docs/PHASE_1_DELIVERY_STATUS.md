@@ -177,4 +177,6 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 2026-10-17 受控命令 recipe 增量由 master 验收：新增 baseline `git_diff`，仅接受 `{"scope":"workspace"}`，固定执行 `git diff --no-ext-diff --no-color --`，不接受 shell 字符串或额外 argv；沿用 workspace 校验、5 秒超时和 16 KiB stdout/stderr 上限。`tool_executor` focused 14 项、`tool_policy` 2 项、`tool_capability_display` 12 项通过；`cargo test --locked --offline --all-targets --quiet`、`cargo clippy --locked --offline --all-targets -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check` 均通过。该切片扩大的是受控只读 recipe，不是任意 Bash、文件写入、live provider 或完整 coding loop。
 
-2026-10-17 模型交接脱敏边界增量：`ToolCallOutput::redacted_for_model()` 对 summary 与结构化 result 使用本地 `Redactor` 生成副本；超限或脱敏错误直接返回错误，不静默转发原始结果。`tool_executor` focused 15 项通过，覆盖正常敏感字段脱敏与超限 fail-closed。该 API 尚未替代未来多步 loop 的强制接线，也不宣称完成全链路 DLP 或 live provider 验收。
+2026-10-17 模型交接脱敏边界增量：`ToolCallOutput::redacted_for_model()` 对 summary 与结构化 result 使用本地 `Redactor` 生成副本；超限或脱敏错误直接返回错误，不静默转发原始结果。`tool_executor` focused 16 项通过，覆盖正常敏感字段脱敏与超限 fail-closed。该 API 尚未替代未来多步 loop 的强制接线，也不宣称完成全链路 DLP 或 live provider 验收。
+
+2026-10-18 event history 分页增量：`event list <config.json> [offset limit]` 在提供分页参数时使用 `EventLog::read_page`，只加载请求页；不提供参数仍保留兼容的全量读取。`runtime_cli` 14 项、`cargo test --locked --offline --all-targets --quiet` 和 `cargo clippy --locked --offline --all-targets -- -D warnings` 均通过。该分页是 detached history 查询，不是 live cursor、后台 worker 或跨进程恢复。
