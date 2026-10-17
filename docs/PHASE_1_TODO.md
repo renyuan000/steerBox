@@ -226,7 +226,7 @@ Memory 最小实现：
 - [x] ToolUseErrorEvent 能关联原始 tool call、failure category 和 LessonCandidate（通过 `tool_call_failed` 事件 payload；candidate 的 source_event_ids 精确引用实际持久化失败事件，已有回归；recipe candidate 仍待实现）
 
 - [ ] 写入 shell safe quoting recipe
-- [ ] 写入 `rg -F` recipe
+- [x] 写入 `rg -F` recipe（`rg_fixed` 固定字符串、固定 argv、workspace scope 与 bounded 输出）
 - [x] 写入 git status / diff read-only recipe（固定 executable/argv、workspace scope、bounded 输出与超时）
 - [x] 写入 Markdown link check recipe
 - [x] 写入 file write verification recipe（固定 workspace path + `sha256:` hash，bounded 读取，只返回验证元数据；不开放任意文件写入）
