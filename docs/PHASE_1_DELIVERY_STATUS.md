@@ -180,3 +180,5 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 2026-10-17 模型交接脱敏边界增量：`ToolCallOutput::redacted_for_model()` 对 summary 与结构化 result 使用本地 `Redactor` 生成副本；超限或脱敏错误直接返回错误，不静默转发原始结果。`tool_executor` focused 16 项通过，覆盖正常敏感字段脱敏与超限 fail-closed。该 API 尚未替代未来多步 loop 的强制接线，也不宣称完成全链路 DLP 或 live provider 验收。
 
 2026-10-18 event history 分页增量：`event list <config.json> [offset limit]` 在提供分页参数时使用 `EventLog::read_page`，只加载请求页；不提供参数仍保留兼容的全量读取。`runtime_cli` 14 项、`cargo test --locked --offline --all-targets --quiet` 和 `cargo clippy --locked --offline --all-targets -- -D warnings` 均通过。该分页是 detached history 查询，不是 live cursor、后台 worker 或跨进程恢复。
+
+2026-10-18 file-write verification recipe 增量：baseline 新增只读 `file_write_verification`，只接受 workspace 内 `path` 与 `sha256:<64 hex>`，最多读取 2 MiB 计算 SHA-256，返回 expected/actual hash 与 `verified`，不返回文件正文；模型 action 映射、非法 hash、越界路径和不泄露正文均有回归。`tool_executor` 18 项、`tool_policy` 12 项、`tool_capability_display` 12 项通过；全量 all-targets、clippy、fmt 和 diff 检查通过。该 recipe 仅验证已有受控写入结果，不扩展为通用 file write、Bash 或 live provider。

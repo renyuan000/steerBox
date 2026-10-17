@@ -229,7 +229,7 @@ Memory 最小实现：
 - [ ] 写入 `rg -F` recipe
 - [x] 写入 git status / diff read-only recipe（固定 executable/argv、workspace scope、bounded 输出与超时）
 - [x] 写入 Markdown link check recipe
-- [ ] 写入 file write verification recipe
+- [x] 写入 file write verification recipe（固定 workspace path + `sha256:` hash，bounded 读取，只返回验证元数据；不开放任意文件写入）
 
 验收：
 

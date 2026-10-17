@@ -54,6 +54,7 @@ fn baseline_registry_exposes_read_only_recipes() {
     for (tool_id, recipe_ref) in [
         ("git_status", "git-status-readonly"),
         ("git_diff", "git-diff-readonly"),
+        ("file_write_verification", "file-write-verification"),
         ("rg_fixed", "rg-fixed-search"),
         ("markdown_link_check", "markdown-link-check"),
     ] {

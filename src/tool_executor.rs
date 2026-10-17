@@ -5,6 +5,7 @@ use crate::tool_registry::{SideEffectClass, ToolRegistry};
 use crate::workspace_edit::{edit_markdown, EditResult, WorkspaceEditError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -15,6 +16,7 @@ use thiserror::Error;
 
 const MAX_OUTPUT_BYTES: usize = 16 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_VERIFICATION_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolCallInput {
@@ -48,6 +50,10 @@ impl ToolCallOutput {
 pub enum StructuredToolAction {
     GitStatus,
     GitDiff,
+    FileWriteVerification {
+        path: String,
+        expected_sha256: String,
+    },
     ReadFile {
         path: String,
     },
@@ -148,6 +154,16 @@ impl ReadOnlyToolExecutor {
                 }
                 Ok(StructuredToolAction::GitDiff)
             }
+            Some("file-write-verification") => {
+                require_exact_keys(&action.parameters, &["expected_sha256", "path"])?;
+                let path = required_string(&action.parameters, "path")?;
+                let expected_sha256 = required_string(&action.parameters, "expected_sha256")?;
+                validate_sha256(&expected_sha256)?;
+                Ok(StructuredToolAction::FileWriteVerification {
+                    path,
+                    expected_sha256,
+                })
+            }
             Some("rg-fixed-search") => {
                 require_exact_keys(&action.parameters, &["path", "query"])?;
                 let path = required_string(&action.parameters, "path")?;
@@ -235,6 +251,30 @@ impl ReadOnlyToolExecutor {
                     "stdout_truncated": output.stdout.truncated,
                     "stderr": output.stderr.text,
                     "stderr_truncated": output.stderr.truncated,
+                }),
+            });
+        }
+        if profile.recipe_ref.as_deref() == Some("file-write-verification") {
+            require_exact_keys(&input.arguments, &["expected_sha256", "path"])?;
+            let relative_path = required_string(&input.arguments, "path")?;
+            let expected_sha256 = required_string(&input.arguments, "expected_sha256")?;
+            validate_sha256(&expected_sha256)?;
+            let path = resolve_workspace_path(workspace, &relative_path)?;
+            let actual_sha256 = hash_bounded_file(&path)?;
+            let verified = actual_sha256 == expected_sha256;
+            return Ok(ToolCallOutput {
+                summary: format!(
+                    "verified {relative_path}: {}",
+                    if verified { "matched" } else { "mismatched" }
+                ),
+                result: serde_json::json!({
+                    "tool_id": input.tool_id,
+                    "workspace": workspace,
+                    "path": relative_path,
+                    "expected_sha256": expected_sha256,
+                    "actual_sha256": actual_sha256,
+                    "verified": verified,
+                    "executed": true,
                 }),
             });
         }
@@ -438,6 +478,28 @@ fn required_string(value: &Value, key: &'static str) -> Result<String, ToolExecu
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
         .ok_or(ToolExecutionError::InvalidArguments)
+}
+
+fn validate_sha256(value: &str) -> Result<(), ToolExecutionError> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(ToolExecutionError::InvalidArguments);
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ToolExecutionError::InvalidArguments);
+    }
+    Ok(())
+}
+
+fn hash_bounded_file(path: &Path) -> Result<String, ToolExecutionError> {
+    let file = fs::File::open(path).map_err(|_| ToolExecutionError::OutputCollectionFailed)?;
+    let mut bytes = Vec::new();
+    file.take((MAX_VERIFICATION_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ToolExecutionError::OutputCollectionFailed)?;
+    if bytes.len() > MAX_VERIFICATION_BYTES {
+        return Err(ToolExecutionError::OutputCollectionFailed);
+    }
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
 }
 
 fn required_string_allow_empty(

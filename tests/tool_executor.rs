@@ -1,4 +1,5 @@
 use serde_json::json;
+use sha2::Digest;
 use steerbox::domain::{HumanSteeringMode, RiskLevel};
 use steerbox::model_contracts::{ActionPathScope, ModelActionEnvelope, VerificationContract};
 use steerbox::tool_executor::{
@@ -267,6 +268,56 @@ fn tool_output_redaction_fails_closed_on_oversized_model_handoff() {
 }
 
 #[test]
+fn file_write_verification_compares_bounded_sha256_without_returning_content() {
+    let workspace = tempfile::tempdir().expect("workspace creates");
+    let file = workspace.path().join("README.md");
+    std::fs::write(&file, "verified content\n").expect("file writes");
+    let expected = format!("sha256:{:x}", sha2::Sha256::digest(b"verified content\n"));
+    let output = ReadOnlyToolExecutor
+        .execute(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            workspace.path(),
+            ToolCallInput {
+                tool_id: "file_write_verification".into(),
+                arguments: json!({"path": "README.md", "expected_sha256": expected}),
+            },
+        )
+        .expect("verification executes");
+    assert_eq!(output.result["tool_id"], "file_write_verification");
+    assert_eq!(output.result["verified"], true);
+    assert!(output.result.get("content").is_none());
+}
+
+#[test]
+fn file_write_verification_rejects_invalid_hash_and_outside_path() {
+    let workspace = tempfile::tempdir().expect("workspace creates");
+    std::fs::write(workspace.path().join("README.md"), "content\n").expect("file writes");
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let invalid = ReadOnlyToolExecutor.execute(
+        &registry,
+        workspace.path(),
+        ToolCallInput {
+            tool_id: "file_write_verification".into(),
+            arguments: json!({"path": "README.md", "expected_sha256": "not-a-hash"}),
+        },
+    );
+    assert_eq!(invalid.unwrap_err(), ToolExecutionError::InvalidArguments);
+
+    let outside = ReadOnlyToolExecutor.execute(
+        &registry,
+        workspace.path(),
+        ToolCallInput {
+            tool_id: "file_write_verification".into(),
+            arguments: json!({"path": "../README.md", "expected_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}),
+        },
+    );
+    assert!(matches!(
+        outside,
+        Err(ToolExecutionError::OutsideWorkspace(_))
+    ));
+}
+
+#[test]
 fn structured_action_maps_fixed_rg_and_markdown_link_check() {
     let workspace = std::env::current_dir().expect("current directory exists");
     let registry = ToolRegistry::baseline().expect("baseline tools register");
@@ -308,6 +359,19 @@ fn structured_action_maps_fixed_rg_and_markdown_link_check() {
             path: "README.md".into(),
         }
     );
+
+    let verification = action(
+        "file_write_verification",
+        json!({
+            "path": "README.md",
+            "expected_sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }),
+        "README.md",
+    );
+    assert!(matches!(
+        ReadOnlyToolExecutor.map_action(&registry, &workspace, &verification),
+        Ok(StructuredToolAction::FileWriteVerification { .. })
+    ));
 }
 
 #[test]

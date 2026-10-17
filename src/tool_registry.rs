@@ -203,6 +203,12 @@ impl ToolRegistry {
                 "git-diff-readonly",
             ),
             readonly_profile(
+                "file_write_verification",
+                "file write verification",
+                "compare a bounded workspace file SHA-256 without returning file content",
+                "file-write-verification",
+            ),
+            readonly_profile(
                 "rg_fixed",
                 "fixed-string search",
                 "search repository text with fixed-string semantics",
@@ -237,6 +243,7 @@ fn capability_metadata(tool_id: &str) -> (&'static str, &'static str) {
     match tool_id {
         "git_status" => ("极低/按需", "查看仓库状态"),
         "git_diff" => ("极低/按需", "查看受限工作区变更"),
+        "file_write_verification" => ("极低/按需", "验证受控文件写入结果"),
         "rg_fixed" => ("极低/按需", "搜索受限工作区文本"),
         "read_file" => ("极低/按需", "读取受限工作区文件"),
         "edit_markdown" => ("极低/按需", "审批后修改 Markdown"),
