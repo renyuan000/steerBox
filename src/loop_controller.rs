@@ -1349,6 +1349,29 @@ impl ReadOnlyLoopController {
         .map(|_| ())
     }
 
+    fn append_workspace_recovery_required(
+        &mut self,
+        step_id: &str,
+        relative_path: &str,
+        side_effect_refs: &[String],
+    ) -> Result<(), LoopControllerError> {
+        let snapshot_id = side_effect_refs
+            .iter()
+            .find_map(|value| value.strip_prefix("snapshot:"));
+        self.append_model_event(
+            "workspace_recovery_required",
+            &format!("{step_id}:workspace_recovery_required"),
+            json!({
+                "recovery_action": "restore_required",
+                "side_effect_status": "uncertain",
+                "relative_path": relative_path,
+                "snapshot_id": snapshot_id,
+                "side_effect_refs": side_effect_refs,
+            }),
+        )
+        .map(|_| ())
+    }
+
     pub fn run_resolved_model_step_with_workspace_edit<A: ResolvedModelAdapter + ?Sized>(
         &mut self,
         adapter: &A,
@@ -2846,6 +2869,11 @@ impl ReadOnlyLoopController {
                         created_at: chrono::Utc::now().to_rfc3339(),
                     })?;
                 }
+                self.append_workspace_recovery_required(
+                    &step_id,
+                    relative_path,
+                    &checkpoint_side_effect_refs,
+                )?;
                 return Err(error);
             }
         };
@@ -2881,6 +2909,11 @@ impl ReadOnlyLoopController {
                     created_at: chrono::Utc::now().to_rfc3339(),
                 })?;
             }
+            self.append_workspace_recovery_required(
+                &step_id,
+                relative_path,
+                &checkpoint_side_effect_refs,
+            )?;
             return Err(LoopControllerError::WorkspaceToolExecution(
                 "workspace edit verification reported missing local links".into(),
             ));

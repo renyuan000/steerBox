@@ -230,6 +230,20 @@ fn verification_failure_records_restore_required_without_automatic_restore() {
         .events()
         .iter()
         .all(|event| event.event_type != "workspace_snapshot_restored"));
+    let events = fixture.events();
+    let recovery_event = events
+        .iter()
+        .find(|event| event.event_type == "workspace_recovery_required")
+        .expect("recovery required event exists");
+    assert_eq!(
+        recovery_event.payload["recovery_action"],
+        "restore_required"
+    );
+    assert_eq!(recovery_event.payload["side_effect_status"], "uncertain");
+    assert_eq!(recovery_event.payload["relative_path"], "README.md");
+    assert_eq!(recovery_event.payload["snapshot_id"], snapshot_id);
+    assert!(recovery_event.payload.get("before").is_none());
+    assert!(recovery_event.payload.get("after").is_none());
 }
 
 #[test]
