@@ -2,7 +2,7 @@
 
 ## 定位与证据边界
 
-状态核对日期：2026-10-15。`5a51851` 为本次 snapshot 实施基线；本批快照与共享 editor 改动验收见文末，提交状态以 Git 记录为准，不把旧全量结果覆盖到新代码。未跟踪的历史审核、参考资料与 benchmark 目录不计入交付。`202cec6` 已加入独立 `ModelCallFailureRecord`、failure JSONL 和 `MemoryStore::read_catalog`，`e754d07` 已加入 controller scoped memory retrieval，`5a51851` 已收紧 controller mutation 前审计门禁；本轮 provider runner 不属于此前历史验证基线，必须以本轮新增的 focused/full regression 证据核验；验证范围仍以实际执行证据为准，不因文件出现或 subagent 报告自动计入完整交付。
+状态核对日期：2026-10-17。`5a51851` 为本次 snapshot 实施基线；本批快照与共享 editor 改动验收见文末，提交状态以 Git 记录为准，不把旧全量结果覆盖到新代码。未跟踪的历史审核、参考资料与 benchmark 目录不计入交付。`202cec6` 已加入独立 `ModelCallFailureRecord`、failure JSONL 和 `MemoryStore::read_catalog`，`e754d07` 已加入 controller scoped memory retrieval，`5a51851` 已收紧 controller mutation 前审计门禁；`564db6d` 又加入了 resolved-provider local contract fallback 与显式 endpoint protocol；本轮 provider runner 不属于此前历史验证基线，必须以本轮新增的 focused/full regression 证据核验；验证范围仍以实际执行证据为准，不因文件出现或 subagent 报告自动计入完整交付。
 
 本文是剩余验收的归并视图，不替代 [PHASE_1_CONTRACTS.md](PHASE_1_CONTRACTS.md)、[PHASE_1_IMPLEMENTATION_SCOPE.md](PHASE_1_IMPLEMENTATION_SCOPE.md)、[PHASE_1_TODO.md](PHASE_1_TODO.md) 或 [PHASE_1_VALIDATION_PLAN.md](PHASE_1_VALIDATION_PLAN.md)。对象、身份、授权、事件及恢复语义以 Contracts 为准，范围以 Scope 为准，逐项状态和验收用例分别回查 TODO 与 Validation。
 
@@ -12,7 +12,7 @@
 
 controller `execute_workspace_edit_action()` 强制配置 `CheckpointStore` 与 `SideEffectLedger`，先应用生命周期/命令安全边界，再执行 policy 与 mutation 前审计。缺 store、待处理 pause/cancel、终态或 mutation 前审计写入错误均阻止修改，不增加低风险自主模式的审批请求。已有 started/completed/failed/verification_failed metadata 和 before/after hash；缺失 Markdown 链接不产生 verified 成功事件。bounded Markdown controller 现在支持通过 `with_snapshot_store(...)` opt in，在 mutation 前 capture，并由 trusted caller 显式调用 restore；默认路径仍不自动 capture，verification failure 不自动 rollback。snapshot 的显式文件恢复不等于 controller/任务/进程恢复，不确定副作用状态和真实模型 E2E 仍未完成。
 
-ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 deterministic `RouteExplanation`；routed fixture/model-adapter fallback 已有 child Attempt 和共享预算，这不等于 resolved-provider/live fallback、并行调用、代理/中转健康路由或 prompt cache。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 支持 action/progress、非法进度拒绝、逐事件 flush，并可把已验证 provider delta 序列转换为不暴露正文的 lifecycle 进度；command submit/show CLI 只返回 metadata 并把 command 持久化到 inbox。新增 `loop provider` bounded foreground 入口，但 standalone CLI 固定使用拒绝型 credential resolver，未配置可信 resolver 时 fail-closed，因此尚不构成可运行的真实模型开发任务入口，也不代表 live provider 已验收。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的修改／链接验证切片。当前不能作为任意 coding Agent 交付，也不能声明完整 Phase 1 已完成。
+ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 deterministic `RouteExplanation`；routed fixture/model-adapter fallback 与 resolved-provider local contract fallback 均已有 child Attempt 和共享预算，但当前只完成注入式/local transport contract，不等于真实 live-provider fallback、并行调用、代理/中转健康路由或 prompt cache。用户输入已有 bounded `RuntimeTick` 与 controller safe-boundary 接线；StreamReporter 支持 action/progress、非法进度拒绝、逐事件 flush，并可把已验证 provider delta 序列转换为不暴露正文的 lifecycle 进度；command submit/show CLI 只返回 metadata 并把 command 持久化到 inbox。新增 `loop provider` bounded foreground 入口，但 standalone CLI 固定使用拒绝型 credential resolver，未配置可信 resolver 时 fail-closed，因此尚不构成可运行的真实模型开发任务入口，也不代表 live provider 已验收。`dev markdown` 仍是调用者预先指定路径、原文、替换内容和审批标记的修改／链接验证切片。当前不能作为任意 coding Agent 交付，也不能声明完整 Phase 1 已完成。
 
 ## 六个交付包
 
@@ -21,7 +21,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 | 包 | 交付结果 | 验收层级 | 当前边界 |
 |---|---|---|---|
 | 1 | 真实网络 transport 与隔离 credential 配置 | 首个受限可用版本门槛 | non-stream OpenAI-compatible/Anthropic HTTP transport、注入式 credential resolver、secret-free provider profile binding、Anthropic profile binding、Anthropic library-only foreground runner 和 localhost 安全集成测试已通过；bounded Markdown runner 现在也有 OpenAI-compatible 与 Anthropic injected/fake transport 覆盖；standalone CLI 仍固定 fail-closed，live 凭据与 live 调用仍未交付 |
-| 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | opt-in resolved bridge、成功 ModelCallStore 和 adapter-error 的独立 failure JSONL 已接线；routed fixture/model-adapter fallback 已有 child Attempt/共享预算；live provider、resolved-provider fallback 和完整恢复绑定未交付 |
+| 2 | prompt 解析、后端绑定与实际调用审计 | 首个受限可用版本门槛 | opt-in resolved bridge、成功 ModelCallStore 和 adapter-error 的独立 failure JSONL 已接线；routed fixture/model-adapter fallback 以及 resolved-provider local contract fallback 已有 child Attempt、parent lineage、失败 JSONL 保留和共享预算；真实 live provider/fallback、provider resolver 的生产接入和完整恢复绑定仍未交付 |
 | 3 | 模型提出受控动作，经策略、执行、验证返回模型 | 首个受限可用版本门槛 | 只读动作已连成 `ModelActionEnvelope → PolicyGate → ToolExecutor → verification` 的 controller 闭环；另有 fake/injected transport 驱动的 bounded Markdown 写入、`markdown_link_check`、checkpoint/trace/side-effect/ModelCallStore 审计切片，并覆盖预算与路径碰撞门禁；仍不包含真实模型驱动的通用编辑、通用文件写入、Bash 或多步 coding loop |
 | 4 | 用户入口、preflight、状态／取消及真实开发任务 E2E | 首个受限可用版本门槛 | fixture CLI、注入式安全进度报告、逐事件 flush、bounded RuntimeTick/controller safe-boundary 和可测试的完整行命令轮询已有；真实 OS stdin、常驻 Agent 入口、live 控制及 E2E 未交付 |
 | 5 | TaskRun／Attempt、目标／计划修订与 controller 恢复 | 完整 Phase 1 补齐项；fallback lineage／总预算是包 2 前置门禁 | TaskRun／Attempt 领域 schema、父关系、跨 Attempt 总预算校验以及初始 Attempt 到 controller 完成的最小绑定已通过；EventLog 顺序 reopen/追加与 StateStore 同进程 rebuild/persist/load 已有回归证据，StateStore 临时文件和目录同步也已收紧，但尚未接入 controller 恢复、目标/计划修订或跨进程 resume |
@@ -153,7 +153,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 ## 验收记录与范围保护
 
-2026-10-12 master 历史复跑记录：`loop_controller` 31 项、`runtime_cli` 11 项、`stream_reporter` 12 项、`tool_executor` 11 项、`tool_policy` 7 项、`workspace_edit` 11 项、`model_router` 11 项通过；当时新增 checkpoint/SideEffectLedger assertions、缺失链接验证失败门禁和 deterministic route explanation，focused clippy、rustfmt 和 `git diff --check` 通过。此为历史现场，不代表 2026-10-14 当前状态；当时未审核 acceptance、before-state hash 和 fallback 的判断已被后续实现/验收取代。当前仍未验收 live provider、resolved-provider fallback、完整恢复、并行多模型、代理/中转、prompt cache、Bash 或常驻 worker。
+2026-10-12 master 历史复跑记录：`loop_controller` 31 项、`runtime_cli` 11 项、`stream_reporter` 12 项、`tool_executor` 11 项、`tool_policy` 7 项、`workspace_edit` 11 项、`model_router` 11 项通过；当时新增 checkpoint/SideEffectLedger assertions、缺失链接验证失败门禁和 deterministic route explanation，focused clippy、rustfmt 和 `git diff --check` 通过。此为历史现场，不代表 2026-10-14 当前状态；当时未审核 acceptance、before-state hash 和 fallback 的判断已被后续实现/验收取代。当前仍未验收 live provider/live fallback、完整恢复、并行多模型、代理/中转、prompt cache、Bash 或常驻 worker；resolved-provider local contract fallback 已在 `564db6d` 中通过 focused tests，但不等于 live provider 验收。
 
 每包交接记录应给出代码基线、实际执行命令、结果／退出码、产物位置与证据引用、已验证范围及未通过项。全量测试通过是回归证据，不能替代真实 provider、真实任务或跨进程恢复的专门验收。
 

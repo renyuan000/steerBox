@@ -1291,3 +1291,114 @@ fn resolved_routed_binding_failure_does_not_create_child_attempt() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn resolved_routed_action_is_not_retried_or_executed_without_action_runtime() {
+    let directory = TestDirectory::new();
+    let workspace = directory.path.join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let file = workspace.join("README.md");
+    fs::write(&file, "# Before\n").unwrap();
+    let before = fs::read_to_string(&file).unwrap();
+    let (primary_pack, primary_route) = resolved_fixture_for(
+        "logical-model",
+        "route-action-primary",
+        vec!["backup-model".into()],
+    );
+    let (fallback_pack, fallback_route) =
+        resolved_fixture_for("backup-model", "route-action-backup", vec![]);
+    let action = json!({
+        "schema_version": 1,
+        "action_id": "action-routed-no-runtime",
+        "tool_id": "edit_markdown",
+        "parameters": {
+            "path": "README.md",
+            "expected": "# Before\n",
+            "replacement": "# After\n"
+        },
+        "path_scope": {
+            "root": workspace.display().to_string(),
+            "allowed_paths": ["README.md"]
+        },
+        "verification": {
+            "verifier_tool_id": "markdown_link_check",
+            "parameters": {"path": "README.md"}
+        }
+    });
+    let action_content = json!({
+        "decision": "continue_observation",
+        "summary": "action requires an explicit runtime",
+        "action": action
+    })
+    .to_string();
+    let mut controller = controller_with_budget(
+        &directory,
+        vec![".".into()],
+        LoopBudget::new(4, 4, 2, 2, 0, 2, 2, 2),
+    )
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+
+    let result = controller.run_resolved_routed_model_step(
+        &primary_route,
+        "step-routed-action-no-runtime",
+        |route, model_id| {
+            let (pack, candidate_route, transport) = if model_id == "logical-model" {
+                (
+                    primary_pack.clone(),
+                    route.clone(),
+                    FakeTransport::with_decision_content(action_content.clone()),
+                )
+            } else {
+                (
+                    fallback_pack.clone(),
+                    fallback_route.clone(),
+                    FakeTransport::valid(),
+                )
+            };
+            Ok(steerbox::loop_controller::ResolvedProviderCandidate {
+                adapter: Box::new(ProviderModelAdapter::new(
+                    OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+                    None,
+                )),
+                request: ModelRequest {
+                    model_id: pack.model_id().into(),
+                    goal_id: "goal-model-audit".into(),
+                    loop_run_id: "loop-model-audit".into(),
+                    step_id: "step-routed-action-no-runtime".into(),
+                    objective: pack.objective().into(),
+                    observation: pack.observation().into(),
+                },
+                pack,
+                route: candidate_route,
+            })
+        },
+    );
+
+    assert!(result.is_err(), "action without runtime must fail closed");
+    assert_eq!(fs::read_to_string(&file).unwrap(), before);
+    assert_eq!(controller.task_run().attempts.len(), 1);
+    assert!(controller.task_run().attempts[0].status.is_terminal());
+
+    let records = ModelCallStore::open(directory.model_calls())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].tool_call_count, 0);
+    assert_eq!(records[0].verification_status, "not_run");
+    assert_eq!(records[0].error_class.as_deref(), Some("model_adapter"));
+
+    let events = EventLog::open(directory.events())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    assert!(events
+        .iter()
+        .all(|event| event.event_type != "model_route_fallback"));
+    assert!(events
+        .iter()
+        .all(|event| event.event_type != "model_action_started"));
+    assert!(events
+        .iter()
+        .all(|event| event.event_type != "model_action_verified"));
+}

@@ -38,6 +38,35 @@ pub trait CredentialResolver: Send + Sync {
     fn resolve(&self, auth_ref: &str) -> Result<ResolvedCredential, CredentialError>;
 }
 
+/// Resolves only opaque environment references of the form `env:NAME`.
+///
+/// The variable name is validated before lookup and neither the name nor the
+/// resolved value is included in errors or debug output. Callers that need a
+/// different credential source must provide their own resolver; the CLI's
+/// `UnconfiguredCredentialResolver` intentionally remains fail-closed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EnvironmentCredentialResolver;
+
+impl CredentialResolver for EnvironmentCredentialResolver {
+    fn resolve(&self, auth_ref: &str) -> Result<ResolvedCredential, CredentialError> {
+        let name = auth_ref
+            .strip_prefix("env:")
+            .filter(|name| is_valid_environment_name(name))
+            .ok_or(CredentialError::Rejected)?;
+        match std::env::var(name) {
+            Ok(value) => ResolvedCredential::bearer(value),
+            Err(std::env::VarError::NotPresent) => Err(CredentialError::Missing),
+            Err(std::env::VarError::NotUnicode(_)) => Err(CredentialError::Rejected),
+        }
+    }
+}
+
+fn is_valid_environment_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    matches!(characters.next(), Some(character) if character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialError {
     Missing,
