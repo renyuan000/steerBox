@@ -66,6 +66,13 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 config.model_profiles.len()
             );
         }
+        (Some("tool"), Some("list")) => {
+            let registry = ToolRegistry::baseline()?;
+            println!("工具能力\n{}", registry.render_capability_table());
+            println!(
+                "\n运行说明\n- ✅ 启用表示允许路由选择，不代表自动批准。\n- 按需能力不会因展示而启动；详细调用记录进入 EventLog。"
+            );
+        }
         (Some("event"), Some("list")) => {
             let path = args.next().ok_or("missing config path")?;
             let config = RuntimeConfig::load(path)?;
@@ -700,6 +707,7 @@ fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  steerbox runtime init <project_ref>");
     eprintln!("  steerbox config validate <config.json>");
+    eprintln!("  steerbox tool list");
     eprintln!("  steerbox event list <config.json>");
     eprintln!("  steerbox event append <config.json> <event_type> <aggregate_type> <aggregate_id> <event_id> <correlation_id> [payload_json]");
     eprintln!("  steerbox execution list <config.json>");
