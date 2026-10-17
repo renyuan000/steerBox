@@ -1,5 +1,6 @@
 use crate::domain::{GoalContract, RiskLevel};
 use crate::model_contracts::ModelActionEnvelope;
+use crate::redaction::{RedactionError, Redactor};
 use crate::tool_registry::{SideEffectClass, ToolRegistry};
 use crate::workspace_edit::{edit_markdown, EditResult, WorkspaceEditError};
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,22 @@ pub struct ToolCallInput {
 pub struct ToolCallOutput {
     pub summary: String,
     pub result: Value,
+}
+
+impl ToolCallOutput {
+    /// Return a copy safe to embed in a future model request.
+    ///
+    /// Tool execution keeps the original result available to the trusted local
+    /// caller. A multi-step model loop must use this boundary before placing
+    /// tool output in prompt context; a redaction failure is returned instead
+    /// of silently forwarding the original content.
+    pub fn redacted_for_model(&self) -> Result<Self, RedactionError> {
+        let redactor = Redactor::default();
+        Ok(Self {
+            summary: redactor.redact_text(&self.summary)?,
+            result: redactor.redact_json_value(&self.result)?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

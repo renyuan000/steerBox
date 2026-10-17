@@ -234,6 +234,39 @@ fn git_diff_rejects_shell_like_extra_arguments() {
 }
 
 #[test]
+fn tool_output_can_be_redacted_before_model_handoff() {
+    let output = steerbox::tool_executor::ToolCallOutput {
+        summary: "changed password=synthetic-password".into(),
+        result: json!({
+            "stdout": "Authorization: Bearer synthetic-token",
+            "safe": "tracked diff"
+        }),
+    };
+
+    let redacted = output
+        .redacted_for_model()
+        .expect("model handoff redaction succeeds");
+
+    assert!(!redacted.summary.contains("synthetic-password"));
+    assert!(!redacted.result.to_string().contains("synthetic-token"));
+    assert_eq!(redacted.result["safe"], "tracked diff");
+    assert!(output.summary.contains("synthetic-password"));
+}
+
+#[test]
+fn tool_output_redaction_fails_closed_on_oversized_model_handoff() {
+    let output = steerbox::tool_executor::ToolCallOutput {
+        summary: "x".repeat(steerbox::redaction::DEFAULT_MAX_INPUT_BYTES + 1),
+        result: json!({"safe": "metadata"}),
+    };
+
+    assert!(matches!(
+        output.redacted_for_model(),
+        Err(steerbox::redaction::RedactionError::InputTooLarge { .. })
+    ));
+}
+
+#[test]
 fn structured_action_maps_fixed_rg_and_markdown_link_check() {
     let workspace = std::env::current_dir().expect("current directory exists");
     let registry = ToolRegistry::baseline().expect("baseline tools register");

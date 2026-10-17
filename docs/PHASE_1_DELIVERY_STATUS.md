@@ -86,7 +86,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 - resolved provider 的 opt-in 路径已接入 `run_resolved_model_step_with_action`：fake provider 响应经 `PolicyGate → ReadOnlyToolExecutor → verification`，最终 `ModelCallRecord` 写入实际 `tool_call_count`、`verification_status` 和错误分类；旧 resolved 入口遇到 action 会 fail-closed。真实 provider、文件写入／Bash、完整 artifact 持久化和跨进程恢复仍待完成。
 - 扩展文件读／写／edit、Bash 等副作用工具；当前 Markdown edit 只完成工具边界和显式审批切片，尚未接入模型动作 controller 的 checkpoint／side-effect ledger／写后验证和失败恢复闭环。每项都必须有 PolicyGate、checkpoint／side-effect ledger、写后验证和失败恢复边界。模型说 complete 不得替代真实验证。
-- 将 goal alignment／drift 检查及 ToolCallRecord／VerificationResult 的适用关联接入实际链；限制模型、工具、步骤、重试和无进展，不允许无限自循环。当前只读工具的 raw output 脱敏已接线，文件写入／Bash 的副作用验证与恢复仍待完成。
+- 将 goal alignment／drift 检查及 ToolCallRecord／VerificationResult 的适用关联接入实际链；限制模型、工具、步骤、重试和无进展，不允许无限自循环。当前只读工具的 raw output 脱敏已接线，`ToolCallOutput::redacted_for_model()` 提供显式的模型交接脱敏边界；多步 loop 尚未强制接线，文件写入／Bash 的副作用验证与恢复仍待完成。
 
 可复现验收证据：现有入口为 `cargo test --test loop_controller --test tool_policy --test tool_executor --test workspace_edit --test dev_vertical_slice --test drift_guard`。新增受控闭环验收须让模型提出一次限定文件修改，验证器检查实际产物后将结果回传，最终 summary 可反查各步骤、policy、工具、diff boundary、验证及副作用。另覆盖越界／未注册／未审批的零副作用路径、验证失败后不伪报成功和预算耗尽停止。现有手工指定 Markdown 替换输入不能作为模型提出动作的证据。
 
@@ -176,3 +176,5 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 这六包不新增 SQLite 迁移、多 agent、TUI/Web、分布式 worker、向量／图数据库或无审批自动进化的交付要求。现有 JSONL／JSON 切片应先闭合规范要求，存储迁移不能替代真实模型闭环。CCG 和其他参考项目仅提供可核查的设计线索，不作为已证明最优的性能 benchmark，也不改变 Phase 1 正式范围。
 
 2026-10-17 受控命令 recipe 增量由 master 验收：新增 baseline `git_diff`，仅接受 `{"scope":"workspace"}`，固定执行 `git diff --no-ext-diff --no-color --`，不接受 shell 字符串或额外 argv；沿用 workspace 校验、5 秒超时和 16 KiB stdout/stderr 上限。`tool_executor` focused 14 项、`tool_policy` 2 项、`tool_capability_display` 12 项通过；`cargo test --locked --offline --all-targets --quiet`、`cargo clippy --locked --offline --all-targets -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check` 均通过。该切片扩大的是受控只读 recipe，不是任意 Bash、文件写入、live provider 或完整 coding loop。
+
+2026-10-17 模型交接脱敏边界增量：`ToolCallOutput::redacted_for_model()` 对 summary 与结构化 result 使用本地 `Redactor` 生成副本；超限或脱敏错误直接返回错误，不静默转发原始结果。`tool_executor` focused 15 项通过，覆盖正常敏感字段脱敏与超限 fail-closed。该 API 尚未替代未来多步 loop 的强制接线，也不宣称完成全链路 DLP 或 live provider 验收。

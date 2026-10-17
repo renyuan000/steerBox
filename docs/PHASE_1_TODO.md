@@ -254,7 +254,7 @@ Memory 最小实现：
 - [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（opt-in resolved controller 成功记录与 adapter-error 分支的独立 `ModelCallFailureRecord`/failure JSONL 已接线；失败审计不存原始 provider error 或伪造 response facts，审计错误 fail-closed；live provider、resolved fallback Attempt 和完整验证结果仍待完成）
 - [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider 的只读 action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；只读工具 raw output 已从 EventLog/TraceStore/SideEffectLedger 脱敏；文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
 - [x] 实现能力兼容、非静默的 fallback 事件（routed fixture/model-adapter 路径仅对 retryable provider failure 按声明顺序切换；新建父链可追踪的 Attempt，只引用实际追加的事件，累计预算与 no-progress 不因 fallback 重置；不可恢复失败/额度耗尽后关闭运行；resolved provider fallback 和跨进程恢复仍待完成）
-- [ ] 端到端验证 registry、prompt、provider request、trace、event log 和 checkpoint 均不保存认证明文（registry/config 的 auth_ref 与 endpoint 边界 focused 回归已通过；全链路审计脱敏仍未完成）
+- [ ] 端到端验证 registry、prompt、provider request、trace、event log 和 checkpoint 均不保存认证明文（registry/config 的 auth_ref 与 endpoint 边界 focused 回归已通过；`ToolCallOutput::redacted_for_model()` 已提供模型交接边界，但多步 loop 强制接线与全链路审计脱敏仍未完成）
 
 历史验证记录（2026-10-11）：`loop_controller` 25 项、`provider_model_adapter` 7 项、`resolved_provider_model_adapter` 11 项、`model_call_controller_audit` 6 项 focused 测试通过；当轮 focused clippy 通过，构建产物写入 `/tmp/steerbox-phase1-target`。此记录不是当前工作树的完整验收。
 
