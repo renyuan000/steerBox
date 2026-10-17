@@ -76,6 +76,23 @@ struct ActionFixtureAdapter {
     action: ModelActionEnvelope,
 }
 
+struct RecordingObservationAdapter {
+    observations: Arc<Mutex<Vec<String>>>,
+}
+
+impl ModelAdapter for RecordingObservationAdapter {
+    fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelAdapterError> {
+        self.observations
+            .lock()
+            .expect("observation lock")
+            .push(request.observation);
+        Ok(ModelResponse {
+            decision: ModelDecision::ContinueObservation,
+            summary: "recorded tool result".into(),
+        })
+    }
+}
+
 impl ModelAdapter for ActionFixtureAdapter {
     fn complete(&self, _request: ModelRequest) -> Result<ModelResponse, ModelAdapterError> {
         Ok(ModelResponse {
@@ -942,6 +959,242 @@ fn model_step_routes_provider_action_through_policy_and_verification() {
     assert!(events
         .iter()
         .any(|event| event.event_type == "step_completed"));
+}
+
+#[test]
+fn next_model_step_receives_only_redacted_tool_output() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("event directory creates");
+    let workspace = tempfile::tempdir().expect("workspace creates");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-tool-context",
+            "project-tool-context",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-tool-context",
+        "task-run-tool-context",
+        LoopBudget::new(2, 0, 1, 1, 0, 2, 1, 1),
+    )
+    .expect("loop starts");
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, workspace.path());
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let adapter = RecordingObservationAdapter {
+        observations: observations.clone(),
+    };
+    let output = steerbox::tool_executor::ToolCallOutput {
+        summary: "diff contains password=synthetic-tool-password".into(),
+        result: serde_json::json!({
+            "stdout": "Authorization: Bearer synthetic-tool-token",
+            "safe": "tracked change"
+        }),
+    };
+
+    controller
+        .run_model_step_with_tool_output(
+            &adapter,
+            &runtime,
+            "fixture-context-model",
+            "step-tool-context",
+            &output,
+        )
+        .expect("model step accepts redacted tool output");
+
+    let observation = observations
+        .lock()
+        .expect("observation lock")
+        .first()
+        .cloned()
+        .expect("one model observation");
+    assert!(!observation.contains("synthetic-tool-password"));
+    assert!(!observation.contains("synthetic-tool-token"));
+    assert!(observation.contains("tracked change"));
+}
+
+#[test]
+fn oversized_tool_output_stops_before_model_adapter_call() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("event directory creates");
+    let workspace = tempfile::tempdir().expect("workspace creates");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-tool-context-limit",
+            "project-tool-context-limit",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-tool-context-limit",
+        "task-run-tool-context-limit",
+        LoopBudget::new(2, 0, 1, 1, 0, 2, 1, 1),
+    )
+    .expect("loop starts");
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, workspace.path());
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let adapter = RecordingObservationAdapter {
+        observations: observations.clone(),
+    };
+    let output = steerbox::tool_executor::ToolCallOutput {
+        summary: "x".repeat(steerbox::redaction::DEFAULT_MAX_INPUT_BYTES + 1),
+        result: serde_json::json!({"safe": "metadata"}),
+    };
+
+    assert!(matches!(
+        controller.run_model_step_with_tool_output(
+            &adapter,
+            &runtime,
+            "fixture-context-model",
+            "step-tool-context-limit",
+            &output,
+        ),
+        Err(LoopControllerError::ModelToolContextRedaction(_))
+    ));
+    assert!(observations.lock().expect("observation lock").is_empty());
+}
+
+#[test]
+fn next_model_step_redacts_action_and_verification_outputs() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("event directory creates");
+    let workspace = tempfile::tempdir().expect("workspace creates");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-tool-results",
+            "project-tool-results",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-tool-results",
+        "task-run-tool-results",
+        LoopBudget::new(2, 0, 1, 1, 0, 2, 1, 1),
+    )
+    .expect("loop starts");
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, workspace.path());
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let adapter = RecordingObservationAdapter {
+        observations: observations.clone(),
+    };
+    let action_output = steerbox::tool_executor::ToolCallOutput {
+        summary: "action changed tracked file; password=synthetic-action-password".into(),
+        result: serde_json::json!({
+            "stdout": "Authorization: Bearer synthetic-action-token",
+            "safe_action": "file updated"
+        }),
+    };
+    let verification_output = steerbox::tool_executor::ToolCallOutput {
+        summary: "verification passed; token=synthetic-verification-token".into(),
+        result: serde_json::json!({
+            "stdout": "password=synthetic-verification-password",
+            "safe_verification": "hash matches"
+        }),
+    };
+
+    controller
+        .run_model_step_with_tool_results(
+            &adapter,
+            &runtime,
+            "fixture-context-model",
+            "step-tool-results",
+            "action-1",
+            "file_write",
+            &action_output,
+            &verification_output,
+        )
+        .expect("model step accepts redacted action and verification outputs");
+
+    let observation = observations
+        .lock()
+        .expect("observation lock")
+        .first()
+        .cloned()
+        .expect("one model observation");
+    assert!(observation.contains("action-1"));
+    assert!(observation.contains("file_write"));
+    assert!(observation.contains("file updated"));
+    assert!(observation.contains("hash matches"));
+    for secret in [
+        "synthetic-action-password",
+        "synthetic-action-token",
+        "synthetic-verification-token",
+        "synthetic-verification-password",
+    ] {
+        assert!(!observation.contains(secret), "secret leaked: {secret}");
+    }
+    assert!(action_output.summary.contains("synthetic-action-password"));
+    assert!(verification_output
+        .summary
+        .contains("synthetic-verification-token"));
+}
+
+#[test]
+fn combined_tool_outputs_stop_before_model_adapter_call() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("event directory creates");
+    let workspace = tempfile::tempdir().expect("workspace creates");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-tool-results-limit",
+            "project-tool-results-limit",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-tool-results-limit",
+        "task-run-tool-results-limit",
+        LoopBudget::new(2, 0, 1, 1, 0, 2, 1, 1),
+    )
+    .expect("loop starts");
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, workspace.path());
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let adapter = RecordingObservationAdapter {
+        observations: observations.clone(),
+    };
+    let action_output = steerbox::tool_executor::ToolCallOutput {
+        summary: "a".repeat(40 * 1024),
+        result: serde_json::json!({"safe": "action"}),
+    };
+    let verification_output = steerbox::tool_executor::ToolCallOutput {
+        summary: "v".repeat(40 * 1024),
+        result: serde_json::json!({"safe": "verification"}),
+    };
+
+    assert!(matches!(
+        controller.run_model_step_with_tool_results(
+            &adapter,
+            &runtime,
+            "fixture-context-model",
+            "step-tool-results-limit",
+            "action-1",
+            "file_write",
+            &action_output,
+            &verification_output,
+        ),
+        Err(LoopControllerError::ModelToolContextTooLarge { .. })
+    ));
+    assert!(observations.lock().expect("observation lock").is_empty());
 }
 
 #[test]

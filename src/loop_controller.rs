@@ -27,7 +27,7 @@ use crate::model_router::{
 use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequest};
 use crate::provider_adapter::ProviderErrorClass;
 use crate::provider_model_adapter::ResolvedModelAdapter;
-use crate::redaction::{Redactor, FAIL_CLOSED_MARKER};
+use crate::redaction::{RedactionError, Redactor, FAIL_CLOSED_MARKER};
 use crate::resolved_prompt::ResolvedPromptPack;
 use crate::strategy_selector::{StrategyDecision, StrategySelectionError, StrategySelector};
 use crate::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
@@ -46,6 +46,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use thiserror::Error;
+
+const MAX_MODEL_TOOL_CONTEXT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
 pub enum LoopControllerError {
@@ -112,6 +114,10 @@ pub enum LoopControllerError {
     CommandInboxRequired,
     #[error("progress reporting failed: {0}")]
     ProgressReport(String),
+    #[error("model tool context redaction failed: {0}")]
+    ModelToolContextRedaction(#[from] RedactionError),
+    #[error("model tool context exceeds configured limit of {limit} bytes")]
+    ModelToolContextTooLarge { limit: usize },
 }
 
 struct ProgressSinkHolder {
@@ -945,6 +951,47 @@ impl ReadOnlyLoopController {
             true,
             |request| adapter.complete_with_action(request),
         )
+    }
+
+    /// Continue a model step from a local tool result.
+    ///
+    /// The raw `ToolCallOutput` remains available to the trusted local caller,
+    /// but only its redacted copy is serialized into the next model
+    /// observation. Redaction failures stop before any adapter call.
+    pub fn run_model_step_with_tool_output<A: ModelAdapter + ?Sized>(
+        &mut self,
+        adapter: &A,
+        runtime: &ModelActionRuntime<'_>,
+        model_id: impl Into<String>,
+        step_id: impl Into<String>,
+        output: &ToolCallOutput,
+    ) -> Result<ModelDecision, LoopControllerError> {
+        let observation = build_model_tool_observation(None, None, output, None)?;
+        self.run_model_step_with_action(adapter, runtime, model_id, step_id, observation)
+    }
+
+    /// Continue a model step with both an action result and its verification
+    /// result. Both outputs are independently redacted and the combined JSON
+    /// context is bounded before any adapter call.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_model_step_with_tool_results<A: ModelAdapter + ?Sized>(
+        &mut self,
+        adapter: &A,
+        runtime: &ModelActionRuntime<'_>,
+        model_id: impl Into<String>,
+        step_id: impl Into<String>,
+        action_id: &str,
+        tool_id: &str,
+        action_output: &ToolCallOutput,
+        verification_output: &ToolCallOutput,
+    ) -> Result<ModelDecision, LoopControllerError> {
+        let observation = build_model_tool_observation(
+            Some(action_id),
+            Some(tool_id),
+            action_output,
+            Some(verification_output),
+        )?;
+        self.run_model_step_with_action(adapter, runtime, model_id, step_id, observation)
     }
 
     /// Execute a resolved provider call and persist its audit record before
@@ -3432,6 +3479,49 @@ fn redact_audit_payload(payload: serde_json::Value) -> serde_json::Value {
     Redactor::default()
         .redact_json_value(&payload)
         .unwrap_or_else(|_| json!({"redaction": FAIL_CLOSED_MARKER}))
+}
+
+fn build_model_tool_observation(
+    action_id: Option<&str>,
+    tool_id: Option<&str>,
+    action_output: &ToolCallOutput,
+    verification_output: Option<&ToolCallOutput>,
+) -> Result<String, LoopControllerError> {
+    let redacted_action = action_output.redacted_for_model()?;
+    let redacted_verification = verification_output
+        .map(ToolCallOutput::redacted_for_model)
+        .transpose()?;
+    let mut observation = serde_json::Map::new();
+    observation.insert("kind".into(), json!("tool_result"));
+    if let Some(action_id) = action_id {
+        observation.insert("action_id".into(), json!(action_id));
+    }
+    if let Some(tool_id) = tool_id {
+        observation.insert("tool_id".into(), json!(tool_id));
+    }
+    observation.insert(
+        "action_output".into(),
+        serde_json::to_value(redacted_action).map_err(|_| {
+            LoopControllerError::ModelToolContextRedaction(RedactionError::SerializationFailed)
+        })?,
+    );
+    if let Some(verification_output) = redacted_verification {
+        observation.insert(
+            "verification_output".into(),
+            serde_json::to_value(verification_output).map_err(|_| {
+                LoopControllerError::ModelToolContextRedaction(RedactionError::SerializationFailed)
+            })?,
+        );
+    }
+    let observation = serde_json::to_string(&observation).map_err(|_| {
+        LoopControllerError::ModelToolContextRedaction(RedactionError::SerializationFailed)
+    })?;
+    if observation.len() > MAX_MODEL_TOOL_CONTEXT_BYTES {
+        return Err(LoopControllerError::ModelToolContextTooLarge {
+            limit: MAX_MODEL_TOOL_CONTEXT_BYTES,
+        });
+    }
+    Ok(observation)
 }
 
 #[allow(clippy::too_many_arguments)]
