@@ -97,6 +97,14 @@ fn fragment(id: &str, content: &str) -> VersionedPromptFragment {
 }
 
 fn resolved_fixture() -> (ResolvedPromptPack, RouteDecision) {
+    resolved_fixture_for("logical-model", "route-model-audit", vec![])
+}
+
+fn resolved_fixture_for(
+    model_id: &str,
+    route_decision_id: &str,
+    fallback_chain: Vec<String>,
+) -> (ResolvedPromptPack, RouteDecision) {
     let mut models = ModelRegistry::default();
     models
         .register_provider(ProviderProfile::new("fixture-provider", "Fixture", None).unwrap())
@@ -110,7 +118,7 @@ fn resolved_fixture() -> (ResolvedPromptPack, RouteDecision) {
     models
         .register_model(
             ModelProfile::new(
-                "logical-model",
+                model_id,
                 "fixture-provider",
                 "fixture-endpoint",
                 "wire-model",
@@ -124,13 +132,15 @@ fn resolved_fixture() -> (ResolvedPromptPack, RouteDecision) {
         .register(PromptProfile::new("inspect", 1, "reviewer", "review", "TASK_BODY").unwrap())
         .unwrap();
     let route = RouteDecision {
-        route_decision_id: "route-model-audit".into(),
+        route_decision_id: route_decision_id.into(),
         task_id: "task-model-audit".into(),
         task_type: "review".into(),
         agent_role: "reviewer".into(),
-        candidate_models: vec!["logical-model".into()],
+        candidate_models: std::iter::once(model_id.to_owned())
+            .chain(fallback_chain.iter().cloned())
+            .collect(),
         selected_provider: "fixture-provider".into(),
-        selected_model: "logical-model".into(),
+        selected_model: model_id.into(),
         selected_endpoint: "fixture-endpoint".into(),
         selection_reason: "explicit fixture".into(),
         rejected_candidates: vec![],
@@ -138,7 +148,7 @@ fn resolved_fixture() -> (ResolvedPromptPack, RouteDecision) {
         latency_estimate_ms: None,
         risk_level: "low".into(),
         privacy_requirement: "local".into(),
-        fallback_chain: vec![],
+        fallback_chain,
         prompt_profile_id: "inspect".into(),
         prompt_profile_version: "1".into(),
         approval_required: false,
@@ -156,7 +166,7 @@ fn resolved_fixture() -> (ResolvedPromptPack, RouteDecision) {
             },
             model: &ModelPromptFragment {
                 provider_id: "fixture-provider".into(),
-                model_id: "logical-model".into(),
+                model_id: model_id.into(),
                 fragment: fragment("model", "MODEL"),
             },
             role: &AgentRolePrompt {
@@ -225,6 +235,18 @@ fn controller_with_allowed_tools(
     directory: &TestDirectory,
     allowed_tools: Vec<String>,
 ) -> ReadOnlyLoopController {
+    controller_with_budget(
+        directory,
+        allowed_tools,
+        LoopBudget::new(2, 0, 1, 1, 0, 1, 1, 1),
+    )
+}
+
+fn controller_with_budget(
+    directory: &TestDirectory,
+    allowed_tools: Vec<String>,
+    budget: LoopBudget,
+) -> ReadOnlyLoopController {
     let goal = GoalContract::new(
         "goal-model-audit",
         "project-model-audit",
@@ -238,7 +260,7 @@ fn controller_with_allowed_tools(
         goal,
         "loop-model-audit",
         "task-run-model-audit",
-        LoopBudget::new(2, 0, 1, 1, 0, 1, 1, 1),
+        budget,
     )
     .expect("controller starts")
 }
@@ -1092,4 +1114,180 @@ fn resolved_workspace_insufficient_tool_budget_prevents_mutation() {
         );
         assert_workspace_audit(&directory, 0, "not_run");
     }
+}
+
+#[test]
+fn resolved_routed_retryable_failure_creates_child_and_keeps_failure_jsonl() {
+    let directory = TestDirectory::new();
+    let (primary_pack, primary_route) = resolved_fixture_for(
+        "logical-model",
+        "route-primary",
+        vec!["backup-model".into()],
+    );
+    let (fallback_pack, fallback_route) =
+        resolved_fixture_for("backup-model", "route-backup", vec![]);
+    let mut controller = controller_with_budget(
+        &directory,
+        vec![".".into()],
+        LoopBudget::new(4, 0, 2, 2, 0, 2, 2, 2),
+    )
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+
+    let result = controller.run_resolved_routed_model_step(
+        &primary_route,
+        "step-resolved-fallback",
+        |route, model_id| {
+            let (pack, candidate_route, transport) = if model_id == "logical-model" {
+                (
+                    primary_pack.clone(),
+                    route.clone(),
+                    FakeTransport::failing(),
+                )
+            } else {
+                (
+                    fallback_pack.clone(),
+                    fallback_route.clone(),
+                    FakeTransport::with_decision_content(
+                        r#"{"decision":"complete_loop","summary":"fallback done"}"#.into(),
+                    ),
+                )
+            };
+            Ok(steerbox::loop_controller::ResolvedProviderCandidate {
+                adapter: Box::new(ProviderModelAdapter::new(
+                    OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+                    None,
+                )),
+                request: ModelRequest {
+                    model_id: pack.model_id().into(),
+                    goal_id: "goal-model-audit".into(),
+                    loop_run_id: "loop-model-audit".into(),
+                    step_id: "step-resolved-fallback".into(),
+                    objective: pack.objective().into(),
+                    observation: pack.observation().into(),
+                },
+                pack,
+                route: candidate_route,
+            })
+        },
+    );
+
+    assert!(
+        result.is_ok(),
+        "fallback candidate should complete: {result:?}"
+    );
+    assert_eq!(controller.task_run().attempts.len(), 2);
+    assert_eq!(
+        controller.task_run().attempts[0].status,
+        steerbox::domain::AttemptStatus::Failed
+    );
+    assert_eq!(
+        controller.task_run().attempts[1].reason,
+        steerbox::domain::AttemptReason::Fallback
+    );
+    assert_eq!(
+        controller.task_run().attempts[1].status,
+        steerbox::domain::AttemptStatus::Succeeded
+    );
+    assert_eq!(
+        controller.task_run().attempts[1]
+            .parent_attempt_id
+            .as_deref(),
+        Some(controller.task_run().attempts[0].attempt_id.as_str())
+    );
+
+    let store = ModelCallStore::open(directory.model_calls()).unwrap();
+    assert_eq!(store.read_all().unwrap().len(), 1);
+    let failures = store.read_failures().unwrap();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].model_id, "logical-model");
+    assert_eq!(failures[0].failure_class, "transport");
+
+    let events = EventLog::open(directory.events())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    let fallback = events
+        .iter()
+        .find(|event| event.event_type == "model_route_fallback")
+        .expect("fallback event is recorded");
+    assert_eq!(fallback.payload["from_route_decision_id"], "route-primary");
+    assert_eq!(fallback.payload["to_route_decision_id"], "route-backup");
+    assert_eq!(fallback.payload["error_class"], "transport");
+    assert!(events
+        .iter()
+        .all(|event| !event.payload.to_string().contains("auth")));
+}
+
+#[test]
+fn resolved_routed_binding_failure_does_not_create_child_attempt() {
+    let directory = TestDirectory::new();
+    let (primary_pack, primary_route) = resolved_fixture_for(
+        "logical-model",
+        "route-primary",
+        vec!["backup-model".into()],
+    );
+    let (fallback_pack, fallback_route) =
+        resolved_fixture_for("backup-model", "route-backup", vec![]);
+    let mut controller = controller_with_budget(
+        &directory,
+        vec![".".into()],
+        LoopBudget::new(4, 0, 2, 2, 0, 2, 2, 2),
+    )
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+
+    let result = controller.run_resolved_routed_model_step(
+        &primary_route,
+        "step-resolved-binding-failure",
+        |route, model_id| {
+            let pack = if model_id == "logical-model" {
+                primary_pack.clone()
+            } else {
+                fallback_pack.clone()
+            };
+            let mut candidate_route = if model_id == "logical-model" {
+                route.clone()
+            } else {
+                fallback_route.clone()
+            };
+            if model_id == "backup-model" {
+                candidate_route.selected_model = "wrong-model".into();
+            }
+            Ok(steerbox::loop_controller::ResolvedProviderCandidate {
+                adapter: Box::new(ProviderModelAdapter::new(
+                    OpenAiCompatibleAdapter::new(
+                        "fixture-provider",
+                        BASE_URL,
+                        if model_id == "logical-model" {
+                            FakeTransport::failing()
+                        } else {
+                            FakeTransport::valid()
+                        },
+                    ),
+                    None,
+                )),
+                request: ModelRequest {
+                    model_id: pack.model_id().into(),
+                    goal_id: "goal-model-audit".into(),
+                    loop_run_id: "loop-model-audit".into(),
+                    step_id: "step-resolved-binding-failure".into(),
+                    objective: pack.objective().into(),
+                    observation: pack.observation().into(),
+                },
+                pack,
+                route: candidate_route,
+            })
+        },
+    );
+
+    assert!(result.is_err(), "invalid fallback binding must be rejected");
+    assert_eq!(controller.task_run().attempts.len(), 1);
+    assert_eq!(
+        controller.task_run().attempts[0].status,
+        steerbox::domain::AttemptStatus::Running
+    );
+    assert!(ModelCallStore::open(directory.model_calls())
+        .unwrap()
+        .read_all()
+        .unwrap()
+        .is_empty());
 }

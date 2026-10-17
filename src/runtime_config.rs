@@ -9,6 +9,9 @@ use thiserror::Error;
 
 const DATA_ROOT_PREFIX: &str = "/temp/steerbox";
 
+pub const OPENAI_COMPATIBLE_CHAT_PROTOCOL: &str = "openai-compatible-chat";
+pub const ANTHROPIC_MESSAGES_PROTOCOL: &str = "anthropic-messages";
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigError {
     #[error("configuration file read failed: {message}")]
@@ -37,6 +40,8 @@ pub enum ConfigError {
     UnsupportedAnthropicProvider { provider: String },
     #[error("Anthropic adapter requires capability `{capability}`")]
     UnsupportedAnthropicCapability { capability: String },
+    #[error("unsupported model profile endpoint_protocol: {protocol}")]
+    UnsupportedEndpointProtocol { protocol: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,16 +54,61 @@ pub struct RuntimeConfig {
     pub model_profiles: Vec<ModelProfileConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelProfileConfig {
     pub model_id: String,
     pub provider: String,
     pub endpoint: String,
+    /// Explicit wire protocol. Missing values are normalized only while
+    /// reading legacy JSON; runners use this field and never infer a
+    /// protocol from provider names.
+    pub endpoint_protocol: String,
     #[serde(default)]
     pub auth_ref: Option<String>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelProfileConfigWire {
+    model_id: String,
+    provider: String,
+    endpoint: String,
+    #[serde(default)]
+    endpoint_protocol: Option<String>,
+    #[serde(default)]
+    auth_ref: Option<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for ModelProfileConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ModelProfileConfigWire::deserialize(deserializer)?;
+        let endpoint_protocol = wire.endpoint_protocol.unwrap_or_else(|| {
+            // Compatibility-only normalization for profiles written before
+            // endpoint_protocol existed. The resulting struct is explicit;
+            // provider runners do not repeat this inference.
+            if wire.provider == "anthropic" {
+                ANTHROPIC_MESSAGES_PROTOCOL.to_owned()
+            } else {
+                OPENAI_COMPATIBLE_CHAT_PROTOCOL.to_owned()
+            }
+        });
+        Ok(Self {
+            model_id: wire.model_id,
+            provider: wire.provider,
+            endpoint: wire.endpoint,
+            endpoint_protocol,
+            auth_ref: wire.auth_ref,
+            capabilities: wire.capabilities,
+        })
+    }
 }
 
 impl RuntimeConfig {
@@ -147,6 +197,11 @@ impl RuntimeConfig {
             .ok_or_else(|| ConfigError::ModelProfileNotFound {
                 model_id: model_id.to_owned(),
             })?;
+        if profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
+            return Err(ConfigError::UnsupportedEndpointProtocol {
+                protocol: profile.endpoint_protocol.clone(),
+            });
+        }
         let transport =
             HttpProviderTransport::new(resolver).map_err(|_| ConfigError::HttpTransportBuild)?;
         let provider = crate::provider_adapter::OpenAiCompatibleAdapter::new(
@@ -172,6 +227,11 @@ impl RuntimeConfig {
         if profile.provider != "anthropic" {
             return Err(ConfigError::UnsupportedAnthropicProvider {
                 provider: profile.provider.clone(),
+            });
+        }
+        if profile.endpoint_protocol != ANTHROPIC_MESSAGES_PROTOCOL {
+            return Err(ConfigError::UnsupportedEndpointProtocol {
+                protocol: profile.endpoint_protocol.clone(),
             });
         }
         if !profile
@@ -231,6 +291,14 @@ impl RuntimeConfig {
             return Err(ConfigError::InvalidDataRoot);
         }
         for profile in &self.model_profiles {
+            if !matches!(
+                profile.endpoint_protocol.as_str(),
+                OPENAI_COMPATIBLE_CHAT_PROTOCOL | ANTHROPIC_MESSAGES_PROTOCOL
+            ) {
+                return Err(ConfigError::UnsupportedEndpointProtocol {
+                    protocol: profile.endpoint_protocol.clone(),
+                });
+            }
             if let Some(auth_ref) = profile.auth_ref.as_deref() {
                 if auth_ref.is_empty() {
                     return Err(ConfigError::EmptyAuthRef);

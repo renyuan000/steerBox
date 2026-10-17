@@ -210,6 +210,16 @@ pub struct WorkspaceEditActionRuntime<'a> {
     pub approved: bool,
 }
 
+/// A provider-specific resolved candidate used by the bounded fallback path.
+/// The adapter, request, prompt pack, and route are resolved together so a
+/// fallback cannot silently reuse the primary provider's wire binding.
+pub struct ResolvedProviderCandidate {
+    pub adapter: Box<dyn ResolvedModelAdapter>,
+    pub request: ModelRequest,
+    pub pack: ResolvedPromptPack,
+    pub route: RouteDecision,
+}
+
 impl<'a> WorkspaceEditActionRuntime<'a> {
     pub fn new(
         registry: &'a ToolRegistry,
@@ -948,7 +958,112 @@ impl ReadOnlyLoopController {
         route: &RouteDecision,
         step_id: impl Into<String>,
     ) -> Result<ModelDecision, LoopControllerError> {
-        self.run_resolved_model_step_internal(adapter, request, pack, route, step_id, None)
+        self.run_resolved_model_step_internal(adapter, request, pack, route, step_id, None, true)
+    }
+
+    /// Run a resolved route with a bounded, sequential provider fallback.
+    /// Each candidate is resolved independently, and fallback is entered only
+    /// for retryable provider-invocation failures before any model action.
+    pub fn run_resolved_routed_model_step<F>(
+        &mut self,
+        route: &RouteDecision,
+        step_id: impl Into<String>,
+        mut resolve_candidate: F,
+    ) -> Result<ModelDecision, LoopControllerError>
+    where
+        F: FnMut(&RouteDecision, &str) -> Result<ResolvedProviderCandidate, LoopControllerError>,
+    {
+        route.validate()?;
+        let step_id = step_id.into();
+        let mut attempted_models = Vec::new();
+        let mut current_route = route.clone();
+        let primary_model = route.selected_model.clone();
+        let primary = resolve_candidate(route, &primary_model)?;
+        validate_resolved_candidate(&primary, route, &primary_model)?;
+        self.bind_current_attempt_route(&primary.route)?;
+        let mut result = self.run_resolved_model_step_internal(
+            primary.adapter.as_ref(),
+            primary.request,
+            &primary.pack,
+            &primary.route,
+            step_id.clone(),
+            None,
+            true,
+        );
+        attempted_models.push(primary_model);
+
+        loop {
+            let Err(error) = result else {
+                return result;
+            };
+            if !is_retryable_model_error(&error) {
+                self.close_failed_routed_run()?;
+                return Err(error);
+            }
+            let Some(fallback_model) = next_fallback_model(route, &attempted_models) else {
+                self.close_failed_routed_run()?;
+                return Err(error);
+            };
+            let fallback_model = fallback_model.to_owned();
+            let fallback_index = attempted_models.len();
+            let fallback_step_id = format!("{step_id}:fallback:{fallback_index}");
+            let candidate = resolve_candidate(&current_route, &fallback_model)?;
+            validate_resolved_candidate(&candidate, route, &fallback_model)?;
+
+            let parent_attempt_id =
+                self.task_run.current_attempt_id.clone().ok_or_else(|| {
+                    AttemptLineageError::AttemptNotFound("current_attempt_id".into())
+                })?;
+            let parent_evidence_refs = self
+                .task_run
+                .attempt(&parent_attempt_id)
+                .map(|attempt| attempt.evidence_refs.clone())
+                .unwrap_or_default();
+            self.task_run.finish_attempt(
+                &parent_attempt_id,
+                AttemptStatus::Failed,
+                "model_retryable_failure",
+                Vec::new(),
+                parent_evidence_refs,
+            )?;
+            let child_attempt = self.task_run.start_attempt(
+                format!(
+                    "{}:attempt:fallback:{fallback_index}",
+                    self.loop_run.loop_run_id
+                ),
+                AttemptReason::Fallback,
+                Some(parent_attempt_id),
+            )?;
+            self.budget = self.task_run.budget.clone();
+            self.bind_attempt_route(&child_attempt.attempt_id, &candidate.route)?;
+            self.append_model_event(
+                "model_route_fallback",
+                &format!(
+                    "{}:fallback:{fallback_index}",
+                    candidate.route.route_decision_id
+                ),
+                json!({
+                    "from_route_decision_id": current_route.route_decision_id,
+                    "to_route_decision_id": candidate.route.route_decision_id,
+                    "from_model": attempted_models.last(),
+                    "to_model": fallback_model,
+                    "attempt_no": child_attempt.attempt_no,
+                    "attempted_models": attempted_models,
+                    "error_class": retryable_model_error_class(&error),
+                }),
+            )?;
+            attempted_models.push(fallback_model);
+            current_route = candidate.route.clone();
+            result = self.run_resolved_model_step_internal(
+                candidate.adapter.as_ref(),
+                candidate.request,
+                &candidate.pack,
+                &candidate.route,
+                fallback_step_id,
+                None,
+                false,
+            );
+        }
     }
 
     pub fn run_resolved_model_step_with_action<A: ResolvedModelAdapter + ?Sized>(
@@ -967,6 +1082,7 @@ impl ReadOnlyLoopController {
             route,
             step_id,
             Some(ResolvedModelActionRuntime::ReadOnly(runtime)),
+            true,
         )
     }
 
@@ -986,9 +1102,11 @@ impl ReadOnlyLoopController {
             route,
             step_id,
             Some(ResolvedModelActionRuntime::WorkspaceEdit(runtime)),
+            true,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_resolved_model_step_internal<A: ResolvedModelAdapter + ?Sized>(
         &mut self,
         adapter: &A,
@@ -997,6 +1115,7 @@ impl ReadOnlyLoopController {
         route: &RouteDecision,
         step_id: impl Into<String>,
         action_runtime: Option<ResolvedModelActionRuntime<'_>>,
+        check_no_progress: bool,
     ) -> Result<ModelDecision, LoopControllerError> {
         let store = self
             .model_call_store
@@ -1043,7 +1162,7 @@ impl ReadOnlyLoopController {
             "{}\n{}\n{}",
             request.model_id, self.goal.goal_id, request.observation
         );
-        let repeated_action = self.next_step_no > 1;
+        let repeated_action = check_no_progress && self.next_step_no > 1;
         if repeated_action && self.no_progress.observe(&action_fingerprint, false) {
             self.append_model_event(
                 "no_progress_detected",
@@ -1063,7 +1182,7 @@ impl ReadOnlyLoopController {
                 },
             ));
         }
-        if !repeated_action {
+        if check_no_progress && !repeated_action {
             self.no_progress.observe(&action_fingerprint, false);
         }
         if let Err(kind) = self.budget.consume_step() {
@@ -2767,6 +2886,34 @@ impl ReadOnlyLoopController {
         self.task_run.object_version += 1;
     }
 
+    fn bind_current_attempt_route(
+        &mut self,
+        route: &RouteDecision,
+    ) -> Result<(), LoopControllerError> {
+        let attempt_id = self
+            .task_run
+            .current_attempt_id
+            .clone()
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound("current_attempt_id".into()))?;
+        self.bind_attempt_route(&attempt_id, route)
+    }
+
+    fn bind_attempt_route(
+        &mut self,
+        attempt_id: &str,
+        route: &RouteDecision,
+    ) -> Result<(), LoopControllerError> {
+        let attempt = self
+            .task_run
+            .attempts
+            .iter_mut()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound(attempt_id.into()))?;
+        attempt.route_decision_id = Some(route.route_decision_id.clone());
+        self.task_run.object_version += 1;
+        Ok(())
+    }
+
     fn finish_task_run(
         &mut self,
         attempt_id: &str,
@@ -3032,6 +3179,88 @@ fn is_retryable_model_error(error: &LoopControllerError) -> bool {
                 | ProviderErrorClass::Upstream,
         })
     )
+}
+
+fn retryable_model_error_class(error: &LoopControllerError) -> &'static str {
+    match error {
+        LoopControllerError::ModelAdapter(ModelAdapterError::Provider { class }) => match class {
+            ProviderErrorClass::RateLimit => "rate_limit",
+            ProviderErrorClass::Timeout => "timeout",
+            ProviderErrorClass::Transport => "transport",
+            ProviderErrorClass::Upstream => "upstream",
+            _ => "non_retryable",
+        },
+        _ => "non_retryable",
+    }
+}
+
+fn validate_resolved_candidate(
+    candidate: &ResolvedProviderCandidate,
+    parent_route: &RouteDecision,
+    model_id: &str,
+) -> Result<(), LoopControllerError> {
+    candidate.route.validate()?;
+    if candidate.route.selected_model != model_id {
+        return Err(LoopControllerError::ModelAdapter(
+            ModelAdapterError::ResolvedBindingMismatch {
+                field: "fallback_model",
+            },
+        ));
+    }
+    for (actual, expected, field) in [
+        (
+            candidate.route.task_id.as_str(),
+            parent_route.task_id.as_str(),
+            "task_id",
+        ),
+        (
+            candidate.route.route_decision_id.as_str(),
+            candidate.pack.metadata().route_decision_id.as_str(),
+            "route_decision_id",
+        ),
+        (
+            candidate.route.task_id.as_str(),
+            candidate.pack.metadata().task_id.as_str(),
+            "pack_task_id",
+        ),
+        (
+            candidate.route.selected_provider.as_str(),
+            candidate.pack.provider_id(),
+            "provider_id",
+        ),
+        (
+            candidate.route.selected_endpoint.as_str(),
+            candidate.pack.endpoint_id(),
+            "endpoint_id",
+        ),
+        (
+            candidate.route.selected_model.as_str(),
+            candidate.pack.model_id(),
+            "model_id",
+        ),
+        (
+            candidate.request.model_id.as_str(),
+            candidate.pack.model_id(),
+            "request_model_id",
+        ),
+        (
+            candidate.request.objective.as_str(),
+            candidate.pack.objective(),
+            "objective",
+        ),
+        (
+            candidate.request.observation.as_str(),
+            candidate.pack.observation(),
+            "observation",
+        ),
+    ] {
+        if actual != expected {
+            return Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::ResolvedBindingMismatch { field },
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn model_call_failure_metadata(error: &ModelAdapterError) -> (&'static str, &'static str) {

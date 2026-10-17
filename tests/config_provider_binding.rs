@@ -72,3 +72,34 @@ fn profile_config_contains_only_opaque_auth_reference_not_credential_material() 
         assert!(!encoded.contains(forbidden));
     }
 }
+
+#[test]
+fn legacy_profile_without_protocol_normalizes_to_openai_compatible_chat() {
+    let config = config();
+    assert_eq!(
+        config.model_profiles[0].endpoint_protocol,
+        "openai-compatible-chat"
+    );
+}
+
+#[test]
+fn unsupported_protocol_is_rejected_before_http_adapter_construction() {
+    let encoded = serde_json::json!({
+        "schema_version": 1,
+        "project_ref": "binding-fixture",
+        "data_root": "/temp/steerbox/binding-fixture",
+        "model_profiles": [{
+            "model_id": "logical-model",
+            "provider": "openai",
+            "endpoint": "https://fixture.example.test/v1",
+            "endpoint_protocol": "openai-responses",
+            "auth_ref": "env:FIXTURE_PROVIDER_KEY",
+            "capabilities": ["text"]
+        }]
+    });
+    assert!(matches!(
+        RuntimeConfig::from_json_str(&encoded.to_string()),
+        Err(ConfigError::UnsupportedEndpointProtocol { protocol })
+            if protocol == "openai-responses"
+    ));
+}

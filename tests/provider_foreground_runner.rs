@@ -8,7 +8,7 @@ use steerbox::model_adapter::ModelDecision;
 use steerbox::model_call_store::ModelCallStore;
 use steerbox::provider_adapter::{ProviderTransport, TransportError, TransportResponse};
 use steerbox::provider_runner::{ForegroundProviderRun, ProviderRunError, ProviderRunRequest};
-use steerbox::runtime_config::RuntimeConfig;
+use steerbox::runtime_config::{ConfigError, RuntimeConfig};
 use steerbox::stream_reporter::StreamReporter;
 
 struct TestTransport {
@@ -227,6 +227,19 @@ fn anthropic_is_not_silently_sent_to_an_openai_wire_protocol() {
     );
     assert!(matches!(result, Err(ProviderRunError::UnsupportedProtocol)));
     assert_eq!(transport.calls.get(), 0);
+}
+
+#[test]
+fn unsupported_explicit_protocol_fails_before_chat_completions_transport() {
+    let mut config = config(Some("secret-ref:provider-fixture"), "openai");
+    config.model_profiles[0].endpoint_protocol = "openai-responses".into();
+    let result = ForegroundProviderRun::prepare(&config, request());
+    assert!(matches!(
+        result,
+        Err(ProviderRunError::Config(
+            ConfigError::UnsupportedEndpointProtocol { protocol }
+        )) if protocol == "openai-responses"
+    ));
 }
 
 #[test]

@@ -23,7 +23,10 @@ use crate::resolved_prompt::{
     resolve_prompt, AgentRolePrompt, ModelPromptFragment, ProviderPromptFragment,
     ResolvePromptInput, ResolvedPromptPack, TaskPromptPack, VersionedPromptFragment,
 };
-use crate::runtime_config::{ConfigError, ModelProfileConfig, RuntimeConfig};
+use crate::runtime_config::{
+    ConfigError, ModelProfileConfig, RuntimeConfig, ANTHROPIC_MESSAGES_PROTOCOL,
+    OPENAI_COMPATIBLE_CHAT_PROTOCOL,
+};
 use crate::stream_reporter::ProgressSink;
 use crate::tool_executor::{ReadOnlyToolExecutor, WorkspaceToolExecutor};
 use crate::tool_registry::ToolRegistry;
@@ -231,10 +234,10 @@ impl ForegroundProviderRun {
         };
         let mut models = ModelRegistry::default();
         let endpoint_id = format!("foreground:{}", profile.model_id);
-        let endpoint_protocol = if profile.provider == "anthropic" {
-            "anthropic"
-        } else {
-            "openai-compatible"
+        let endpoint_protocol = match profile.endpoint_protocol.as_str() {
+            OPENAI_COMPATIBLE_CHAT_PROTOCOL => "openai-compatible",
+            ANTHROPIC_MESSAGES_PROTOCOL => "anthropic",
+            _ => return Err(ProviderRunError::UnsupportedProtocol),
         };
         models
             .register_provider(
@@ -376,7 +379,7 @@ impl ForegroundProviderRun {
         model_calls: ModelCallStore,
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
-        if self.profile.provider == "anthropic" {
+        if self.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
         let request = self.request;
@@ -431,7 +434,7 @@ impl ForegroundProviderRun {
         model_calls: ModelCallStore,
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
-        if self.profile.provider != "anthropic" {
+        if self.profile.endpoint_protocol != ANTHROPIC_MESSAGES_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
         let request = self.request;
@@ -536,7 +539,7 @@ impl BoundedMarkdownProviderRun {
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
         let Self { inner, run } = self;
-        if inner.profile.provider == "anthropic" {
+        if inner.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
         let adapter = ProviderModelAdapter::new(
@@ -559,7 +562,7 @@ impl BoundedMarkdownProviderRun {
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
         let Self { inner, run } = self;
-        if inner.profile.provider != "anthropic" {
+        if inner.profile.endpoint_protocol != ANTHROPIC_MESSAGES_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
         let adapter = AnthropicAdapter::new(
