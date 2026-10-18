@@ -25,10 +25,21 @@ use steerbox::resolved_prompt::{
     resolve_prompt, AgentRolePrompt, ModelPromptFragment, ProviderPromptFragment,
     ResolvePromptInput, ResolvedPromptPack, TaskPromptPack, VersionedPromptFragment,
 };
+use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
 use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallOutput, WorkspaceToolExecutor};
 use steerbox::tool_registry::ToolRegistry;
 
 const BASE_URL: &str = "https://fixture.example.test/v1";
+
+#[derive(Clone)]
+struct RecordingProgressSink(Arc<Mutex<Vec<ProgressEvent>>>);
+
+impl ProgressSink for RecordingProgressSink {
+    fn report(&mut self, event: ProgressEvent) -> std::io::Result<()> {
+        self.0.lock().expect("progress capture lock").push(event);
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 struct FakeTransport {
@@ -586,6 +597,7 @@ fn resolved_model_loop_reports_no_action_stop_without_spinning() {
     let directory = TestDirectory::new();
     let workspace = std::env::current_dir().expect("workspace exists");
     let (pack, route) = resolved_fixture();
+    let progress = Arc::new(Mutex::new(Vec::new()));
     let transport = FakeTransport::with_decision_content(
         json!({"decision":"continue_observation","summary":"fixture awaits evidence"}).to_string(),
     );
@@ -598,6 +610,7 @@ fn resolved_model_loop_reports_no_action_stop_without_spinning() {
         &directory,
         vec!["git_status".into(), "markdown_link_check".into()],
     )
+    .with_progress_sink(RecordingProgressSink(progress.clone()))
     .with_model_call_store(
         ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
     );
@@ -635,6 +648,13 @@ fn resolved_model_loop_reports_no_action_stop_without_spinning() {
     assert!(events.iter().any(|event| {
         event.event_type == "resolved_loop_stopped"
             && event.payload["reason"] == "continue_observation_without_action"
+    }));
+    let progress_events = progress.lock().expect("progress capture lock");
+    assert!(progress_events.iter().any(|event| {
+        event.subject == ProgressSubject::Loop
+            && event.subject_id == "loop-model-audit"
+            && event.status == ProgressStatus::Progress
+            && event.summary.as_deref() == Some("bounded resolved loop stopped: no verified action")
     }));
 }
 
@@ -868,6 +888,70 @@ fn resolved_model_loop_zero_iterations_fails_closed_before_provider_call() {
     assert_eq!(stopped.payload["reason"], "budget_exhausted");
     assert_eq!(stopped.payload["iterations"], 0);
     assert_eq!(stopped.payload["last_step_id"], "step-zero-iterations");
+}
+
+#[test]
+fn resolved_model_loop_reports_safe_stop_progress_without_model_content() {
+    let directory = TestDirectory::new();
+    let workspace = std::env::current_dir().expect("workspace exists");
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::with_decision_content(
+        json!({"decision":"request_human","summary":"do not expose this"}).to_string(),
+    );
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let progress = Arc::new(Mutex::new(Vec::new()));
+    let mut controller = controller_with_allowed_tools(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+    )
+    .with_progress_sink(RecordingProgressSink(progress.clone()))
+    .with_model_call_store(
+        ModelCallStore::open(directory.model_calls()).expect("model call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+
+    controller
+        .run_resolved_model_loop(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-progress-stop".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            &runtime,
+            1,
+        )
+        .expect("request-human stop is a successful bounded invocation");
+
+    let events = progress.lock().expect("progress capture lock").clone();
+    let stop = events
+        .iter()
+        .find(|event| {
+            event.subject == ProgressSubject::Loop
+                && event.subject_id == "loop-model-audit"
+                && event.status == ProgressStatus::Progress
+        })
+        .expect("safe stop progress is observable");
+    assert_eq!(
+        stop.summary.as_deref(),
+        Some("bounded resolved loop stopped: request human")
+    );
+    assert!(!stop
+        .summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("do not expose this"));
 }
 
 fn controller_with_budget(

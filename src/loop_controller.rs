@@ -1278,6 +1278,15 @@ impl ReadOnlyLoopController {
                         iteration + 1,
                         stop_reason,
                     )?;
+                    if stop_reason == ResolvedModelLoopStopReason::RequestHuman {
+                        let _ = self.report_progress(
+                            ProgressSubject::Loop,
+                            self.loop_run.loop_run_id.clone(),
+                            ProgressStatus::Progress,
+                            Some("bounded resolved loop stopped: request human"),
+                            None,
+                        );
+                    }
                     return Ok(ResolvedModelLoopOutcome {
                         decision,
                         iterations: iteration + 1,
@@ -1294,6 +1303,13 @@ impl ReadOnlyLoopController {
                         iteration + 1,
                         stop_reason,
                     )?;
+                    let _ = self.report_progress(
+                        ProgressSubject::Loop,
+                        self.loop_run.loop_run_id.clone(),
+                        ProgressStatus::Progress,
+                        Some("bounded resolved loop stopped: no verified action"),
+                        None,
+                    );
                     return Ok(ResolvedModelLoopOutcome {
                         decision: ModelDecision::ContinueObservation,
                         iterations: iteration + 1,
