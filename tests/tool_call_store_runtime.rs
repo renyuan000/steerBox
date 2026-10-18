@@ -106,6 +106,13 @@ fn tool_call_store_failure_stops_before_execution_and_completion() {
     let root = tempfile::tempdir().expect("audit root creates");
     let failing_path = root.path().join("tool-call-directory");
     fs::write(&failing_path, "").expect("store file creates");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&failing_path, fs::Permissions::from_mode(0o600))
+            .expect("store permissions apply");
+    }
     let store = ToolCallRecordStore::open(&failing_path).expect("tool call store opens");
     fs::remove_file(&failing_path).expect("store file removes");
     fs::create_dir(&failing_path).expect("failing store path creates");
