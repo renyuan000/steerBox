@@ -295,6 +295,54 @@ fn verification_failure_records_restore_required_without_automatic_restore() {
 }
 
 #[test]
+fn mutation_failure_reports_failed_without_leaking_error_details() {
+    let fixture = Fixture::new();
+    let progress = Arc::new(Mutex::new(Vec::new()));
+    let mut controller = fixture
+        .controller()
+        .with_progress_sink(RecordingSink(progress.clone()));
+    let mut action = fixture.action("after\n");
+    action.parameters["expected"] = serde_json::json!("not the current content");
+
+    let result = fixture.run_edit(&mut controller, &action, "step-snapshot-mutation-failed");
+    assert!(
+        result.is_err(),
+        "stale expected content must reject mutation"
+    );
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"before\n"
+    );
+
+    let workspace_events = progress
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            event.subject == ProgressSubject::Tool
+                && event.subject_id == "step-snapshot-mutation-failed:workspace_write"
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(workspace_events.len(), 2);
+    assert_eq!(workspace_events[0].status, ProgressStatus::Started);
+    assert_eq!(workspace_events[1].status, ProgressStatus::Failed);
+    assert_eq!(
+        workspace_events[1].summary.as_deref(),
+        Some("workspace mutation failed")
+    );
+    assert!(workspace_events
+        .iter()
+        .all(|event| event.summary.as_deref().is_none_or(|summary| {
+            !summary.contains("README") && !summary.contains("not the current content")
+        })));
+    assert!(fixture
+        .events()
+        .iter()
+        .any(|event| event.event_type == "model_action_failed"));
+}
+
+#[test]
 fn explicit_restore_keeps_approval_and_expected_after_hash_boundaries() {
     let fixture = Fixture::new();
     let mut controller = fixture.controller();
