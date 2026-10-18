@@ -72,11 +72,17 @@ impl ToolCallRecordStore {
         }
         let _lock = self.acquire_lock()?;
         let mut records = Vec::new();
-        if limit == 0 || !self.path.exists() {
+        if limit == 0 {
             return Ok(records);
         }
 
-        let reader = BufReader::new(open_read_file(&self.path)?);
+        let reader = match open_read_file(&self.path) {
+            Ok(file) => BufReader::new(file),
+            Err(ToolCallStoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(records)
+            }
+            Err(error) => return Err(error),
+        };
         let mut record_index = 0usize;
         for (line_index, line) in reader.lines().enumerate() {
             let line = line?;
@@ -172,7 +178,11 @@ fn open_options(options: &OpenOptions, path: &Path) -> Result<File, ToolCallStor
 fn configure_no_follow(options: &mut OpenOptions, create: bool) {
     #[cfg(unix)]
     {
-        options.custom_flags(libc::O_NOFOLLOW);
+        let mut flags = libc::O_NOFOLLOW;
+        if !create {
+            flags |= libc::O_NONBLOCK;
+        }
+        options.custom_flags(flags);
         if create {
             options.mode(0o600);
         }
