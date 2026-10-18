@@ -105,12 +105,11 @@ fn read_only_runtime_persists_started_completed_and_failed_metadata() {
 fn tool_call_store_failure_stops_before_execution_and_completion() {
     let root = tempfile::tempdir().expect("audit root creates");
     let failing_path = root.path().join("tool-call-directory");
+    fs::write(&failing_path, "").expect("store file creates");
+    let store = ToolCallRecordStore::open(&failing_path).expect("tool call store opens");
+    fs::remove_file(&failing_path).expect("store file removes");
     fs::create_dir(&failing_path).expect("failing store path creates");
-    let mut controller = controller(
-        root.path(),
-        "loop-tool-record-fail-closed",
-        ToolCallRecordStore::open(&failing_path).expect("tool call store opens"),
-    );
+    let mut controller = controller(root.path(), "loop-tool-record-fail-closed", store);
     let registry = ToolRegistry::baseline().expect("baseline tools register");
     let workspace = tempfile::tempdir().expect("workspace creates");
 

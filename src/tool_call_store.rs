@@ -18,6 +18,8 @@ pub enum ToolCallStoreError {
     Serialization(#[from] serde_json::Error),
     #[error("tool call page limit {requested} exceeds maximum {maximum}")]
     PageLimitExceeded { requested: usize, maximum: usize },
+    #[error("tool call store path is not a regular non-symlink file")]
+    UnsafePath,
 }
 
 /// Metadata-only JSONL persistence for tool-call audit records.
@@ -35,10 +37,12 @@ impl ToolCallRecordStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        validate_path(&path)?;
         Ok(Self { path })
     }
 
     pub fn append(&self, record: &ToolCallRecord) -> Result<(), ToolCallStoreError> {
+        validate_path(&self.path)?;
         let mut redacted = record.clone();
         redacted.summary = Redactor::default().redact_text_fail_closed(&record.summary);
         let encoded = serde_json::to_string(&redacted)?;
@@ -46,6 +50,7 @@ impl ToolCallRecordStore {
             .create(true)
             .append(true)
             .open(&self.path)?;
+        validate_path(&self.path)?;
         writeln!(file, "{encoded}")?;
         file.sync_data()?;
         Ok(())
@@ -67,6 +72,7 @@ impl ToolCallRecordStore {
         if limit == 0 || !self.path.exists() {
             return Ok(records);
         }
+        validate_path(&self.path)?;
 
         let reader = BufReader::new(File::open(&self.path)?);
         let mut record_index = 0usize;
@@ -92,4 +98,16 @@ impl ToolCallRecordStore {
         }
         Ok(records)
     }
+}
+
+fn validate_path(path: &Path) -> Result<(), ToolCallStoreError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(ToolCallStoreError::UnsafePath);
+    }
+    Ok(())
 }

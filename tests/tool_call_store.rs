@@ -176,3 +176,28 @@ fn missing_log_reads_as_empty_without_creating_a_file() {
         .is_empty());
     assert!(!file.exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn open_rejects_symlink_store_paths() {
+    let directory = TestDirectory::new();
+    let target = directory.path.join("target.jsonl");
+    let link = directory.path.join("link.jsonl");
+    fs::write(&target, "").expect("target creates");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink creates");
+
+    assert!(matches!(
+        ToolCallRecordStore::open(&link),
+        Err(ToolCallStoreError::UnsafePath)
+    ));
+}
+
+#[test]
+fn open_rejects_non_regular_store_paths() {
+    let directory = TestDirectory::new();
+
+    assert!(matches!(
+        ToolCallRecordStore::open(directory.path.clone()),
+        Err(ToolCallStoreError::UnsafePath)
+    ));
+}

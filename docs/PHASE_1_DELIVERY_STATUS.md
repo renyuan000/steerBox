@@ -196,7 +196,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 2026-10-18 workspace mutation progress 增量：受控 workspace-edit 在 mutation 前后增加 `ProgressSubject::Tool` 的 `Started/Completed` 生命周期，固定 subject id 为 `{step_id}:workspace_write`，固定摘要不包含路径、正文、参数或原始错误；mutation 执行失败时发送 `Failed`，verification 仍沿用独立只读工具进度。当前 snapshot integration focused 为 17 项通过；这只是 UI/后台可观测性，不改变 checkpoint、approval、恢复或自动 rollback 边界。
 
-2026-10-18 ToolCallRecord runtime 增量：新增 opt-in `ToolCallRecordStore` metadata-only JSONL 持久化，并接入只读工具请求的 `started`、成功的 `completed` 和失败的 `failed` 生命周期。记录只包含固定 11 个 metadata 字段，summary 经过本地 fail-closed 脱敏，不保存 raw output、arguments 或原始错误正文；分页 `limit` 受 `MAX_TOOL_CALL_PAGE_SIZE = 1024` 硬上限保护；store 写入失败会在工具执行前或完成审计阶段 fail-closed。focused 验收为 store 5 项、runtime integration 3 项；该切片尚未接入 CLI/生产默认配置，不等于通用 ToolExecutor、Bash、live provider、跨进程恢复或完整 DLP。
+2026-10-18 ToolCallRecord runtime 增量：新增 opt-in `ToolCallRecordStore` metadata-only JSONL 持久化，并接入只读工具请求的 `started`、成功的 `completed` 和失败的 `failed` 生命周期。记录只包含固定 11 个 metadata 字段，summary 经过本地 fail-closed 脱敏，不保存 raw output、arguments 或原始错误正文；分页 `limit` 受 `MAX_TOOL_CALL_PAGE_SIZE = 1024` 硬上限保护；现有 symlink 和非 regular store 路径会被拒绝；store 写入失败会在工具执行前或完成审计阶段 fail-closed。focused 验收为 store 7 项、runtime integration 3 项；该切片尚未接入 CLI/生产默认配置，仍未解决私有权限、跨进程锁、O_NOFOLLOW 原子竞态，不等于通用 ToolExecutor、Bash、live provider、跨进程恢复或完整 DLP。
 
 2026-10-18 bounded resolved loop 零迭代边界：`max_iterations == 0` 现在先执行 request/pack/controller lineage 校验，再写入 metadata-only `resolved_loop_budget_exhausted` 与 `resolved_loop_stopped(reason=budget_exhausted, iterations=0)`，随后返回既有 `BudgetExhausted(Steps)`；不会调用 provider，也不把未校验请求的事件写入日志。model-call controller audit 28 项通过；该修补仍不扩展为多进程恢复、workspace-edit 自动 loop 或 live provider 验收。
 
