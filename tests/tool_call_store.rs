@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use steerbox::domain::ToolCallRecord;
-use steerbox::tool_call_store::{ToolCallRecordStore, ToolCallStoreError};
+use steerbox::tool_call_store::{ToolCallRecordStore, ToolCallStoreError, MAX_TOOL_CALL_PAGE_SIZE};
 
 static NEXT_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -136,6 +136,20 @@ fn read_page_is_bounded_and_skips_blank_lines() {
         .read_page(10, 2)
         .expect("out-of-range page reads")
         .is_empty());
+}
+
+#[test]
+fn read_page_rejects_limits_above_the_hard_cap() {
+    let directory = TestDirectory::new();
+    let store = ToolCallRecordStore::open(directory.file()).expect("store opens");
+
+    assert!(matches!(
+        store.read_page(0, MAX_TOOL_CALL_PAGE_SIZE + 1),
+        Err(ToolCallStoreError::PageLimitExceeded {
+            requested,
+            maximum: MAX_TOOL_CALL_PAGE_SIZE,
+        }) if requested == MAX_TOOL_CALL_PAGE_SIZE + 1
+    ));
 }
 
 #[test]

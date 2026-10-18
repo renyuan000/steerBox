@@ -6,6 +6,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+pub const MAX_TOOL_CALL_PAGE_SIZE: usize = 1024;
+
 #[derive(Debug, Error)]
 pub enum ToolCallStoreError {
     #[error("tool call store I/O failed: {0}")]
@@ -14,6 +16,8 @@ pub enum ToolCallStoreError {
     InvalidJson { line: usize, source: JsonError },
     #[error("tool call record serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("tool call page limit {requested} exceeds maximum {maximum}")]
+    PageLimitExceeded { requested: usize, maximum: usize },
 }
 
 /// Metadata-only JSONL persistence for tool-call audit records.
@@ -53,6 +57,12 @@ impl ToolCallRecordStore {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<ToolCallRecord>, ToolCallStoreError> {
+        if limit > MAX_TOOL_CALL_PAGE_SIZE {
+            return Err(ToolCallStoreError::PageLimitExceeded {
+                requested: limit,
+                maximum: MAX_TOOL_CALL_PAGE_SIZE,
+            });
+        }
         let mut records = Vec::new();
         if limit == 0 || !self.path.exists() {
             return Ok(records);
