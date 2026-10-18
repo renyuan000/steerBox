@@ -161,6 +161,66 @@ impl Fixture {
         )
     }
 
+    fn with_restore_approval(
+        &self,
+        controller: ReadOnlyLoopController,
+        request_id: &str,
+        snapshot_id: &str,
+        expected_after_hash: &str,
+    ) -> ReadOnlyLoopController {
+        let controller = controller
+            .with_approval_store(ApprovalStore::open(self.workspace.join("approvals.jsonl")));
+        let request = ApprovalRequest::at(
+            request_id,
+            self.goal.project_id.clone(),
+            "loop-controller-snapshot",
+            "task-controller-snapshot",
+            "restore_workspace_snapshot",
+            restore_capability(snapshot_id, "README.md", expected_after_hash),
+            "metadata_only",
+            "restore one controller-bound workspace snapshot",
+            Utc::now(),
+            Utc::now() + Duration::minutes(15),
+        )
+        .unwrap();
+        controller
+            .approval_store()
+            .unwrap()
+            .submit(request)
+            .unwrap();
+        controller
+            .approval_store()
+            .unwrap()
+            .resolve(request_id, ApprovalDecision::Approve(ApprovalScope::Once))
+            .unwrap();
+        controller
+    }
+
+    fn restore_authorized(
+        &self,
+        controller: &mut ReadOnlyLoopController,
+        request_id: &str,
+        step_id: &str,
+        snapshot_id: &str,
+        expected_after_hash: &str,
+    ) -> Result<steerbox::workspace_edit::EditResult, steerbox::loop_controller::LoopControllerError>
+    {
+        controller.restore_workspace_snapshot_with_authorization(
+            &ToolRegistry::baseline().unwrap(),
+            &PolicyGate::new(),
+            steerbox::loop_controller::RestoreApprovalContext {
+                approval_request_id: request_id.into(),
+                project_id: self.goal.project_id.clone(),
+                goal_id: self.goal.goal_id.clone(),
+                task_run_id: "task-controller-snapshot".into(),
+                loop_run_id: "loop-controller-snapshot".into(),
+                step_id: step_id.into(),
+                snapshot_id: snapshot_id.into(),
+                expected_after_hash: expected_after_hash.into(),
+            },
+        )
+    }
+
     fn snapshot_ids(&self) -> Vec<String> {
         let mut ids = fs::read_dir(&self.snapshot_root)
             .unwrap()
@@ -236,9 +296,21 @@ fn opt_in_controller_edit_captures_snapshot_before_mutation_and_explicit_restore
     let snapshot_id = captured.payload["snapshot_id"].as_str().unwrap();
     assert_eq!(snapshot_id, fixture.snapshot_ids()[0]);
 
-    controller
-        .restore_workspace_snapshot(snapshot_id, &sha256(b"after\n"), true)
-        .expect("explicit restore succeeds");
+    controller = fixture.with_restore_approval(
+        controller,
+        "restore-snapshot-success",
+        snapshot_id,
+        &sha256(b"after\n"),
+    );
+    fixture
+        .restore_authorized(
+            &mut controller,
+            "restore-snapshot-success",
+            "step-snapshot-success",
+            snapshot_id,
+            &sha256(b"after\n"),
+        )
+        .expect("authorized restore succeeds");
     assert_eq!(
         fs::read(fixture.workspace.join("README.md")).unwrap(),
         b"before\n"
@@ -370,65 +442,58 @@ fn explicit_restore_keeps_approval_and_expected_after_hash_boundaries() {
         )
         .unwrap();
     let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    controller = fixture.with_restore_approval(
+        controller,
+        "restore-boundary",
+        &snapshot_id,
+        &sha256(b"after\n"),
+    );
     assert!(controller
-        .restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), false)
+        .restore_workspace_snapshot_with_authorization(
+            &ToolRegistry::baseline().unwrap(),
+            &PolicyGate::new(),
+            steerbox::loop_controller::RestoreApprovalContext {
+                approval_request_id: "missing-restore-boundary".into(),
+                project_id: fixture.goal.project_id.clone(),
+                goal_id: fixture.goal.goal_id.clone(),
+                task_run_id: "task-controller-snapshot".into(),
+                loop_run_id: "loop-controller-snapshot".into(),
+                step_id: "step-snapshot-boundary".into(),
+                snapshot_id: snapshot_id.clone(),
+                expected_after_hash: sha256(b"after\n"),
+            },
+        )
         .is_err());
     assert_eq!(
         fs::read(fixture.workspace.join("README.md")).unwrap(),
         b"after\n"
     );
-    assert!(controller
-        .restore_workspace_snapshot(&snapshot_id, &sha256(b"wrong-current-version"), true)
+    assert!(fixture
+        .restore_authorized(
+            &mut controller,
+            "restore-boundary",
+            "step-snapshot-boundary",
+            &snapshot_id,
+            &sha256(b"wrong-current-version"),
+        )
         .is_err());
     assert_eq!(
         fs::read(fixture.workspace.join("README.md")).unwrap(),
         b"after\n"
     );
-    controller
-        .restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), true)
+    fixture
+        .restore_authorized(
+            &mut controller,
+            "restore-boundary",
+            "step-snapshot-boundary",
+            &snapshot_id,
+            &sha256(b"after\n"),
+        )
         .unwrap();
     assert_eq!(
         fs::read(fixture.workspace.join("README.md")).unwrap(),
         b"before\n"
     );
-}
-
-#[test]
-fn legacy_restore_is_blocked_when_approval_store_is_configured() {
-    let fixture = Fixture::new();
-    let mut controller = fixture.controller();
-    fixture
-        .run_edit(
-            &mut controller,
-            &fixture.action("after\n"),
-            "step-legacy-restore-gate",
-        )
-        .unwrap();
-    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
-    controller = controller.with_approval_store(ApprovalStore::open(
-        fixture.workspace.join("approvals.jsonl"),
-    ));
-    let budget_before = controller.budget().clone();
-
-    let result = controller.restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), true);
-    assert!(matches!(
-        result,
-        Err(
-            steerbox::loop_controller::LoopControllerError::PolicyDenied {
-                decision: steerbox::policy_gate::PolicyDecision::Block,
-                ..
-            }
-        )
-    ));
-    assert_eq!(
-        fs::read(fixture.workspace.join("README.md")).unwrap(),
-        b"after\n"
-    );
-    assert_eq!(*controller.budget(), budget_before);
-    assert!(!fixture
-        .events()
-        .iter()
-        .any(|event| event.event_type == "workspace_snapshot_restore_requested"));
 }
 
 #[test]
@@ -443,14 +508,26 @@ fn invalid_expected_after_hash_is_rejected_before_restore_event() {
         )
         .unwrap();
     let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    controller = fixture.with_restore_approval(
+        controller,
+        "restore-invalid-hash",
+        &snapshot_id,
+        &sha256(b"after\n"),
+    );
     let invalid_hashes = [
         "sha256:not-a-hash".to_owned(),
         format!("sha256:{}", "a".repeat(65)),
     ];
 
     for invalid_hash in invalid_hashes {
-        let error = controller
-            .restore_workspace_snapshot(&snapshot_id, &invalid_hash, true)
+        let error = fixture
+            .restore_authorized(
+                &mut controller,
+                "restore-invalid-hash",
+                "step-invalid-restore-hash",
+                &snapshot_id,
+                &invalid_hash,
+            )
             .unwrap_err()
             .to_string();
         assert!(error.contains("invalid expected current content hash"));
@@ -485,7 +562,20 @@ fn snapshot_binding_is_not_registered_before_pre_mutation_audit_completes() {
         b"before\n"
     );
     let snapshot_id = fixture.snapshot_ids().pop().unwrap();
-    let restore = controller.restore_workspace_snapshot(&snapshot_id, &sha256(b"before\n"), true);
+    let restore = controller.restore_workspace_snapshot_with_authorization(
+        &ToolRegistry::baseline().unwrap(),
+        &PolicyGate::new(),
+        steerbox::loop_controller::RestoreApprovalContext {
+            approval_request_id: "unbound-restore".into(),
+            project_id: fixture.goal.project_id.clone(),
+            goal_id: fixture.goal.goal_id.clone(),
+            task_run_id: "task-controller-snapshot".into(),
+            loop_run_id: "loop-controller-snapshot".into(),
+            step_id: "step-binding-audit-failure".into(),
+            snapshot_id,
+            expected_after_hash: sha256(b"before\n"),
+        },
+    );
     assert!(restore
         .unwrap_err()
         .to_string()
@@ -601,7 +691,13 @@ fn restore_rejects_paused_and_terminal_controller_states() {
         )
         .unwrap();
     assert!(matches!(
-        paused_controller.restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), true),
+        fixture.restore_authorized(
+            &mut paused_controller,
+            "paused-restore",
+            "step-restore-paused",
+            &snapshot_id,
+            &sha256(b"after\n"),
+        ),
         Err(steerbox::loop_controller::LoopControllerError::Paused)
     ));
     assert_eq!(
@@ -611,13 +707,19 @@ fn restore_rejects_paused_and_terminal_controller_states() {
 
     let mut terminal_controller = fixture.controller_without_snapshot();
     terminal_controller.complete().unwrap();
-    assert!(terminal_controller
-        .restore_workspace_snapshot("missing", &sha256(b"after\n"), true)
+    assert!(fixture
+        .restore_authorized(
+            &mut terminal_controller,
+            "terminal-restore",
+            "missing-step",
+            "missing",
+            &sha256(b"after\n"),
+        )
         .is_err());
 }
 
 #[test]
-fn failed_restore_writes_metadata_only_event_without_file_body() {
+fn restore_preflight_failure_keeps_metadata_and_file_body_out_of_events() {
     let fixture = Fixture::new();
     let mut controller = fixture.controller();
     fixture
@@ -628,21 +730,28 @@ fn failed_restore_writes_metadata_only_event_without_file_body() {
         )
         .unwrap();
     let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    controller = fixture.with_restore_approval(
+        controller,
+        "restore-preflight-failure",
+        &snapshot_id,
+        &sha256(b"after\n"),
+    );
     fs::write(
         fixture.workspace.join("README.md"),
         "human changed the file\n",
     )
     .unwrap();
-    assert!(controller
-        .restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), true)
+    assert!(fixture
+        .restore_authorized(
+            &mut controller,
+            "restore-preflight-failure",
+            "step-restore-failed",
+            &snapshot_id,
+            &sha256(b"after\n"),
+        )
         .is_err());
     let events = fixture.events();
-    let failed = events
-        .iter()
-        .find(|event| event.event_type == "workspace_snapshot_restore_failed")
-        .expect("restore failure event exists");
-    let serialized = failed.payload.to_string();
-    assert_eq!(failed.payload["error"], "snapshot_restore_failed");
+    let serialized = serde_json::to_string(&events).unwrap();
     assert!(!serialized.contains("human changed the file"));
     assert!(!serialized.contains("after\n"));
     assert_eq!(
@@ -961,6 +1070,12 @@ fn physical_restore_with_restored_event_failure_returns_side_effect_uncertain() 
         )
         .unwrap();
     let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    controller = fixture.with_restore_approval(
+        controller,
+        "restore-audit-uncertain",
+        &snapshot_id,
+        &sha256(b"after\n"),
+    );
     let event_path = fixture.events.clone();
     let backup_path = fixture.events.with_extension("jsonl.before-uncertain");
     let watcher_backup_path = backup_path.clone();
@@ -984,7 +1099,13 @@ fn physical_restore_with_restored_event_failure_returns_side_effect_uncertain() 
         }
     });
 
-    let result = controller.restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), true);
+    let result = fixture.restore_authorized(
+        &mut controller,
+        "restore-audit-uncertain",
+        "step-restore-audit-uncertain",
+        &snapshot_id,
+        &sha256(b"after\n"),
+    );
     assert!(
         watcher.join().unwrap(),
         "restore request event was not observed"

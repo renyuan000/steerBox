@@ -143,7 +143,6 @@ struct SnapshotBinding {
     workspace: std::path::PathBuf,
     step_id: String,
     relative_path: String,
-    before_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -818,109 +817,16 @@ impl ReadOnlyLoopController {
 
     /// Opt into private single-file snapshots for workspace edits. This does
     /// not enable automatic rollback; restore remains an explicit trusted-call
-    /// operation through `restore_workspace_snapshot`.
+    /// operation through `restore_workspace_snapshot_with_authorization`.
     pub fn with_snapshot_store(mut self, root: impl Into<std::path::PathBuf>) -> Self {
         self.snapshot_store = Some(WorkspaceSnapshotStore::open(root));
         self
     }
 
-    /// Explicitly restore a controller-captured snapshot. The caller supplies
-    /// the trusted approval and expected current raw-bytes hash; verification
-    /// failures never call this method automatically.
-    pub fn restore_workspace_snapshot(
-        &mut self,
-        snapshot_id: &str,
-        expected_after_hash: &str,
-        approved: bool,
-    ) -> Result<crate::workspace_edit::EditResult, LoopControllerError> {
-        if self.approval_store.is_some() {
-            return Err(LoopControllerError::PolicyDenied {
-                decision: PolicyDecision::Block,
-                reason: "legacy approved-boolean restore is disabled when ApprovalStore is configured; use restore_workspace_snapshot_with_authorization".into(),
-            });
-        }
-        self.prepare_action()?;
-        if !approved {
-            return Err(LoopControllerError::WorkspaceSnapshot(
-                "restore requires explicit trusted-caller approval".into(),
-            ));
-        }
-        validate_content_hash(expected_after_hash).map_err(|_| {
-            LoopControllerError::WorkspaceSnapshot("invalid expected current content hash".into())
-        })?;
-        let binding = self
-            .snapshot_bindings
-            .get(snapshot_id)
-            .cloned()
-            .ok_or_else(|| {
-                LoopControllerError::WorkspaceSnapshot(
-                    "snapshot is not bound to this controller run".into(),
-                )
-            })?;
-        let store = self.snapshot_store.clone().ok_or_else(|| {
-            LoopControllerError::WorkspaceSnapshot("snapshot store is not configured".into())
-        })?;
-        self.append_model_event(
-            "workspace_snapshot_restore_requested",
-            &format!("{snapshot_id}:restore_requested"),
-            json!({
-                "snapshot_id": snapshot_id,
-                "step_id": binding.step_id,
-                "relative_path": binding.relative_path,
-                "before_hash": binding.before_hash,
-                "expected_after_hash": expected_after_hash,
-            }),
-        )?;
-        let result = store.restore(
-            &binding.workspace,
-            &self.goal,
-            snapshot_id,
-            expected_after_hash,
-            true,
-        );
-        match result {
-            Ok(edit) => {
-                if self
-                    .append_model_event(
-                        "workspace_snapshot_restored",
-                        &format!("{snapshot_id}:restored"),
-                        json!({
-                            "snapshot_id": snapshot_id,
-                            "step_id": binding.step_id,
-                            "relative_path": edit.relative_path,
-                            "bytes_before": edit.bytes_before,
-                            "bytes_after": edit.bytes_after,
-                            "changed": edit.changed,
-                        }),
-                    )
-                    .is_err()
-                {
-                    return Err(LoopControllerError::WorkspaceSnapshotAuditUncertain {
-                        status: SideEffectAuditStatus::Uncertain,
-                    });
-                }
-                Ok(edit)
-            }
-            Err(error) => {
-                self.append_model_event(
-                    "workspace_snapshot_restore_failed",
-                    &format!("{snapshot_id}:restore_failed"),
-                    json!({
-                        "snapshot_id": snapshot_id,
-                        "step_id": binding.step_id,
-                        "relative_path": binding.relative_path,
-                        "error": "snapshot_restore_failed",
-                    }),
-                )?;
-                Err(LoopControllerError::WorkspaceSnapshot(error.to_string()))
-            }
-        }
-    }
-
     /// Restore a controller-bound snapshot through the same policy, approval,
-    /// and side-effect audit boundaries used by other workspace mutations.
-    /// This remains an explicit trusted-caller operation: model actions cannot
-    /// invoke it, and no automatic rollback or replay is attempted.
+    /// approval, and side-effect audit boundaries used by other workspace
+    /// mutations. Model actions cannot invoke it, and no automatic rollback or
+    /// replay is attempted.
     pub fn restore_workspace_snapshot_with_authorization(
         &mut self,
         registry: &ToolRegistry,
@@ -3209,14 +3115,13 @@ impl ReadOnlyLoopController {
             Some("workspace mutation started"),
             None,
         )?;
-        if let Some((snapshot_id, snapshot_before_hash)) = &snapshot {
+        if let Some((snapshot_id, _snapshot_before_hash)) = &snapshot {
             self.snapshot_bindings.insert(
                 snapshot_id.clone(),
                 SnapshotBinding {
                     workspace: workspace.to_path_buf(),
                     step_id: step_id.clone(),
                     relative_path: relative_path.to_owned(),
-                    before_hash: snapshot_before_hash.clone(),
                 },
             );
         }
