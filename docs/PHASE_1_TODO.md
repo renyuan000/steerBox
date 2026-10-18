@@ -51,12 +51,12 @@
 - [x] 定义 TaskRun／Attempt 的最小领域 schema、父关系和跨 Attempt 总预算校验（初始 Attempt、routed fixture/model-adapter fallback 子 Attempt、父链、累计预算与事件证据已接入 controller；retry/resume/fork、resolved provider fallback、持久化恢复和完整依赖投影仍待完成）
 - [x] 定义 Task 状态及合法迁移表
 - [x] 定义最小 BoardProjection / BoardTaskCard
-- [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 与最小 `tool_call_failed` 关联事件已有测试；独立 ToolCallRecord 持久化仍待接线）
+- [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 与最小 `tool_call_failed` 关联事件已有测试；ToolCallRecordStore 已以 opt-in metadata-only 方式接入只读工具 started/completed/failed 生命周期）
 
 - [x] 定义 `GoalContract`
 - [x] 定义 `LoopRun`
 - [x] 定义 `LoopStep`
-- [x] 定义 `ToolCallRecord`（schema 已有序列化测试；实际 tool executor 记录仍待接线）
+- [x] 定义 `ToolCallRecord`（schema、独立 store 及只读工具 started/completed/failed runtime 接线已有 focused 测试；CLI/默认配置及通用工具面仍待完成）
 - [ ] 定义 `PolicyDecision`
 - [ ] 定义 `SideEffectEvent`
 - [x] 定义 `CheckpointMetadata`

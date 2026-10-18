@@ -34,6 +34,7 @@ use crate::resolved_prompt::{PromptResolutionError, ResolvedPromptPack};
 use crate::strategy_selector::{StrategyDecision, StrategySelectionError, StrategySelector};
 use crate::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
 use crate::task_features::TaskFeatures;
+use crate::tool_call_store::{ToolCallRecordStore, ToolCallStoreError};
 use crate::tool_executor::{
     ReadOnlyToolExecutor, ToolCallInput, ToolCallOutput, ToolExecutionError, WorkspaceToolExecutor,
 };
@@ -89,6 +90,8 @@ pub enum LoopControllerError {
     ModelContract(#[from] ModelContractError),
     #[error("model call store failed: {0}")]
     ModelCallStore(#[from] ModelCallStoreError),
+    #[error("tool call store failed: {0}")]
+    ToolCallStore(#[from] ToolCallStoreError),
     #[error("resolved model call requires a model call store")]
     ModelCallStoreRequired,
     #[error("strategy selection failed: {0}")]
@@ -176,6 +179,7 @@ pub struct ReadOnlyLoopController {
     trace_store: Option<TraceStore>,
     checkpoint_store: Option<CheckpointStore>,
     side_effect_ledger: Option<SideEffectLedger>,
+    tool_call_store: Option<ToolCallRecordStore>,
     snapshot_store: Option<WorkspaceSnapshotStore>,
     snapshot_bindings: HashMap<String, SnapshotBinding>,
     model_call_store: Option<ModelCallStore>,
@@ -382,6 +386,7 @@ impl ReadOnlyLoopController {
             trace_store: None,
             checkpoint_store: None,
             side_effect_ledger: None,
+            tool_call_store: None,
             snapshot_store: None,
             snapshot_bindings: HashMap::new(),
             model_call_store: None,
@@ -807,6 +812,13 @@ impl ReadOnlyLoopController {
     ) -> Self {
         self.trace_store = Some(TraceStore::open(trace_path));
         self.side_effect_ledger = Some(SideEffectLedger::open(side_effect_path));
+        self
+    }
+
+    /// Opt into metadata-only ToolCallRecord persistence. Raw output,
+    /// arguments, and original error bodies are never written by this path.
+    pub fn with_tool_call_store(mut self, store: ToolCallRecordStore) -> Self {
+        self.tool_call_store = Some(store);
         self
     }
 
@@ -2826,6 +2838,13 @@ impl ReadOnlyLoopController {
                 "risk_level": result.risk_level,
             }),
         )?;
+        self.record_tool_call_record(
+            registry,
+            &tool_id,
+            &step_id,
+            "started",
+            "tool call started; output withheld",
+        )?;
         self.report_progress(
             ProgressSubject::Tool,
             format!("{step_id}:{tool_id}"),
@@ -2881,6 +2900,13 @@ impl ReadOnlyLoopController {
                 let tool_call_id =
                     format!("{}:{step_id}:{}", self.loop_run.loop_run_id, input.tool_id);
                 let failure_event_id = format!("{step_id}:tool_failed");
+                self.record_tool_call_record(
+                    registry,
+                    &input.tool_id,
+                    &step_id,
+                    "failed",
+                    "tool call failed; error redacted",
+                )?;
                 self.append_model_event(
                     "tool_call_failed",
                     &failure_event_id,
@@ -2909,6 +2935,13 @@ impl ReadOnlyLoopController {
                 return Err(error.into());
             }
         };
+        self.record_tool_call_record(
+            registry,
+            &input.tool_id,
+            &step_id,
+            "completed",
+            "tool call completed; output redacted",
+        )?;
         self.append_model_event(
             "tool_call_completed",
             &format!("{step_id}:tool_completed"),
@@ -3507,9 +3540,40 @@ impl ReadOnlyLoopController {
                 class,
                 status: status.to_owned(),
                 summary: summary.to_owned(),
-                created_at: occurred_at,
+                created_at: occurred_at.clone(),
             })?;
         }
+        Ok(())
+    }
+
+    fn record_tool_call_record(
+        &self,
+        registry: &ToolRegistry,
+        tool_id: &str,
+        step_id: &str,
+        status: &str,
+        summary: &str,
+    ) -> Result<(), LoopControllerError> {
+        let Some(store) = &self.tool_call_store else {
+            return Ok(());
+        };
+        let class = registry
+            .get(tool_id)
+            .map(|profile| format!("{:?}", profile.side_effect_class).to_ascii_lowercase())
+            .unwrap_or_else(|| "unknown".into());
+        store.append(&crate::domain::ToolCallRecord {
+            tool_call_id: format!("{}:{}:{}", self.loop_run.loop_run_id, step_id, tool_id),
+            tool_id: tool_id.to_owned(),
+            project_id: self.goal.project_id.clone(),
+            goal_id: self.goal.goal_id.clone(),
+            task_run_id: self.loop_run.task_run_id.clone(),
+            loop_run_id: self.loop_run.loop_run_id.clone(),
+            step_id: step_id.to_owned(),
+            side_effect_class: class,
+            status: status.to_owned(),
+            summary: summary.to_owned(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        })?;
         Ok(())
     }
 
