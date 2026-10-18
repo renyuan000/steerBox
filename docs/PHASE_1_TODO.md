@@ -57,7 +57,7 @@
 - [x] 定义 `LoopRun`
 - [x] 定义 `LoopStep`
 - [x] 定义 `ToolCallRecord`（schema、独立 store 及只读工具 started/completed/failed runtime 接线已有 focused 测试；分页 limit 有 1024 硬上限；Unix store 的 owner-only、`O_NOFOLLOW`、advisory lock 与并发追加回归已通过；CLI/默认配置及通用工具面仍待完成）
-- [ ] 定义 `PolicyDecision`
+- [x] 定义 `PolicyDecision`（`PolicyGate` 已提供 Allow/Warn/RequireCheckpoint/RequireHumanApproval/Block 枚举、PolicyRequest/PolicyResult 及 controller 接线；完整跨存储恢复语义仍待完成）
 - [ ] 定义 `SideEffectEvent`
 - [x] 定义 `CheckpointMetadata`
 - [ ] 定义 `VerificationResult`
