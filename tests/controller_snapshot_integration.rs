@@ -394,6 +394,44 @@ fn explicit_restore_keeps_approval_and_expected_after_hash_boundaries() {
 }
 
 #[test]
+fn legacy_restore_is_blocked_when_approval_store_is_configured() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    fixture
+        .run_edit(
+            &mut controller,
+            &fixture.action("after\n"),
+            "step-legacy-restore-gate",
+        )
+        .unwrap();
+    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    controller = controller.with_approval_store(ApprovalStore::open(
+        fixture.workspace.join("approvals.jsonl"),
+    ));
+    let budget_before = controller.budget().clone();
+
+    let result = controller.restore_workspace_snapshot(&snapshot_id, &sha256(b"after\n"), true);
+    assert!(matches!(
+        result,
+        Err(
+            steerbox::loop_controller::LoopControllerError::PolicyDenied {
+                decision: steerbox::policy_gate::PolicyDecision::Block,
+                ..
+            }
+        )
+    ));
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"after\n"
+    );
+    assert_eq!(*controller.budget(), budget_before);
+    assert!(!fixture
+        .events()
+        .iter()
+        .any(|event| event.event_type == "workspace_snapshot_restore_requested"));
+}
+
+#[test]
 fn invalid_expected_after_hash_is_rejected_before_restore_event() {
     let fixture = Fixture::new();
     let mut controller = fixture.controller();

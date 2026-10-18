@@ -833,6 +833,12 @@ impl ReadOnlyLoopController {
         expected_after_hash: &str,
         approved: bool,
     ) -> Result<crate::workspace_edit::EditResult, LoopControllerError> {
+        if self.approval_store.is_some() {
+            return Err(LoopControllerError::PolicyDenied {
+                decision: PolicyDecision::Block,
+                reason: "legacy approved-boolean restore is disabled when ApprovalStore is configured; use restore_workspace_snapshot_with_authorization".into(),
+            });
+        }
         self.prepare_action()?;
         if !approved {
             return Err(LoopControllerError::WorkspaceSnapshot(
