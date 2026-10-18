@@ -3,18 +3,30 @@
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use steerbox::audit_store::{CheckpointStore, RecoveryAction, SideEffectLedger};
 use steerbox::domain::{GoalContract, HumanSteeringMode, LoopBudget};
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::ReadOnlyLoopController;
 use steerbox::model_contracts::{ActionPathScope, ModelActionEnvelope, VerificationContract};
 use steerbox::policy_gate::PolicyGate;
+use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
 use steerbox::tool_executor::{ReadOnlyToolExecutor, WorkspaceToolExecutor};
 use steerbox::tool_registry::ToolRegistry;
 use steerbox::user_command_inbox::{CommandKind, UserCommand, UserCommandInbox};
 
 fn sha256(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+#[derive(Clone)]
+struct RecordingSink(Arc<Mutex<Vec<ProgressEvent>>>);
+
+impl ProgressSink for RecordingSink {
+    fn report(&mut self, event: ProgressEvent) -> std::io::Result<()> {
+        self.0.lock().unwrap().push(event);
+        Ok(())
+    }
 }
 
 struct Fixture {
@@ -163,7 +175,10 @@ impl Fixture {
 #[test]
 fn opt_in_controller_edit_captures_snapshot_before_mutation_and_explicit_restore_works() {
     let fixture = Fixture::new();
-    let mut controller = fixture.controller();
+    let progress = Arc::new(Mutex::new(Vec::new()));
+    let mut controller = fixture
+        .controller()
+        .with_progress_sink(RecordingSink(progress.clone()));
     fixture
         .run_edit(
             &mut controller,
@@ -174,6 +189,25 @@ fn opt_in_controller_edit_captures_snapshot_before_mutation_and_explicit_restore
     assert_eq!(
         fs::read(fixture.workspace.join("README.md")).unwrap(),
         b"after\n"
+    );
+    let events = progress.lock().unwrap().clone();
+    let workspace_events = events
+        .iter()
+        .filter(|event| {
+            event.subject == ProgressSubject::Tool
+                && event.subject_id == "step-snapshot-success:workspace_write"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(workspace_events.len(), 2);
+    assert_eq!(workspace_events[0].status, ProgressStatus::Started);
+    assert_eq!(
+        workspace_events[0].summary.as_deref(),
+        Some("workspace mutation started")
+    );
+    assert_eq!(workspace_events[1].status, ProgressStatus::Completed);
+    assert_eq!(
+        workspace_events[1].summary.as_deref(),
+        Some("workspace mutation completed")
     );
     assert_eq!(fixture.snapshot_ids().len(), 1);
     let events = fixture.events();
@@ -198,7 +232,10 @@ fn opt_in_controller_edit_captures_snapshot_before_mutation_and_explicit_restore
 #[test]
 fn verification_failure_records_restore_required_without_automatic_restore() {
     let fixture = Fixture::new();
-    let mut controller = fixture.controller();
+    let progress = Arc::new(Mutex::new(Vec::new()));
+    let mut controller = fixture
+        .controller()
+        .with_progress_sink(RecordingSink(progress.clone()));
     let result = fixture.run_edit(
         &mut controller,
         &fixture.action("after\n[broken](missing.md)"),
@@ -244,6 +281,17 @@ fn verification_failure_records_restore_required_without_automatic_restore() {
     assert_eq!(recovery_event.payload["snapshot_id"], snapshot_id);
     assert!(recovery_event.payload.get("before").is_none());
     assert!(recovery_event.payload.get("after").is_none());
+    let progress_events = progress.lock().unwrap().clone();
+    let workspace_events = progress_events
+        .iter()
+        .filter(|event| {
+            event.subject == ProgressSubject::Tool
+                && event.subject_id == "step-snapshot-verify-failed:workspace_write"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(workspace_events.len(), 2);
+    assert_eq!(workspace_events[0].status, ProgressStatus::Started);
+    assert_eq!(workspace_events[1].status, ProgressStatus::Completed);
 }
 
 #[test]

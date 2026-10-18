@@ -2743,6 +2743,13 @@ impl ReadOnlyLoopController {
             "started",
             "workspace edit approved; mutation started",
         )?;
+        self.report_progress(
+            ProgressSubject::Tool,
+            format!("{step_id}:workspace_write"),
+            ProgressStatus::Started,
+            Some("workspace mutation started"),
+            None,
+        )?;
         if let Some((snapshot_id, snapshot_before_hash)) = &snapshot {
             self.snapshot_bindings.insert(
                 snapshot_id.clone(),
@@ -2773,6 +2780,13 @@ impl ReadOnlyLoopController {
         ) {
             Ok(output) => output,
             Err(error) => {
+                let _ = self.report_progress(
+                    ProgressSubject::Tool,
+                    format!("{step_id}:workspace_write"),
+                    ProgressStatus::Failed,
+                    Some("workspace mutation failed"),
+                    None,
+                );
                 self.record_tool_audit(
                     registry,
                     &action.tool_id,
@@ -2817,6 +2831,13 @@ impl ReadOnlyLoopController {
             &step_id,
             "completed",
             "workspace edit completed; output redacted",
+        )?;
+        self.report_progress(
+            ProgressSubject::Tool,
+            format!("{step_id}:workspace_write"),
+            ProgressStatus::Completed,
+            Some("workspace mutation completed"),
+            None,
         )?;
         let verification_action = ModelActionEnvelope {
             schema_version: action.schema_version,
