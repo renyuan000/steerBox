@@ -87,7 +87,6 @@ fn capture_reopen_and_explicit_restore_preserve_exact_crlf_bytes() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true,
         )
         .unwrap();
     assert_eq!(restored.relative_path, "README.md");
@@ -116,24 +115,6 @@ fn metadata_serialization_contains_no_original_file_body() {
 }
 
 #[test]
-fn restore_requires_explicit_approval_and_keeps_current_bytes() {
-    let fixture = Fixture::new();
-    fixture.capture();
-    fs::write(fixture.workspace.join("README.md"), AFTER).unwrap();
-    assert!(fixture
-        .store()
-        .restore(
-            &fixture.workspace,
-            &fixture.goal,
-            "snapshot-1",
-            &hash(AFTER),
-            false
-        )
-        .is_err());
-    fixture.assert_bytes(AFTER);
-}
-
-#[test]
 fn restore_rejects_invalid_expected_hash_before_comparing_current_bytes() {
     let fixture = Fixture::new();
     fixture.capture();
@@ -149,7 +130,6 @@ fn restore_rejects_invalid_expected_hash_before_comparing_current_bytes() {
                 &fixture.goal,
                 "snapshot-1",
                 &invalid_hash,
-                true,
             )
             .unwrap_err();
         assert_eq!(error, SnapshotError::InvalidHash);
@@ -170,7 +150,6 @@ fn restore_rejects_user_changed_current_file_hash() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     fixture.assert_bytes(user_bytes);
@@ -185,13 +164,7 @@ fn restore_rejects_wrong_goal_without_touching_workspace() {
     wrong_goal.goal_id = "other-goal".into();
     assert!(fixture
         .store()
-        .restore(
-            &fixture.workspace,
-            &wrong_goal,
-            "snapshot-1",
-            &hash(AFTER),
-            true
-        )
+        .restore(&fixture.workspace, &wrong_goal, "snapshot-1", &hash(AFTER))
         .is_err());
     fixture.assert_bytes(AFTER);
 }
@@ -205,13 +178,7 @@ fn restore_rejects_wrong_project_without_touching_workspace() {
     wrong_goal.project_id = "other-project".into();
     assert!(fixture
         .store()
-        .restore(
-            &fixture.workspace,
-            &wrong_goal,
-            "snapshot-1",
-            &hash(AFTER),
-            true
-        )
+        .restore(&fixture.workspace, &wrong_goal, "snapshot-1", &hash(AFTER))
         .is_err());
     fixture.assert_bytes(AFTER);
 }
@@ -224,13 +191,7 @@ fn restore_rejects_other_workspace_even_with_same_goal_and_current_hash() {
     fs::write(other.path().join("README.md"), AFTER).unwrap();
     assert!(fixture
         .store()
-        .restore(
-            other.path(),
-            &fixture.goal,
-            "snapshot-1",
-            &hash(AFTER),
-            true
-        )
+        .restore(other.path(), &fixture.goal, "snapshot-1", &hash(AFTER))
         .is_err());
     assert_eq!(fs::read(other.path().join("README.md")).unwrap(), AFTER);
     fixture.assert_bytes(BEFORE);
@@ -250,7 +211,6 @@ fn restore_rechecks_goal_scope_after_capture() {
             &narrowed_goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     fixture.assert_bytes(AFTER);
@@ -269,7 +229,6 @@ fn invalid_snapshot_json_is_rejected_without_mutation() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     fixture.assert_bytes(AFTER);
@@ -318,7 +277,6 @@ fn persisted_body_hash_mismatch_is_rejected_without_mutation() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     fixture.assert_bytes(AFTER);
@@ -348,7 +306,7 @@ fn invalid_snapshot_ids_cannot_escape_or_create_records() {
         assert!(
             fixture
                 .store()
-                .restore(&fixture.workspace, &fixture.goal, id, &hash(BEFORE), true)
+                .restore(&fixture.workspace, &fixture.goal, id, &hash(BEFORE))
                 .is_err(),
             "invalid restore id must fail: {id}"
         );
@@ -411,7 +369,6 @@ fn tampered_snapshot_contents_are_rejected_without_mutation() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     fixture.assert_bytes(AFTER);
@@ -539,7 +496,6 @@ fn symlink_snapshot_record_is_rejected_for_capture_and_restore() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     assert_eq!(fs::read(&outside).unwrap(), original_record);
@@ -565,7 +521,6 @@ fn restore_rejects_symlink_target_without_changing_external_file() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     assert_eq!(fs::read(outside).unwrap(), AFTER);
@@ -614,7 +569,6 @@ fn restore_preserves_current_private_target_permissions() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true,
         )
         .unwrap();
     fixture.assert_bytes(BEFORE);
@@ -665,7 +619,6 @@ fn existing_broad_snapshot_file_is_rejected_without_chmod_or_restore() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     assert_eq!(
@@ -689,7 +642,6 @@ fn private_store_root_made_public_rejects_restore() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     assert_eq!(
@@ -742,7 +694,6 @@ fn restore_rejects_invalid_utf8_missing_and_nonregular_targets() {
                 &fixture.goal,
                 "snapshot-1",
                 &expected_hash,
-                true
             )
             .is_err());
         assert_eq!(fs::read(saved).unwrap(), BEFORE);
@@ -776,13 +727,7 @@ fn hardlinked_source_and_snapshot_records_are_rejected() {
     fs::write(other.workspace.join("README.md"), AFTER).unwrap();
     assert!(other
         .store()
-        .restore(
-            &other.workspace,
-            &other.goal,
-            "snapshot-1",
-            &hash(AFTER),
-            true
-        )
+        .restore(&other.workspace, &other.goal, "snapshot-1", &hash(AFTER))
         .is_err());
     other.assert_bytes(AFTER);
 }
@@ -823,7 +768,6 @@ fn restore_rejects_store_root_replaced_by_symlink() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     fixture.assert_bytes(AFTER);
@@ -857,7 +801,6 @@ fn restore_rejects_target_ancestor_replaced_by_symlink() {
             &fixture.goal,
             "docs-snapshot",
             &hash(AFTER),
-            true
         )
         .is_err());
     assert_eq!(fs::read(external.path().join("README.md")).unwrap(), AFTER);
@@ -877,7 +820,6 @@ fn restore_rejects_oversized_current_target_even_when_expected_hash_matches() {
             &fixture.goal,
             "snapshot-1",
             &hash(&large),
-            true
         )
         .is_err());
     fixture.assert_bytes(&large);
@@ -910,7 +852,6 @@ fn tampered_record_metadata_is_rejected_without_mutating_either_file() {
                     &fixture.goal,
                     "snapshot-1",
                     &hash(AFTER),
-                    true
                 )
                 .is_err(),
             "tampered metadata field: {field}"
@@ -937,7 +878,6 @@ fn record_copied_to_other_id_is_not_an_authorized_snapshot() {
             &fixture.goal,
             "snapshot-2",
             &hash(AFTER),
-            true
         )
         .is_err());
     fixture.assert_bytes(AFTER);
@@ -961,7 +901,6 @@ fn oversized_record_is_rejected_without_mutation() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     fixture.assert_bytes(AFTER);
@@ -988,7 +927,6 @@ fn valid_json_record_with_consistent_but_oversized_body_is_rejected() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true
         )
         .is_err());
     fixture.assert_bytes(AFTER);
@@ -1015,7 +953,6 @@ fn maximum_sized_body_with_json_escaping_roundtrips_without_truncation() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true,
         )
         .unwrap();
     fixture.assert_bytes(&escaped);
@@ -1036,7 +973,6 @@ fn metadata_debug_and_restore_error_do_not_echo_original_file_body() {
             &fixture.goal,
             "snapshot-1",
             &hash(AFTER),
-            true,
         )
         .unwrap_err();
     assert!(!error.to_string().contains("Exact original body"));
@@ -1045,7 +981,7 @@ fn metadata_debug_and_restore_error_do_not_echo_original_file_body() {
 }
 
 #[test]
-fn restore_errors_distinguish_approval_current_version_and_record_failures() {
+fn restore_errors_distinguish_current_version_and_record_failures() {
     let fixture = Fixture::new();
     fixture.capture();
     fs::write(fixture.workspace.join("README.md"), AFTER).unwrap();
@@ -1054,18 +990,7 @@ fn restore_errors_distinguish_approval_current_version_and_record_failures() {
             &fixture.workspace,
             &fixture.goal,
             "snapshot-1",
-            &hash(AFTER),
-            false
-        ),
-        Err(SnapshotError::ApprovalRequired)
-    ));
-    assert!(matches!(
-        fixture.store().restore(
-            &fixture.workspace,
-            &fixture.goal,
-            "snapshot-1",
-            &hash(BEFORE),
-            true
+            &hash(BEFORE)
         ),
         Err(SnapshotError::CurrentHashMismatch)
     ));
@@ -1074,7 +999,7 @@ fn restore_errors_distinguish_approval_current_version_and_record_failures() {
     assert!(matches!(
         fixture
             .store()
-            .restore(&fixture.workspace, &wrong, "snapshot-1", &hash(AFTER), true),
+            .restore(&fixture.workspace, &wrong, "snapshot-1", &hash(AFTER)),
         Err(SnapshotError::BindingMismatch)
     ));
     fs::write(fixture.store_root.join("snapshot-1.json"), b"{invalid-json").unwrap();
@@ -1083,8 +1008,7 @@ fn restore_errors_distinguish_approval_current_version_and_record_failures() {
             &fixture.workspace,
             &fixture.goal,
             "snapshot-1",
-            &hash(AFTER),
-            true
+            &hash(AFTER)
         ),
         Err(SnapshotError::InvalidRecord)
     ));
@@ -1103,8 +1027,7 @@ fn restore_rejects_hardlinked_current_target_with_matching_hash() {
             &fixture.workspace,
             &fixture.goal,
             "snapshot-1",
-            &hash(AFTER),
-            true
+            &hash(AFTER)
         ),
         Err(SnapshotError::NotRegularFile)
     ));
@@ -1131,8 +1054,7 @@ fn restore_rejects_store_ancestor_replaced_by_symlink() {
             &fixture.workspace,
             &fixture.goal,
             "snapshot-1",
-            &hash(AFTER),
-            true
+            &hash(AFTER)
         ),
         Err(SnapshotError::UnsafePath)
     ));
@@ -1167,8 +1089,7 @@ fn foreign_owned_private_store_and_record_are_rejected_when_running_as_root() {
                 &fixture.workspace,
                 &fixture.goal,
                 "snapshot-1",
-                &hash(AFTER),
-                true
+                &hash(AFTER)
             ),
             Err(SnapshotError::NotPrivate)
         ));

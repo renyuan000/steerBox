@@ -1,8 +1,10 @@
 //! Local, private, single-file snapshots. Not a controller recovery mechanism.
 //!
-//! Approval and the expected current content hash must come from a trusted
-//! caller, not a model action. Permissions do not isolate the same OS user/root;
-//! this API does not provide a concurrent writer lock or a crash transaction.
+//! The expected current content hash must come from a trusted caller, not a
+//! model action. Authorization is enforced by the controller before it calls
+//! this storage primitive; this module does not accept approval flags or
+//! decide policy. Permissions do not isolate the same OS user/root; this API
+//! does not provide a concurrent writer lock or a crash transaction.
 
 use crate::domain::GoalContract;
 use crate::workspace_edit::{checked_existing_file, edit_markdown, safe_relative_path, EditResult};
@@ -52,8 +54,6 @@ pub(crate) struct PreparedSnapshotRestore {
 pub enum SnapshotError {
     #[error("snapshot storage requires Unix private filesystem permissions")]
     UnsupportedPlatform,
-    #[error("restore requires explicit trusted-caller approval")]
-    ApprovalRequired,
     #[error("invalid snapshot identity")]
     InvalidIdentity,
     #[error("invalid or unauthorized Markdown path")]
@@ -157,13 +157,8 @@ impl WorkspaceSnapshotStore {
         goal: &GoalContract,
         snapshot_id: &str,
         expected_after_hash: &str,
-        approved: bool,
     ) -> Result<EditResult, SnapshotError> {
-        if !approved {
-            return Err(SnapshotError::ApprovalRequired);
-        }
-        let prepared =
-            self.prepare_restore(workspace, goal, snapshot_id, expected_after_hash, true)?;
+        let prepared = self.prepare_restore(workspace, goal, snapshot_id, expected_after_hash)?;
         self.restore_prepared(goal, prepared)
     }
 
@@ -173,11 +168,7 @@ impl WorkspaceSnapshotStore {
         goal: &GoalContract,
         snapshot_id: &str,
         expected_after_hash: &str,
-        approved: bool,
     ) -> Result<PreparedSnapshotRestore, SnapshotError> {
-        if !approved {
-            return Err(SnapshotError::ApprovalRequired);
-        }
         validate_content_hash(expected_after_hash)?;
         supported_platform()?;
         validate_id(snapshot_id)?;

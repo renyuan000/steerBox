@@ -17,7 +17,7 @@
 - Bound the encoded private JSON record to `6 * 1 MiB + 64 KiB` (JSON escaping plus bounded metadata). Check effective-user ownership and owner-only store/record permissions; reject hardlinked source/record files.
 - Store root is outside the workspace. New Unix root/file permissions are 0700/0600; existing non-private stores are rejected rather than silently chmod'ed. Equivalent Windows ACL isolation is not implemented: fail closed on non-Unix platforms.
 - Snapshot IDs are 1–80 ASCII letters/digits/`-`/`_`; create-new prevents overwrite. Sync the record and store directory before returning successful capture. Partial/corrupt records are rejected on load, not interpreted as usable checkpoints.
-- Restore requires explicit trusted-caller approval, matching project/goal/workspace, revalidated scope/path, a valid snapshot hash/size and `expected_after_hash` equal to the current file hash. Changes made after that expected boundary are not overwritten.
+- The controller authorization path requires explicit trusted-caller approval before invoking restore; the storage primitive itself validates matching project/goal/workspace, revalidated scope/path, a valid snapshot hash/size and `expected_after_hash` equal to the current file hash. Changes made after that expected boundary are not overwritten.
 - Preserve exact bytes and current target Unix permission mode, not inode/owner/ACL/xattrs. Atomic replacement and sync do not constitute an adversarial multi-process lock or complete crash/recovery transaction. Errors after replacement may require inspection.
 - Local filesystem permissions are not encryption or protection against the same OS user/root. The caller must classify/authorize data before capture; snapshots never automatically enter prompts, EventLog, trace, summaries or model-call stores.
 - This primitive does not automatically capture controller writes, restore failed verifications, resume TaskRun/Attempt/budgets, restore processes or compensate external side effects. Checkpoint metadata queries remain read-only.
@@ -26,14 +26,14 @@
 
 Files: create `tests/workspace_snapshot.rs` (test agent only).
 
-- [x] Test the production API below with tempfile workspace and sibling snapshot directory: CRLF capture/reopen/restore, metadata body exclusion, explicit approval, current-hash conflict, project/goal/workspace mismatch, corrupt record, invalid IDs/paths/scope, missing/nonregular/symlink files, size limits and Unix privacy/permission preservation.
+- [x] Test the production API below with tempfile workspace and sibling snapshot directory: CRLF capture/reopen/restore, metadata body exclusion, current-hash conflict, project/goal/workspace mismatch, corrupt record, invalid IDs/paths/scope, missing/nonregular/symlink files, size limits and Unix privacy/permission preservation. Approval is tested only through the controller authorization path, not in the storage primitive.
 - [x] Run `CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --test workspace_snapshot`; record the absent API/RED result before implementation.
 
 ```rust
 let store = WorkspaceSnapshotStore::open(snapshot_dir);
 let metadata = store.capture(&workspace, &goal, "README.md", "snapshot-1")?;
 // expected_after_hash is supplied by the trusted caller from the known edit.
-let result = store.restore(&workspace, &goal, "snapshot-1", &expected_after_hash, true)?;
+let result = store.restore(&workspace, &goal, "snapshot-1", &expected_after_hash)?;
 ```
 
 ## Task 2: bounded primitive
@@ -41,7 +41,7 @@ let result = store.restore(&workspace, &goal, "snapshot-1", &expected_after_hash
 Files: create `src/workspace_snapshot.rs`; modify `src/lib.rs` and scoped helpers in `src/workspace_edit.rs` (master only).
 
 - [x] Implement schema-v1 metadata and private record validation; safe ID/store/path checks; bounded no-follow file reads; private create-new record persistence and sync.
-- [x] Implement restore with approval/binding/hash checks and exact conditional replacement. Extend only the shared atomic editor's permission preservation/private temporary file and sync required by restoration.
+- [x] Implement restore with binding/hash checks and exact conditional replacement. Approval is enforced by the controller before invoking this storage primitive. Extend only the shared atomic editor's permission preservation/private temporary file and sync required by restoration.
 - [x] Run focused snapshot/edit tests; all must pass, with no changes to real project files during runtime tests.
 
 ## Task 3: review, documentation and validation

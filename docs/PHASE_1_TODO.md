@@ -175,7 +175,7 @@ Memory 最小实现：
 验收：
 
 - bounded Markdown controller 修改前强制 checkpoint/ledger 配置与审计成功，policy Allow/approved 不能绕过；修改后记录 before/after hash 和验证结果。默认 controller 不自动捕获 snapshot，不保证后置审计故障自动 rollback
-- 独立 `WorkspaceSnapshotStore` 已有 Unix-only 单个既有 UTF-8 Markdown 文件的 capture/显式 restore primitive：1 MiB 正文、6 MiB + 64 KiB record 上限，workspace 外私有 owner/权限与 project/goal/workspace/scope/path 绑定，trusted-caller approval 和当前 content hash 一致才恢复。人工修改导致 hash mismatch 时拒绝；正文不进入公共 metadata/错误或自动模型/事件上下文。权限非加密/同用户隔离、不抗恶意并发，replacement 后 sync 错误须检查。
+- 独立 `WorkspaceSnapshotStore` 已有 Unix-only 单个既有 UTF-8 Markdown 文件的 capture/显式 restore primitive：1 MiB 正文、6 MiB + 64 KiB record 上限，workspace 外私有 owner/权限与 project/goal/workspace/scope/path 绑定，并校验当前 content hash。一致时才执行恢复；审批不属于 storage primitive，而由 controller 唯一授权入口通过 PolicyGate、`ApprovalScope::Once`、ApprovalStore 和 SideEffectLedger 完成。人工修改导致 hash mismatch 时拒绝；正文不进入公共 metadata/错误或自动模型/事件上下文。权限非加密/同用户隔离、不抗恶意并发，replacement 后 sync 错误须检查。
 - [x] 以 opt-in 方式将 `WorkspaceSnapshotStore` capture/显式 restore 接入 bounded Markdown controller：仅在调用方配置 snapshot store 时 mutation 前 capture，restore 仅由 trusted caller 显式批准并通过 controller binding、snapshot integrity 与 expected current content hash 检查；verification failure 不自动 rollback，不恢复 TaskRun/Attempt、进程或外部副作用
 - [x] 将 controller 的显式 restore 纳入统一 PolicyGate、approval store 与 SideEffectLedger 授权/审计路径（`restore_workspace_snapshot_with_authorization` 是唯一 controller restore 入口，强制 metadata-only `ApprovalScope::Once`、snapshot preflight 和 ledger 生命周期；不接受模型 action）
 - `CheckpointStore::latest_for` / `latest_for_loop_step` 可按 loop/step 流式查询最后追加的 checkpoint，解释已记录 hash 和 recoverability，给出 `NoAction` / `RestoreRequired` / `ManualIntervention`；非法或歧义 hash、未知 changed-hash 恢复状态和矛盾的 no-write 标记不自动放行

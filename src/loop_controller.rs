@@ -924,7 +924,6 @@ impl ReadOnlyLoopController {
                 &self.goal,
                 &approval.snapshot_id,
                 &approval.expected_after_hash,
-                true,
             )
             .map_err(|error| LoopControllerError::WorkspaceSnapshot(error.to_string()))?;
         append_restore_ledger(
