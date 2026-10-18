@@ -1,9 +1,13 @@
 //! Controller opt-in snapshot integration. Restore is explicit; verification
 //! failure is recorded as restore-required and never auto-restored.
+use chrono::{Duration, Utc};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use steerbox::approval_contract::{
+    ApprovalDecision, ApprovalRequest, ApprovalScope, ApprovalStore,
+};
 use steerbox::audit_store::{CheckpointStore, RecoveryAction, SideEffectLedger};
 use steerbox::domain::{GoalContract, HumanSteeringMode, LoopBudget};
 use steerbox::event_log::EventLog;
@@ -55,7 +59,11 @@ impl Fixture {
             Vec::new(),
             vec!["verified".into()],
         );
-        goal.allowed_tools = vec!["edit_markdown".into(), "markdown_link_check".into()];
+        goal.allowed_tools = vec![
+            "edit_markdown".into(),
+            "markdown_link_check".into(),
+            "restore_workspace_snapshot".into(),
+        ];
         goal.human_steering_mode = HumanSteeringMode::HumanInTheLoop;
         Self {
             events: workspace.join("events.jsonl"),
@@ -170,6 +178,14 @@ impl Fixture {
     fn events(&self) -> Vec<steerbox::domain::EventEnvelope> {
         EventLog::open(&self.events).unwrap().read_all().unwrap()
     }
+}
+
+fn restore_capability(snapshot_id: &str, relative_path: &str, expected_after_hash: &str) -> String {
+    let material = [snapshot_id, relative_path, expected_after_hash].join("\u{1f}");
+    format!(
+        "workspace-snapshot-restore:{:x}",
+        Sha256::digest(material.as_bytes())
+    )
 }
 
 #[test]
@@ -595,6 +611,137 @@ fn failed_restore_writes_metadata_only_event_without_file_body() {
         fs::read(fixture.workspace.join("README.md")).unwrap(),
         b"human changed the file\n"
     );
+}
+
+#[test]
+fn authorized_snapshot_restore_uses_policy_approval_and_side_effect_ledger() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    fixture
+        .run_edit(
+            &mut controller,
+            &fixture.action("after\n"),
+            "step-authorized-restore",
+        )
+        .unwrap();
+    controller = controller.with_approval_store(ApprovalStore::open(
+        fixture.workspace.join("approvals.jsonl"),
+    ));
+    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    let expected_after_hash = sha256(b"after\n");
+    let capability = restore_capability(&snapshot_id, "README.md", &expected_after_hash);
+    let request = ApprovalRequest::at(
+        "restore-approval",
+        fixture.goal.project_id.clone(),
+        "loop-controller-snapshot",
+        "task-controller-snapshot",
+        "restore_workspace_snapshot",
+        capability,
+        "metadata_only",
+        "restore one controller-bound workspace snapshot",
+        Utc::now(),
+        Utc::now() + Duration::minutes(15),
+    )
+    .unwrap();
+    controller
+        .approval_store()
+        .unwrap()
+        .submit(request)
+        .unwrap();
+    controller
+        .approval_store()
+        .unwrap()
+        .resolve(
+            "restore-approval",
+            ApprovalDecision::Approve(ApprovalScope::Once),
+        )
+        .unwrap();
+
+    let edit = controller
+        .restore_workspace_snapshot_with_authorization(
+            &ToolRegistry::baseline().unwrap(),
+            &PolicyGate::new(),
+            steerbox::loop_controller::RestoreApprovalContext {
+                approval_request_id: "restore-approval".into(),
+                project_id: fixture.goal.project_id.clone(),
+                goal_id: fixture.goal.goal_id.clone(),
+                task_run_id: "task-controller-snapshot".into(),
+                loop_run_id: "loop-controller-snapshot".into(),
+                step_id: "step-authorized-restore".into(),
+                snapshot_id: snapshot_id.clone(),
+                expected_after_hash,
+            },
+        )
+        .unwrap();
+    assert!(edit.changed);
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"before\n"
+    );
+    let ledger = SideEffectLedger::open(&fixture.side_effects)
+        .read_all()
+        .unwrap()
+        .into_iter()
+        .filter(|record| record.side_effect_id == format!("{snapshot_id}:restore"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ledger
+            .iter()
+            .map(|record| record.status.as_str())
+            .collect::<Vec<_>>(),
+        vec!["planned", "started", "completed"]
+    );
+    let events = fixture.events();
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "policy_decision"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "workspace_snapshot_restore_requested"));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "workspace_snapshot_restored"));
+}
+
+#[test]
+fn snapshot_restore_without_matching_approval_does_not_modify_workspace() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    fixture
+        .run_edit(
+            &mut controller,
+            &fixture.action("after\n"),
+            "step-restore-needs-approval",
+        )
+        .unwrap();
+    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    let result = controller.restore_workspace_snapshot_with_authorization(
+        &ToolRegistry::baseline().unwrap(),
+        &PolicyGate::new(),
+        steerbox::loop_controller::RestoreApprovalContext {
+            approval_request_id: "missing-approval".into(),
+            project_id: fixture.goal.project_id.clone(),
+            goal_id: fixture.goal.goal_id.clone(),
+            task_run_id: "task-controller-snapshot".into(),
+            loop_run_id: "loop-controller-snapshot".into(),
+            step_id: "step-restore-needs-approval".into(),
+            snapshot_id,
+            expected_after_hash: sha256(b"after\n"),
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(steerbox::loop_controller::LoopControllerError::ApprovalRequired { .. })
+    ));
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"after\n"
+    );
+    assert!(!SideEffectLedger::open(&fixture.side_effects)
+        .read_all()
+        .unwrap()
+        .iter()
+        .any(|record| record.tool_id == "restore_workspace_snapshot"));
 }
 
 #[test]

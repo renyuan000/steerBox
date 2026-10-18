@@ -226,6 +226,12 @@ impl ToolRegistry {
                 "replace exact Markdown content after explicit approval",
                 "markdown-edit-workspace",
             ),
+            workspace_write_profile(
+                "restore_workspace_snapshot",
+                "restore workspace snapshot",
+                "restore one controller-bound Markdown snapshot after explicit approval",
+                "workspace-snapshot-restore",
+            ),
             readonly_profile(
                 "markdown_link_check",
                 "Markdown link check",
@@ -247,6 +253,7 @@ fn capability_metadata(tool_id: &str) -> (&'static str, &'static str) {
         "rg_fixed" => ("极低/按需", "搜索受限工作区文本"),
         "read_file" => ("极低/按需", "读取受限工作区文件"),
         "edit_markdown" => ("极低/按需", "审批后修改 Markdown"),
+        "restore_workspace_snapshot" => ("极低/按需", "审批后恢复受控 Markdown 快照"),
         "markdown_link_check" => ("极低/按需", "检查 Markdown 链接"),
         _ => ("未测/未知", "未定义使用场景"),
     }

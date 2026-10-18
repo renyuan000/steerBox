@@ -146,6 +146,18 @@ struct SnapshotBinding {
     before_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreApprovalContext {
+    pub approval_request_id: String,
+    pub project_id: String,
+    pub goal_id: String,
+    pub task_run_id: String,
+    pub loop_run_id: String,
+    pub step_id: String,
+    pub snapshot_id: String,
+    pub expected_after_hash: String,
+}
+
 impl std::fmt::Debug for ProgressSinkHolder {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("ProgressSinkHolder(..)")
@@ -897,6 +909,190 @@ impl ReadOnlyLoopController {
                 Err(LoopControllerError::WorkspaceSnapshot(error.to_string()))
             }
         }
+    }
+
+    /// Restore a controller-bound snapshot through the same policy, approval,
+    /// and side-effect audit boundaries used by other workspace mutations.
+    /// This remains an explicit trusted-caller operation: model actions cannot
+    /// invoke it, and no automatic rollback or replay is attempted.
+    pub fn restore_workspace_snapshot_with_authorization(
+        &mut self,
+        registry: &ToolRegistry,
+        gate: &PolicyGate,
+        approval: RestoreApprovalContext,
+    ) -> Result<crate::workspace_edit::EditResult, LoopControllerError> {
+        self.prepare_action()?;
+        let binding = self
+            .snapshot_bindings
+            .get(&approval.snapshot_id)
+            .cloned()
+            .ok_or_else(|| {
+                LoopControllerError::WorkspaceSnapshot(
+                    "snapshot is not bound to this controller run".into(),
+                )
+            })?;
+        validate_content_hash(&approval.expected_after_hash).map_err(|_| {
+            LoopControllerError::WorkspaceSnapshot("invalid expected current content hash".into())
+        })?;
+        if approval.project_id != self.goal.project_id
+            || approval.goal_id != self.goal.goal_id
+            || approval.task_run_id != self.loop_run.task_run_id
+            || approval.loop_run_id != self.loop_run.loop_run_id
+            || approval.step_id != binding.step_id
+        {
+            return Err(LoopControllerError::PolicyDenied {
+                decision: PolicyDecision::Block,
+                reason: "restore authorization scope does not match controller state".into(),
+            });
+        }
+        let request = PolicyRequest {
+            policy_event_id: format!("{}:restore:policy", approval.step_id),
+            tool_id: "restore_workspace_snapshot".into(),
+            project_id: approval.project_id.clone(),
+            goal_id: approval.goal_id.clone(),
+            task_run_id: approval.task_run_id.clone(),
+            loop_run_id: approval.loop_run_id.clone(),
+            step_id: approval.step_id.clone(),
+            correlation_id: approval.loop_run_id.clone(),
+            human_steering_mode: self.goal.human_steering_mode,
+        };
+        let policy = gate.evaluate(registry, &self.goal, &request);
+        gate.record_decision(&mut self.event_log, &request, &policy)?;
+        if policy.decision != PolicyDecision::RequireHumanApproval {
+            return Err(LoopControllerError::PolicyDenied {
+                decision: policy.decision,
+                reason: "snapshot restore requires its dedicated approval policy".into(),
+            });
+        }
+        let ledger = self.side_effect_ledger.clone().ok_or_else(|| {
+            LoopControllerError::WorkspaceToolExecution(
+                "snapshot restore requires a side-effect ledger".into(),
+            )
+        })?;
+        let snapshot_store = self.snapshot_store.clone().ok_or_else(|| {
+            LoopControllerError::WorkspaceSnapshot("snapshot store is not configured".into())
+        })?;
+        let store =
+            self.approval_store
+                .as_ref()
+                .ok_or_else(|| LoopControllerError::ApprovalRequired {
+                    request_id: approval.approval_request_id.clone(),
+                })?;
+        let record = store.latest(&approval.approval_request_id).ok_or_else(|| {
+            LoopControllerError::ApprovalRequired {
+                request_id: approval.approval_request_id.clone(),
+            }
+        })?;
+        let capability = snapshot_restore_capability(
+            &approval.snapshot_id,
+            &binding.relative_path,
+            &approval.expected_after_hash,
+        );
+        let request_matches = record.request.project_id == approval.project_id
+            && record.request.session_id == approval.loop_run_id
+            && record.request.task_run_id == approval.task_run_id
+            && record.request.tool_id == "restore_workspace_snapshot"
+            && record.request.capability == capability
+            && record.request.data_class == "metadata_only";
+        if record.status != ApprovalStatus::Approved || !request_matches {
+            return Err(LoopControllerError::ApprovalRequired {
+                request_id: approval.approval_request_id,
+            });
+        }
+        if !store.consume(&record.request)? {
+            return Err(LoopControllerError::ApprovalRequired {
+                request_id: record.request.request_id,
+            });
+        }
+        append_restore_ledger(
+            &ledger,
+            &approval.snapshot_id,
+            &self.goal,
+            &self.loop_run,
+            "planned",
+        )?;
+        self.append_model_event(
+            "workspace_snapshot_restore_requested",
+            &format!("{}:restore_requested", approval.snapshot_id),
+            json!({
+                "snapshot_id": approval.snapshot_id,
+                "step_id": binding.step_id,
+                "relative_path": binding.relative_path,
+                "expected_after_hash": approval.expected_after_hash,
+                "approval_request_id": record.request.request_id,
+                "policy_event_id": request.policy_event_id,
+            }),
+        )?;
+        append_restore_ledger(
+            &ledger,
+            &approval.snapshot_id,
+            &self.goal,
+            &self.loop_run,
+            "started",
+        )?;
+        let result = snapshot_store.restore(
+            &binding.workspace,
+            &self.goal,
+            &approval.snapshot_id,
+            &approval.expected_after_hash,
+            true,
+        );
+        let edit = match result {
+            Ok(edit) => edit,
+            Err(error) => {
+                let ledger_result = append_restore_ledger(
+                    &ledger,
+                    &approval.snapshot_id,
+                    &self.goal,
+                    &self.loop_run,
+                    "failed",
+                );
+                let event_result = self.append_model_event(
+                    "workspace_snapshot_restore_failed",
+                    &format!("{}:restore_failed", approval.snapshot_id),
+                    json!({
+                        "snapshot_id": approval.snapshot_id,
+                        "step_id": binding.step_id,
+                        "relative_path": binding.relative_path,
+                        "error": "snapshot_restore_failed",
+                    }),
+                );
+                if ledger_result.is_err() || event_result.is_err() {
+                    return Err(LoopControllerError::WorkspaceSnapshotAuditUncertain {
+                        status: SideEffectAuditStatus::Uncertain,
+                    });
+                }
+                return Err(LoopControllerError::WorkspaceSnapshot(error.to_string()));
+            }
+        };
+        if append_restore_ledger(
+            &ledger,
+            &approval.snapshot_id,
+            &self.goal,
+            &self.loop_run,
+            "completed",
+        )
+        .is_err()
+            || self
+                .append_model_event(
+                    "workspace_snapshot_restored",
+                    &format!("{}:restored", approval.snapshot_id),
+                    json!({
+                        "snapshot_id": approval.snapshot_id,
+                        "step_id": binding.step_id,
+                        "relative_path": edit.relative_path,
+                        "bytes_before": edit.bytes_before,
+                        "bytes_after": edit.bytes_after,
+                        "changed": edit.changed,
+                    }),
+                )
+                .is_err()
+        {
+            return Err(LoopControllerError::WorkspaceSnapshotAuditUncertain {
+                status: SideEffectAuditStatus::Uncertain,
+            });
+        }
+        Ok(edit)
     }
 
     pub fn with_model_call_store(mut self, store: ModelCallStore) -> Self {
@@ -3889,6 +4085,38 @@ fn tool_recipe_ref(registry: &ToolRegistry, tool_id: &str) -> Option<String> {
     registry
         .get(tool_id)
         .and_then(|profile| profile.recipe_ref.clone())
+}
+
+fn snapshot_restore_capability(
+    snapshot_id: &str,
+    relative_path: &str,
+    expected_after_hash: &str,
+) -> String {
+    let material = [snapshot_id, relative_path, expected_after_hash].join("\u{1f}");
+    format!(
+        "workspace-snapshot-restore:{:x}",
+        Sha256::digest(material.as_bytes())
+    )
+}
+
+fn append_restore_ledger(
+    ledger: &SideEffectLedger,
+    snapshot_id: &str,
+    goal: &GoalContract,
+    loop_run: &LoopRun,
+    status: &str,
+) -> Result<(), LoopControllerError> {
+    ledger.append(&SideEffectRecord {
+        side_effect_id: format!("{snapshot_id}:restore"),
+        goal_id: goal.goal_id.clone(),
+        loop_run_id: loop_run.loop_run_id.clone(),
+        tool_id: "restore_workspace_snapshot".into(),
+        class: "workspace_write".into(),
+        status: status.into(),
+        summary: format!("workspace snapshot restore {status}"),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })?;
+    Ok(())
 }
 
 fn tool_failure_payload(
