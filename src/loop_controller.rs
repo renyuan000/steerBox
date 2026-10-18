@@ -971,19 +971,46 @@ impl ReadOnlyLoopController {
                     &self.loop_run,
                     "blocked",
                 )?;
+                self.append_model_event(
+                    "workspace_snapshot_restore_blocked",
+                    &format!("{}:approval_not_consumed", approval.snapshot_id),
+                    json!({
+                        "snapshot_id": approval.snapshot_id,
+                        "step_id": binding.step_id,
+                        "approval_request_id": record.request.request_id,
+                        "reason": "approval_not_consumed",
+                    }),
+                )?;
                 return Err(LoopControllerError::ApprovalRequired {
                     request_id: record.request.request_id,
                 });
             }
-            Err(error) => {
-                append_restore_ledger(
+            Err(_error) => {
+                let ledger_result = append_restore_ledger(
                     &ledger,
                     &approval.snapshot_id,
                     &self.goal,
                     &self.loop_run,
                     "uncertain",
-                )?;
-                return Err(LoopControllerError::ApprovalContract(error));
+                );
+                let event_result = self.append_model_event(
+                    "workspace_snapshot_restore_approval_consume_uncertain",
+                    &format!("{}:approval_consume_uncertain", approval.snapshot_id),
+                    json!({
+                        "snapshot_id": approval.snapshot_id,
+                        "step_id": binding.step_id,
+                        "approval_request_id": record.request.request_id,
+                        "reason": "approval_consume_uncertain",
+                    }),
+                );
+                if ledger_result.is_err() || event_result.is_err() {
+                    return Err(LoopControllerError::WorkspaceSnapshotAuditUncertain {
+                        status: SideEffectAuditStatus::Uncertain,
+                    });
+                }
+                return Err(LoopControllerError::WorkspaceSnapshotAuditUncertain {
+                    status: SideEffectAuditStatus::Uncertain,
+                });
             }
         };
         let edit = match result {

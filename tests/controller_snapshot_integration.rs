@@ -971,6 +971,92 @@ fn restore_ledger_preflight_failure_does_not_consume_approval_or_modify_workspac
 }
 
 #[test]
+fn restore_expired_approval_records_blocked_without_modifying_workspace() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    fixture
+        .run_edit(
+            &mut controller,
+            &fixture.action("after\n"),
+            "step-restore-expired-approval",
+        )
+        .unwrap();
+    let snapshot_id = fixture.snapshot_ids().pop().unwrap();
+    let expected_after_hash = sha256(b"after\n");
+    controller = controller.with_approval_store(ApprovalStore::open(
+        fixture.workspace.join("approvals.jsonl"),
+    ));
+    let now = Utc::now();
+    let request = ApprovalRequest::at(
+        "restore-expired-approval",
+        fixture.goal.project_id.clone(),
+        "loop-controller-snapshot",
+        "task-controller-snapshot",
+        "restore_workspace_snapshot",
+        restore_capability(&snapshot_id, "README.md", &expected_after_hash),
+        "metadata_only",
+        "restore one controller-bound workspace snapshot",
+        now,
+        now + Duration::milliseconds(250),
+    )
+    .unwrap();
+    controller
+        .approval_store()
+        .unwrap()
+        .submit(request)
+        .unwrap();
+    controller
+        .approval_store()
+        .unwrap()
+        .resolve(
+            "restore-expired-approval",
+            ApprovalDecision::Approve(ApprovalScope::Once),
+        )
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(350));
+
+    let result = controller.restore_workspace_snapshot_with_authorization(
+        &ToolRegistry::baseline().unwrap(),
+        &PolicyGate::new(),
+        steerbox::loop_controller::RestoreApprovalContext {
+            approval_request_id: "restore-expired-approval".into(),
+            project_id: fixture.goal.project_id.clone(),
+            goal_id: fixture.goal.goal_id.clone(),
+            task_run_id: "task-controller-snapshot".into(),
+            loop_run_id: "loop-controller-snapshot".into(),
+            step_id: "step-restore-expired-approval".into(),
+            snapshot_id: snapshot_id.clone(),
+            expected_after_hash,
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(steerbox::loop_controller::LoopControllerError::ApprovalRequired { .. })
+    ));
+    assert_eq!(
+        fs::read(fixture.workspace.join("README.md")).unwrap(),
+        b"after\n"
+    );
+    let events = fixture.events();
+    let blocked = events
+        .iter()
+        .find(|event| event.event_type == "workspace_snapshot_restore_blocked")
+        .expect("blocked restore event is recorded");
+    assert_eq!(blocked.payload["reason"], "approval_not_consumed");
+    assert_eq!(blocked.payload["snapshot_id"], snapshot_id);
+    assert!(!serde_json::to_string(&blocked.payload)
+        .unwrap()
+        .contains("restore one controller-bound workspace snapshot"));
+    assert!(SideEffectLedger::open(&fixture.side_effects)
+        .read_all()
+        .unwrap()
+        .iter()
+        .any(|record| {
+            record.tool_id == "restore_workspace_snapshot" && record.status == "blocked"
+        }));
+}
+
+#[test]
 fn restore_snapshot_preflight_failure_does_not_consume_approval_or_start_ledger() {
     let fixture = Fixture::new();
     let mut controller = fixture.controller();
