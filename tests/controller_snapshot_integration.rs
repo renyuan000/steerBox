@@ -640,8 +640,14 @@ fn physical_restore_with_restored_event_failure_returns_side_effect_uncertain() 
         watcher.join().unwrap(),
         "restore request event was not observed"
     );
-    let error = result.unwrap_err().to_string();
-    assert!(error.contains("side_effect_uncertain"));
+    assert!(matches!(
+        result,
+        Err(
+            steerbox::loop_controller::LoopControllerError::WorkspaceSnapshotAuditUncertain {
+                status: steerbox::audit_store::SideEffectAuditStatus::Uncertain
+            }
+        )
+    ));
     assert_eq!(
         fs::read(fixture.workspace.join("README.md")).unwrap(),
         b"before\n"

@@ -170,7 +170,7 @@ Memory 最小实现：
 - [x] 记录 checkpoint 与 goal / loop / step 的关系（workspace-edit 路径写入三者标识）
 - [x] 记录 checkpoint 前后的文件 diff boundary（workspace-edit checkpoint JSONL 只保存路径绑定的边界 hash，不保存正文或实际 diff；独立 snapshot private record 保存 bounded 正文，采用 content-only hash，与旧 checkpoint hash 不通用）
 - [x] 记录 checkpoint 覆盖范围（当前为 workspace-edit action 指定的相对文件路径，非通用多文件范围）
-- [x] 记录不可恢复 side effect 引用（当前写入 step 级 side_effect_ref；外部不可逆动作和 side_effect_uncertain 分支仍待完成）
+- [x] 记录不可恢复 side effect 引用（当前写入 step 级 side_effect_ref；`SideEffectAuditStatus::Uncertain` 与 restore-audit typed signal 已实现；外部不可逆动作的完整处理仍待完成）
 
 验收：
 
@@ -180,14 +180,14 @@ Memory 最小实现：
 - [ ] 将显式 restore 纳入统一 PolicyGate、approval store 与 SideEffectLedger 授权/审计路径；当前仅提供 trusted-controller API，不接受模型 action
 - `CheckpointStore::latest_for` / `latest_for_loop_step` 可按 loop/step 流式查询最后追加的 checkpoint，解释已记录 hash 和 recoverability，给出 `NoAction` / `RestoreRequired` / `ManualIntervention`；非法或歧义 hash、未知 changed-hash 恢复状态和矛盾的 no-write 标记不自动放行
 - `CheckpointStore::latest_for*` 查询不重算当前 workspace hash、不校验 snapshot、不执行 restore/replay；这些限制属于只读查询，不否定独立 primitive 的显式文件恢复。查询仍全日志扫描，单条记录大小仍影响内存
-- checkpoint 不声称恢复未记录的外部动作；side_effect_uncertain 进入人工处理的分支仍待完成
+- checkpoint 不声称恢复未记录的外部动作；`side_effect_uncertain` 现在会进入 typed uncertain signal 并禁止自动执行，但统一人工处理、补偿或恢复决策分支仍待完成
 
 ### P8. SideEffectLedger
 
 - [x] 定义最小 side-effect record schema
 - [x] 实现 tool call 到 side-effect event 的记录（只读工具和 workspace-edit 执行路径已写入 TraceStore/SideEffectLedger；并非所有 tool-call registration 都自动产生 ledger record）
-- [ ] 支持 read-only、本地可逆、部分可逆、可补偿、不可逆、人工处理的完整分类与状态机（已有基础 `SideEffectDisposition` 派生映射与 `SideEffectAuditStatus` 解析；部分可逆、补偿、不可逆动作的完整恢复/补偿状态机及执行协调仍未实现）
-- [x] 高风险副作用要求 policy gate（workspace-write 已经过 PolicyGate，并在需要时走 approval/checkpoint；不可逆动作和 side_effect_uncertain 处理仍待完成）
+- [ ] 支持 read-only、本地可逆、部分可逆、可补偿、不可逆、人工处理的完整分类与状态机（已有基础 `SideEffectDisposition` 派生映射、`SideEffectAuditStatus` 解析及 typed `Uncertain` fail-closed 门禁；部分可逆、补偿、不可逆动作的完整恢复/补偿状态机及执行协调仍未实现）
+- [x] 高风险副作用要求 policy gate（workspace-write 已经过 PolicyGate，并在需要时走 approval/checkpoint；uncertain 状态禁止自动执行，但不可逆动作和统一人工处理仍待完成）
 
 验收：
 

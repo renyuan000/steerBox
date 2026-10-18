@@ -179,6 +179,7 @@ pub enum SideEffectAuditStatus {
     Completed,
     Failed,
     Blocked,
+    Uncertain,
     Unknown,
 }
 
@@ -190,6 +191,7 @@ impl std::fmt::Display for SideEffectAuditStatus {
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Blocked => "blocked",
+            Self::Uncertain => "uncertain",
             Self::Unknown => "unknown",
         };
         formatter.write_str(label)
@@ -208,13 +210,17 @@ impl SideEffectRecord {
             "completed" => SideEffectAuditStatus::Completed,
             "failed" | "verification_failed" => SideEffectAuditStatus::Failed,
             "blocked" => SideEffectAuditStatus::Blocked,
+            "uncertain" | "side_effect_uncertain" => SideEffectAuditStatus::Uncertain,
             _ => SideEffectAuditStatus::Unknown,
         }
     }
 
     pub fn automatic_execution_allowed(&self) -> bool {
         SideEffectClass::from_audit_label(&self.class).automatic_execution_allowed()
-            && !matches!(self.audit_status(), SideEffectAuditStatus::Unknown)
+            && !matches!(
+                self.audit_status(),
+                SideEffectAuditStatus::Unknown | SideEffectAuditStatus::Uncertain
+            )
     }
 }
 

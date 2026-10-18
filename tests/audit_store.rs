@@ -1,7 +1,7 @@
 use std::fs;
 use steerbox::audit_store::{
     append_jsonl, read_jsonl, CheckpointMetadata, CheckpointStore, RecoveryAction, RunSummary,
-    SideEffectLedger, SideEffectRecord, TraceRecord, TraceStore,
+    SideEffectAuditStatus, SideEffectLedger, SideEffectRecord, TraceRecord, TraceStore,
 };
 use steerbox::tool_registry::SideEffectDisposition;
 
@@ -177,6 +177,15 @@ fn side_effect_audit_status_maps_known_and_unknown_values() {
         "failed"
     );
     assert_eq!(record("blocked").audit_status().to_string(), "blocked");
+    assert_eq!(
+        record("uncertain").audit_status(),
+        SideEffectAuditStatus::Uncertain
+    );
+    assert_eq!(
+        record("side_effect_uncertain").audit_status(),
+        SideEffectAuditStatus::Uncertain
+    );
+    assert!(!record("uncertain").automatic_execution_allowed());
     assert_eq!(
         record("future-status").audit_status().to_string(),
         "unknown"

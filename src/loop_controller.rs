@@ -1,7 +1,7 @@
 use crate::approval_contract::{ApprovalError, ApprovalRequest, ApprovalStatus, ApprovalStore};
 use crate::audit_store::{
-    AuditStoreError, CheckpointMetadata, CheckpointStore, SideEffectLedger, SideEffectRecord,
-    TraceRecord, TraceStore,
+    AuditStoreError, CheckpointMetadata, CheckpointStore, SideEffectAuditStatus, SideEffectLedger,
+    SideEffectRecord, TraceRecord, TraceStore,
 };
 use crate::budget_calculator::BudgetCalculator;
 use crate::domain::{
@@ -114,6 +114,8 @@ pub enum LoopControllerError {
     WorkspaceToolExecution(String),
     #[error("workspace snapshot failed: {0}")]
     WorkspaceSnapshot(String),
+    #[error("workspace snapshot audit is uncertain: {status}")]
+    WorkspaceSnapshotAuditUncertain { status: SideEffectAuditStatus },
     #[error("audit store failed: {0}")]
     AuditStore(#[from] AuditStoreError),
     #[error("user command inbox failed: {0}")]
@@ -875,10 +877,9 @@ impl ReadOnlyLoopController {
                     )
                     .is_err()
                 {
-                    return Err(LoopControllerError::WorkspaceSnapshot(
-                        "workspace snapshot restored but audit event append failed; side_effect_uncertain"
-                            .into(),
-                    ));
+                    return Err(LoopControllerError::WorkspaceSnapshotAuditUncertain {
+                        status: SideEffectAuditStatus::Uncertain,
+                    });
                 }
                 Ok(edit)
             }
@@ -1581,7 +1582,7 @@ impl ReadOnlyLoopController {
             &format!("{step_id}:workspace_recovery_required"),
             json!({
                 "recovery_action": "restore_required",
-                "side_effect_status": "uncertain",
+                "side_effect_status": SideEffectAuditStatus::Uncertain.to_string(),
                 "relative_path": relative_path,
                 "snapshot_id": snapshot_id,
                 "side_effect_refs": side_effect_refs,
