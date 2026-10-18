@@ -283,6 +283,183 @@ fn controller_retrieves_memory_candidates_only_when_explicitly_requested() {
 }
 
 #[test]
+fn controller_records_memory_candidate_with_metadata_only_event_lineage() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let event_path = directory.join("events.jsonl");
+    let memory_store = MemoryStore::open(directory.join("memory.jsonl"));
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&event_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-memory-write",
+            "project-memory-write",
+            "record a candidate",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-memory-write",
+        "task-run-memory-write",
+        LoopBudget::new(3, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+    controller
+        .run_observation("source-step", "verified source observation")
+        .expect("source event is recorded");
+    let candidate = MemoryCandidate::new(
+        "candidate-recorded",
+        MemoryScope::Project,
+        "project-memory-write",
+        None,
+        None,
+        "candidate claim password=synthetic-memory-secret",
+        MemoryProvenance {
+            producer: "controller-test".into(),
+            source_kind: "verification".into(),
+        },
+        vec!["source-step:completed".into()],
+        MemoryConfidence::Medium,
+        MemoryCandidateState::New,
+    )
+    .expect("candidate is valid");
+
+    controller
+        .record_memory_candidate(&memory_store, &candidate, "memory-write-1")
+        .expect("candidate recording succeeds");
+
+    let stored = memory_store.read_all().expect("memory store reads");
+    assert_eq!(stored, vec![candidate.clone()]);
+    let events = EventLog::open(&event_path)
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    let written = events
+        .iter()
+        .find(|event| event.event_type == "memory_candidate_written")
+        .expect("candidate write event exists");
+    assert_eq!(written.payload["candidate_id"], "candidate-recorded");
+    assert_eq!(written.payload["source_event_count"], 1);
+    assert_eq!(written.payload["scope"], "project");
+    let payload = written.payload.to_string();
+    assert!(!payload.contains("candidate claim"));
+    assert!(!payload.contains("synthetic-memory-secret"));
+    assert!(!payload.contains("verified source observation"));
+}
+
+#[test]
+fn controller_rejects_memory_candidate_scope_before_write_or_event() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let event_path = directory.join("events.jsonl");
+    let memory_store = MemoryStore::open(directory.join("memory.jsonl"));
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&event_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-memory-scope-write",
+            "project-memory-scope-write",
+            "record a candidate",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-memory-scope-write",
+        "task-run-memory-scope-write",
+        LoopBudget::new(2, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+    let candidate = runtime_memory_candidate(
+        "foreign-candidate",
+        "foreign-project",
+        MemoryScope::Project,
+        None,
+        None,
+        MemoryCandidateState::New,
+    );
+
+    assert!(matches!(
+        controller.record_memory_candidate(&memory_store, &candidate, "memory-write-scope"),
+        Err(LoopControllerError::MemoryCandidateScopeMismatch)
+    ));
+    assert!(memory_store
+        .read_all()
+        .expect("memory store reads")
+        .is_empty());
+    let events = EventLog::open(&event_path)
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events
+        .iter()
+        .all(|event| !event.event_type.starts_with("memory_candidate_write_")));
+}
+
+#[test]
+fn controller_records_duplicate_memory_candidate_failure_without_success_event() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let event_path = directory.join("events.jsonl");
+    let memory_store = MemoryStore::open(directory.join("memory.jsonl"));
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&event_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-memory-duplicate",
+            "project-memory-duplicate",
+            "record a candidate",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-memory-duplicate",
+        "task-run-memory-duplicate",
+        LoopBudget::new(4, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+    controller
+        .run_observation("source-step", "verified source observation")
+        .expect("source event is recorded");
+    let candidate = MemoryCandidate::new(
+        "candidate-duplicate",
+        MemoryScope::Project,
+        "project-memory-duplicate",
+        None,
+        None,
+        "candidate claim",
+        MemoryProvenance {
+            producer: "controller-test".into(),
+            source_kind: "verification".into(),
+        },
+        vec!["source-step:completed".into()],
+        MemoryConfidence::Medium,
+        MemoryCandidateState::New,
+    )
+    .expect("candidate is valid");
+
+    controller
+        .record_memory_candidate(&memory_store, &candidate, "memory-write-first")
+        .expect("first candidate recording succeeds");
+    let error = controller
+        .record_memory_candidate(&memory_store, &candidate, "memory-write-duplicate")
+        .expect_err("duplicate candidate is rejected");
+    assert!(matches!(error, LoopControllerError::MemoryStore(_)));
+
+    let events = EventLog::open(&event_path)
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(events.iter().any(|event| {
+        event.event_type == "memory_candidate_write_failed"
+            && event.payload["failure_class"] == "duplicate_candidate"
+    }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "memory_candidate_written")
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn controller_rejects_memory_query_outside_current_loop_scope_without_event() {
     let directory = test_data_dir();
     fs::create_dir_all(&directory).expect("test directory creates");

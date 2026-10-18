@@ -10,7 +10,7 @@ use crate::domain::{
     NoProgressTracker, RiskLevel, TaskRun, TaskRunStatus,
 };
 use crate::event_log::{EventLog, EventLogError};
-use crate::memory::{MemoryCandidate, MemoryQuery};
+use crate::memory::{MemoryCandidate, MemoryError, MemoryQuery};
 use crate::memory_store::{MemoryStore, MemoryStoreError};
 use crate::model_adapter::{
     ModelAdapter, ModelAdapterError, ModelAdapterRegistry, ModelDecision, ModelRequest,
@@ -59,6 +59,10 @@ pub enum LoopControllerError {
     MemoryStore(#[from] MemoryStoreError),
     #[error("memory query scope does not match current loop")]
     MemoryQueryScopeMismatch,
+    #[error("memory candidate scope does not match current loop")]
+    MemoryCandidateScopeMismatch,
+    #[error("memory candidate is invalid: {field}: {reason}")]
+    MemoryCandidateInvalid { field: String, reason: String },
     #[error("loop budget exhausted: {0:?}")]
     BudgetExhausted(BudgetKind),
     #[error("task run lineage failed: {0}")]
@@ -598,6 +602,73 @@ impl ReadOnlyLoopController {
             attempt_id,
         )?;
         Ok(candidates)
+    }
+
+    /// Records a validated candidate in the caller-owned memory store and appends
+    /// metadata-only lineage to this loop's EventLog. This does not promote the
+    /// candidate, create active memory, inject prompts, or grant authorization.
+    pub fn record_memory_candidate(
+        &mut self,
+        store: &MemoryStore,
+        candidate: &MemoryCandidate,
+        write_id: impl Into<String>,
+    ) -> Result<(), LoopControllerError> {
+        self.prepare_action()?;
+        if candidate.project_id != self.goal.project_id
+            || candidate
+                .goal_id
+                .as_deref()
+                .is_some_and(|goal_id| goal_id != self.goal.goal_id)
+            || candidate
+                .task_id
+                .as_deref()
+                .is_some_and(|task_id| task_id != self.task_run.task_id)
+        {
+            return Err(LoopControllerError::MemoryCandidateScopeMismatch);
+        }
+        candidate
+            .validate_source_events(&self.event_log.read_all()?)
+            .map_err(memory_candidate_error)?;
+
+        let write_id = write_id.into();
+        let attempt_id = self.task_run.current_attempt_id.clone();
+        append_loop_event(
+            &mut self.event_log,
+            &self.goal,
+            &self.loop_run,
+            "memory_candidate_write_requested",
+            &format!("{write_id}:requested"),
+            memory_candidate_event_payload(candidate, &write_id),
+            attempt_id.clone(),
+        )?;
+
+        if let Err(error) = store.append(candidate) {
+            let _ = append_loop_event(
+                &mut self.event_log,
+                &self.goal,
+                &self.loop_run,
+                "memory_candidate_write_failed",
+                &format!("{write_id}:failed"),
+                json!({
+                    "write_id": write_id,
+                    "candidate_id": candidate.candidate_id,
+                    "failure_class": memory_store_failure_class(&error),
+                }),
+                attempt_id,
+            );
+            return Err(error.into());
+        }
+
+        append_loop_event(
+            &mut self.event_log,
+            &self.goal,
+            &self.loop_run,
+            "memory_candidate_written",
+            &format!("{write_id}:written"),
+            memory_candidate_event_payload(candidate, &write_id),
+            attempt_id,
+        )?;
+        Ok(())
     }
 
     pub fn with_audit_stores(
@@ -3799,6 +3870,47 @@ fn model_action_error_class(error: &LoopControllerError) -> String {
         LoopControllerError::PolicyGate(_) => "policy_gate".into(),
         LoopControllerError::ModelAdapter(_) => "model_adapter".into(),
         _ => "action_execution".into(),
+    }
+}
+
+fn memory_candidate_error(error: MemoryError) -> LoopControllerError {
+    match error {
+        MemoryError::InvalidField { field, reason } => {
+            LoopControllerError::MemoryCandidateInvalid { field, reason }
+        }
+        MemoryError::DuplicateCandidate(candidate_id) => {
+            LoopControllerError::MemoryCandidateInvalid {
+                field: "candidate_id".into(),
+                reason: format!("duplicate candidate: {candidate_id}"),
+            }
+        }
+    }
+}
+
+fn memory_candidate_event_payload(
+    candidate: &MemoryCandidate,
+    write_id: &str,
+) -> serde_json::Value {
+    json!({
+        "write_id": write_id,
+        "candidate_id": candidate.candidate_id,
+        "project_id": candidate.project_id,
+        "goal_id": candidate.goal_id,
+        "task_id": candidate.task_id,
+        "scope": serde_json::to_value(candidate.scope).unwrap_or_else(|_| json!("unknown")),
+        "confidence": serde_json::to_value(candidate.confidence).unwrap_or_else(|_| json!("unknown")),
+        "lifecycle_state": serde_json::to_value(candidate.lifecycle_state).unwrap_or_else(|_| json!("unknown")),
+        "source_event_count": candidate.source_event_refs.len(),
+        "provenance_source_kind": candidate.provenance.source_kind,
+    })
+}
+
+fn memory_store_failure_class(error: &MemoryStoreError) -> &'static str {
+    match error {
+        MemoryStoreError::Io { .. } => "storage_io",
+        MemoryStoreError::InvalidJson { .. } => "storage_invalid_json",
+        MemoryStoreError::InvalidCandidate { .. } => "storage_invalid_candidate",
+        MemoryStoreError::DuplicateCandidate { .. } => "duplicate_candidate",
     }
 }
 
