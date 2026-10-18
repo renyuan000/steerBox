@@ -41,6 +41,13 @@ struct SnapshotRecord {
     contents: String,
 }
 
+pub(crate) struct PreparedSnapshotRestore {
+    workspace: PathBuf,
+    relative_path: String,
+    current: String,
+    replacement: String,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SnapshotError {
     #[error("snapshot storage requires Unix private filesystem permissions")]
@@ -155,6 +162,22 @@ impl WorkspaceSnapshotStore {
         if !approved {
             return Err(SnapshotError::ApprovalRequired);
         }
+        let prepared =
+            self.prepare_restore(workspace, goal, snapshot_id, expected_after_hash, true)?;
+        self.restore_prepared(goal, prepared)
+    }
+
+    pub(crate) fn prepare_restore(
+        &self,
+        workspace: &Path,
+        goal: &GoalContract,
+        snapshot_id: &str,
+        expected_after_hash: &str,
+        approved: bool,
+    ) -> Result<PreparedSnapshotRestore, SnapshotError> {
+        if !approved {
+            return Err(SnapshotError::ApprovalRequired);
+        }
         validate_content_hash(expected_after_hash)?;
         supported_platform()?;
         validate_id(snapshot_id)?;
@@ -190,10 +213,30 @@ impl WorkspaceSnapshotStore {
         if content_hash(current.as_bytes()) != expected_after_hash {
             return Err(SnapshotError::CurrentHashMismatch);
         }
+        Ok(PreparedSnapshotRestore {
+            workspace: binding,
+            relative_path: relative,
+            current,
+            replacement: record.contents,
+        })
+    }
+
+    pub(crate) fn restore_prepared(
+        &self,
+        goal: &GoalContract,
+        prepared: PreparedSnapshotRestore,
+    ) -> Result<EditResult, SnapshotError> {
         // The editor rechecks exact content before replacement. This is not a
         // CAS against adversarial concurrent writers, nor a rollback transaction.
-        edit_markdown(&binding, goal, &relative, &current, &record.contents, true)
-            .map_err(|_| SnapshotError::ReplacementFailed)
+        edit_markdown(
+            &prepared.workspace,
+            goal,
+            &prepared.relative_path,
+            &prepared.current,
+            &prepared.replacement,
+            true,
+        )
+        .map_err(|_| SnapshotError::ReplacementFailed)
     }
 
     fn checked_root(&self, workspace: &Path, create: bool) -> Result<PathBuf, SnapshotError> {

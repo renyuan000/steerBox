@@ -972,17 +972,18 @@ impl ReadOnlyLoopController {
         let snapshot_store = self.snapshot_store.clone().ok_or_else(|| {
             LoopControllerError::WorkspaceSnapshot("snapshot store is not configured".into())
         })?;
-        let store =
-            self.approval_store
-                .as_ref()
-                .ok_or_else(|| LoopControllerError::ApprovalRequired {
+        let record = {
+            let store = self.approval_store.as_ref().ok_or_else(|| {
+                LoopControllerError::ApprovalRequired {
                     request_id: approval.approval_request_id.clone(),
-                })?;
-        let record = store.latest(&approval.approval_request_id).ok_or_else(|| {
-            LoopControllerError::ApprovalRequired {
-                request_id: approval.approval_request_id.clone(),
-            }
-        })?;
+                }
+            })?;
+            store.latest(&approval.approval_request_id).ok_or_else(|| {
+                LoopControllerError::ApprovalRequired {
+                    request_id: approval.approval_request_id.clone(),
+                }
+            })?
+        };
         let capability = snapshot_restore_capability(
             &approval.snapshot_id,
             &binding.relative_path,
@@ -994,16 +995,26 @@ impl ReadOnlyLoopController {
             && record.request.tool_id == "restore_workspace_snapshot"
             && record.request.capability == capability
             && record.request.data_class == "metadata_only";
-        if record.status != ApprovalStatus::Approved || !request_matches {
+        if record.status != ApprovalStatus::Approved
+            || record.scope != Some(crate::approval_contract::ApprovalScope::Once)
+            || !request_matches
+        {
             return Err(LoopControllerError::ApprovalRequired {
                 request_id: approval.approval_request_id,
             });
         }
-        if !store.consume(&record.request)? {
-            return Err(LoopControllerError::ApprovalRequired {
-                request_id: record.request.request_id,
-            });
-        }
+        // Complete all read-only snapshot validation before any audit write or
+        // approval consumption. This keeps a malformed or stale snapshot from
+        // consuming a Once approval when no workspace mutation can occur.
+        let prepared = snapshot_store
+            .prepare_restore(
+                &binding.workspace,
+                &self.goal,
+                &approval.snapshot_id,
+                &approval.expected_after_hash,
+                true,
+            )
+            .map_err(|error| LoopControllerError::WorkspaceSnapshot(error.to_string()))?;
         append_restore_ledger(
             &ledger,
             &approval.snapshot_id,
@@ -1030,13 +1041,40 @@ impl ReadOnlyLoopController {
             &self.loop_run,
             "started",
         )?;
-        let result = snapshot_store.restore(
-            &binding.workspace,
-            &self.goal,
-            &approval.snapshot_id,
-            &approval.expected_after_hash,
-            true,
-        );
+        // Consume the approval only after every pre-mutation audit write has
+        // succeeded. A failed ledger/event preflight must leave a Once grant
+        // reusable because no workspace mutation has happened.
+        let store =
+            self.approval_store
+                .as_ref()
+                .ok_or_else(|| LoopControllerError::ApprovalRequired {
+                    request_id: approval.approval_request_id.clone(),
+                })?;
+        let result = match store.consume(&record.request) {
+            Ok(true) => snapshot_store.restore_prepared(&self.goal, prepared),
+            Ok(false) => {
+                append_restore_ledger(
+                    &ledger,
+                    &approval.snapshot_id,
+                    &self.goal,
+                    &self.loop_run,
+                    "blocked",
+                )?;
+                return Err(LoopControllerError::ApprovalRequired {
+                    request_id: record.request.request_id,
+                });
+            }
+            Err(error) => {
+                append_restore_ledger(
+                    &ledger,
+                    &approval.snapshot_id,
+                    &self.goal,
+                    &self.loop_run,
+                    "uncertain",
+                )?;
+                return Err(LoopControllerError::ApprovalContract(error));
+            }
+        };
         let edit = match result {
             Ok(edit) => edit,
             Err(error) => {
