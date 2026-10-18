@@ -194,3 +194,5 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 2026-10-18 workspace recovery signal 增量：workspace-edit 的两条 verification failure 路径在 checkpoint 写入后追加 metadata-only `workspace_recovery_required` 事件，包含 `restore_required`、`uncertain`、相对路径及 snapshot/side-effect 引用；不自动 rollback，不改变现有显式 trusted-caller restore 边界，不写入文件正文、原始 tool output 或敏感参数。snapshot integration focused 11 项通过；该信号仍不是跨进程恢复、自动补偿或 `side_effect_uncertain` typed 状态。
 
 2026-10-18 workspace mutation progress 增量：受控 workspace-edit 在 mutation 前后增加 `ProgressSubject::Tool` 的 `Started/Completed` 生命周期，固定 subject id 为 `{step_id}:workspace_write`，固定摘要不包含路径、正文、参数或原始错误；mutation 执行失败时发送 `Failed`，verification 仍沿用独立只读工具进度。snapshot integration focused 11 项通过；这只是 UI/后台可观测性，不改变 checkpoint、approval、恢复或自动 rollback 边界。
+
+2026-10-18 bounded resolved loop 零迭代边界：`max_iterations == 0` 现在先执行 request/pack/controller lineage 校验，再写入 metadata-only `resolved_loop_budget_exhausted` 与 `resolved_loop_stopped(reason=budget_exhausted, iterations=0)`，随后返回既有 `BudgetExhausted(Steps)`；不会调用 provider，也不把未校验请求的事件写入日志。model-call controller audit 28 项通过；该修补仍不扩展为多进程恢复、workspace-edit 自动 loop 或 live provider 验收。

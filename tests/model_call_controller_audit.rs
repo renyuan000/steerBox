@@ -857,6 +857,17 @@ fn resolved_model_loop_zero_iterations_fails_closed_before_provider_call() {
         Err(LoopControllerError::BudgetExhausted(BudgetKind::Steps))
     ));
     assert!(sends.lock().expect("send capture lock").is_empty());
+    let events = EventLog::open(directory.events())
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    let stopped = events
+        .iter()
+        .find(|event| event.event_type == "resolved_loop_stopped")
+        .expect("zero-iteration stop event exists");
+    assert_eq!(stopped.payload["reason"], "budget_exhausted");
+    assert_eq!(stopped.payload["iterations"], 0);
+    assert_eq!(stopped.payload["last_step_id"], "step-zero-iterations");
 }
 
 fn controller_with_budget(

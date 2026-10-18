@@ -1226,10 +1226,25 @@ impl ReadOnlyLoopController {
         runtime: &ModelActionRuntime<'_>,
         max_iterations: u32,
     ) -> Result<ResolvedModelLoopOutcome, LoopControllerError> {
+        validate_resolved_request_binding(&request, pack, &self.goal, &self.loop_run)?;
         if max_iterations == 0 {
+            self.append_model_event(
+                "resolved_loop_budget_exhausted",
+                &format!("{}:resolved_loop_budget", self.loop_run.loop_run_id),
+                json!({"max_iterations": 0}),
+            )?;
+            self.append_model_event(
+                "resolved_loop_stopped",
+                &format!("{}:resolved_loop_stopped", self.loop_run.loop_run_id),
+                json!({
+                    "reason": "budget_exhausted",
+                    "iterations": 0,
+                    "last_step_id": request.step_id,
+                    "last_prompt_pack_id": pack.metadata().prompt_pack_id,
+                }),
+            )?;
             return Err(LoopControllerError::BudgetExhausted(BudgetKind::Steps));
         }
-        validate_resolved_request_binding(&request, pack, &self.goal, &self.loop_run)?;
         let base_step_id = request.step_id.clone();
         let mut current_request = request;
         let mut current_pack = pack.clone();
