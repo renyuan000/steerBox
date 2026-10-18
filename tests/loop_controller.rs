@@ -11,8 +11,8 @@ use steerbox::domain::{
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{LoopControllerError, ModelActionRuntime, ReadOnlyLoopController};
 use steerbox::memory::{
-    MemoryCandidate, MemoryCandidateState, MemoryConfidence, MemoryProvenance, MemoryQuery,
-    MemoryScope,
+    MemoryCandidate, MemoryCandidateState, MemoryConfidence, MemoryPromotionDecision,
+    MemoryProvenance, MemoryQuery, MemoryScope,
 };
 use steerbox::memory_store::MemoryStore;
 use steerbox::model_adapter::{
@@ -457,6 +457,85 @@ fn controller_records_duplicate_memory_candidate_failure_without_success_event()
             .count(),
         1
     );
+}
+
+#[test]
+fn controller_records_promotion_decision_without_activating_candidate() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let event_path = directory.join("events.jsonl");
+    let memory_store = MemoryStore::open(directory.join("memory.jsonl"));
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(&event_path).expect("event log opens"),
+        GoalContract::new(
+            "goal-memory-promotion",
+            "project-memory-promotion",
+            "record a promotion decision",
+            vec![".".into()],
+            Vec::new(),
+            vec!["completed".into()],
+        ),
+        "loop-memory-promotion",
+        "task-run-memory-promotion",
+        LoopBudget::new(3, 0, 0, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+    controller
+        .run_observation("source-step", "verified source observation")
+        .expect("source event is recorded");
+    let candidate = MemoryCandidate::new(
+        "candidate-promotion",
+        MemoryScope::Project,
+        "project-memory-promotion",
+        None,
+        None,
+        "candidate claim password=synthetic-memory-secret",
+        MemoryProvenance {
+            producer: "controller-test".into(),
+            source_kind: "verification".into(),
+        },
+        vec!["source-step:completed".into()],
+        MemoryConfidence::High,
+        MemoryCandidateState::New,
+    )
+    .expect("candidate is valid");
+    controller
+        .record_memory_candidate(&memory_store, &candidate, "memory-write-promotion")
+        .expect("candidate recording succeeds");
+    let before = memory_store.read_all().expect("memory store reads");
+
+    controller
+        .record_memory_promotion_decision(
+            &candidate,
+            "promotion-1",
+            MemoryScope::Project,
+            MemoryScope::Project,
+            MemoryPromotionDecision::Accept,
+            "validated password=synthetic-memory-secret",
+            &["source-step:completed".into()],
+            "policy-decision-1",
+            Some("human-review-1"),
+        )
+        .expect("promotion decision audit succeeds");
+
+    assert_eq!(
+        memory_store.read_all().expect("memory store rereads"),
+        before
+    );
+    let events = EventLog::open(&event_path)
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    let decision = events
+        .iter()
+        .find(|event| event.event_type == "memory_promotion_decision_recorded")
+        .expect("promotion decision event exists");
+    assert_eq!(decision.payload["decision"], "accept");
+    assert_eq!(decision.payload["materialized"], false);
+    assert_eq!(decision.payload["validation_ref_count"], 1);
+    let payload = decision.payload.to_string();
+    assert!(!payload.contains("synthetic-memory-secret"));
+    assert!(!payload.contains("validated password"));
 }
 
 #[test]

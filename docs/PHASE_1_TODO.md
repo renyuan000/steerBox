@@ -94,7 +94,7 @@ Memory 最小实现：
 - [x] 实现 candidate 的 provenance、confidence、lifecycle state 和 source event refs（MemoryCandidate 最小领域子集；检索 EventLog 子切片已接线，promotion 与 memory 写入/promotion EventLog 仍待完成）
 - [x] 实现按 project / goal / task 的确定性 metadata retrieval（`MemoryCatalog` 稳定过滤/排序；controller 显式接口约束当前运行 scope，在安全边界后返回 metadata，记录 requested/filtered/used；used 仅表示 returned_metadata_only，不是模型使用、prompt 注入或授权，PolicyGate 接线仍待完成）
 - [x] 为 candidate 提供本地 JSONL metadata persistence（`MemoryStore` 在锁内校验并拒绝重复 ID，`read_catalog()` 复用 catalog insert，保留 lifecycle，错误按物理行报告；整份加载，不做 source-event 自动解析、promotion 或授权）
-- [ ] 将 memory 写入、检索和 promotion decision 写入 EventLog（candidate 写入的 requested/written/failed metadata 事件已接线；检索三阶段事件已接线；promotion decision 仍待完成，不能整体标为完成）
+- [ ] 将 memory 写入、检索和 promotion decision 写入 EventLog（candidate 写入与 metadata-only promotion decision 事件已接线；检索三阶段事件已接线；实际 promotion/materialization、授权和状态迁移仍待完成，不能整体标为完成）
 - [ ] 明确 Phase 1 不启用 vector index、graph index、global auto-promotion 或 cross-project implicit visibility
 - [ ] 定义 `EvidencePack`、`WikiPage`、`WikiRevision` 的 Phase 1 子集
 - [ ] 实现通过验证结果生成项目范围 `WikiPageCandidate`

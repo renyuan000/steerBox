@@ -10,7 +10,9 @@ use crate::domain::{
     NoProgressTracker, RiskLevel, TaskRun, TaskRunStatus,
 };
 use crate::event_log::{EventLog, EventLogError};
-use crate::memory::{MemoryCandidate, MemoryError, MemoryQuery};
+use crate::memory::{
+    MemoryCandidate, MemoryError, MemoryPromotionDecision, MemoryQuery, MemoryScope,
+};
 use crate::memory_store::{MemoryStore, MemoryStoreError};
 use crate::model_adapter::{
     ModelAdapter, ModelAdapterError, ModelAdapterRegistry, ModelDecision, ModelRequest,
@@ -63,6 +65,8 @@ pub enum LoopControllerError {
     MemoryCandidateScopeMismatch,
     #[error("memory candidate is invalid: {field}: {reason}")]
     MemoryCandidateInvalid { field: String, reason: String },
+    #[error("memory promotion decision is invalid: {field}: {reason}")]
+    MemoryPromotionInvalid { field: String, reason: String },
     #[error("loop budget exhausted: {0:?}")]
     BudgetExhausted(BudgetKind),
     #[error("task run lineage failed: {0}")]
@@ -667,6 +671,118 @@ impl ReadOnlyLoopController {
             &format!("{write_id}:written"),
             memory_candidate_event_payload(candidate, &write_id),
             attempt_id,
+        )?;
+        Ok(())
+    }
+
+    /// Records promotion decision evidence without changing candidate state or
+    /// creating active memory. Policy authorization and materialization remain
+    /// separate Phase 1 work.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_memory_promotion_decision(
+        &mut self,
+        candidate: &MemoryCandidate,
+        promotion_id: impl Into<String>,
+        from_scope: MemoryScope,
+        to_scope: MemoryScope,
+        decision: MemoryPromotionDecision,
+        decision_basis: &str,
+        validation_refs: &[String],
+        policy_decision_ref: &str,
+        approver_ref: Option<&str>,
+    ) -> Result<(), LoopControllerError> {
+        self.prepare_action()?;
+        if candidate.project_id != self.goal.project_id
+            || candidate
+                .goal_id
+                .as_deref()
+                .is_some_and(|goal_id| goal_id != self.goal.goal_id)
+            || candidate
+                .task_id
+                .as_deref()
+                .is_some_and(|task_id| task_id != self.task_run.task_id)
+        {
+            return Err(LoopControllerError::MemoryCandidateScopeMismatch);
+        }
+        candidate
+            .validate_source_events(&self.event_log.read_all()?)
+            .map_err(memory_candidate_error)?;
+        if from_scope != candidate.scope {
+            return Err(LoopControllerError::MemoryPromotionInvalid {
+                field: "from_scope".into(),
+                reason: "must match candidate scope".into(),
+            });
+        }
+        if policy_decision_ref.trim().is_empty() {
+            return Err(LoopControllerError::MemoryPromotionInvalid {
+                field: "policy_decision_ref".into(),
+                reason: "must not be blank".into(),
+            });
+        }
+        if matches!(
+            decision,
+            MemoryPromotionDecision::Accept | MemoryPromotionDecision::Supersede
+        ) && validation_refs.is_empty()
+        {
+            return Err(LoopControllerError::MemoryPromotionInvalid {
+                field: "validation_refs".into(),
+                reason: "required for accept or supersede".into(),
+            });
+        }
+        if validation_refs
+            .iter()
+            .any(|reference| reference.trim().is_empty())
+        {
+            return Err(LoopControllerError::MemoryPromotionInvalid {
+                field: "validation_refs".into(),
+                reason: "must not contain blank references".into(),
+            });
+        }
+        if approver_ref.is_some_and(|reference| reference.trim().is_empty()) {
+            return Err(LoopControllerError::MemoryPromotionInvalid {
+                field: "approver_ref".into(),
+                reason: "must not be blank".into(),
+            });
+        }
+        let redacted_basis = Redactor::default()
+            .redact_text(decision_basis)
+            .map_err(|_| LoopControllerError::MemoryPromotionInvalid {
+                field: "decision_basis".into(),
+                reason: "exceeds local redaction limit".into(),
+            })?;
+        if redacted_basis.trim().is_empty() {
+            return Err(LoopControllerError::MemoryPromotionInvalid {
+                field: "decision_basis".into(),
+                reason: "must not be blank".into(),
+            });
+        }
+        let promotion_id = promotion_id.into();
+        if promotion_id.trim().is_empty() {
+            return Err(LoopControllerError::MemoryPromotionInvalid {
+                field: "promotion_id".into(),
+                reason: "must not be blank".into(),
+            });
+        }
+        append_loop_event(
+            &mut self.event_log,
+            &self.goal,
+            &self.loop_run,
+            "memory_promotion_decision_recorded",
+            &format!("{promotion_id}:recorded"),
+            json!({
+                "promotion_id": promotion_id,
+                "candidate_id": candidate.candidate_id,
+                "project_id": candidate.project_id,
+                "from_scope": serde_json::to_value(from_scope).unwrap_or_else(|_| json!("unknown")),
+                "to_scope": serde_json::to_value(to_scope).unwrap_or_else(|_| json!("unknown")),
+                "decision": serde_json::to_value(decision).unwrap_or_else(|_| json!("unknown")),
+                "validation_ref_count": validation_refs.len(),
+                "policy_decision_ref": policy_decision_ref,
+                "approver_ref": approver_ref,
+                "decision_basis_hash": format!("sha256:{:x}", Sha256::digest(redacted_basis.as_bytes())),
+                "materialized": false,
+            }),
+            self.task_run.current_attempt_id.clone(),
         )?;
         Ok(())
     }
