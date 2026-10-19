@@ -10,6 +10,7 @@ use steerbox::provider_runner::{
 };
 use steerbox::runtime_config::RuntimeConfig;
 use steerbox::stream_reporter::StreamReporter;
+use steerbox::tool_call_store::ToolCallRecordStore;
 
 struct AnthropicMarkdownTransport<'a> {
     workspace: &'a Path,
@@ -188,6 +189,13 @@ fn run_with_decision(
     (result, calls)
 }
 
+fn tool_call_records(root: &Path) -> Vec<steerbox::domain::ToolCallRecord> {
+    ToolCallRecordStore::open(root.join("tool-calls.jsonl"))
+        .unwrap()
+        .read_page(0, 16)
+        .unwrap()
+}
+
 #[test]
 fn markdown_provider_runs_policy_checkpoint_edit_verification_and_metadata_audit() {
     let directory = tempfile::tempdir().unwrap();
@@ -211,6 +219,23 @@ fn markdown_provider_runs_policy_checkpoint_edit_verification_and_metadata_audit
     assert!(audit.contains("before-write"));
     assert!(!audit.contains("secret-ref:markdown-fixture"));
     assert!(!audit.contains("after\\n"));
+
+    let tool_calls = tool_call_records(directory.path());
+    assert_eq!(tool_calls.len(), 4);
+    assert_eq!(tool_calls[0].tool_id, "edit_markdown");
+    assert_eq!(tool_calls[0].status, "started");
+    assert_eq!(tool_calls[1].tool_id, "edit_markdown");
+    assert_eq!(tool_calls[1].status, "completed");
+    assert_eq!(tool_calls[2].tool_id, "markdown_link_check");
+    assert_eq!(tool_calls[2].status, "started");
+    assert_eq!(tool_calls[3].tool_id, "markdown_link_check");
+    assert_eq!(tool_calls[3].status, "completed");
+    assert_eq!(tool_calls[0].tool_call_id, tool_calls[1].tool_call_id);
+    assert_eq!(tool_calls[2].tool_call_id, tool_calls[3].tool_call_id);
+    assert_ne!(tool_calls[0].tool_call_id, tool_calls[2].tool_call_id);
+    let tool_metadata = serde_json::to_string(&tool_calls).unwrap();
+    assert!(!tool_metadata.contains("secret-ref:markdown-fixture"));
+    assert!(!tool_metadata.contains("after\\n"));
 }
 
 #[test]
@@ -279,6 +304,21 @@ fn failed_markdown_link_check_does_not_claim_completion_or_automatic_rollback() 
     assert!(!events.contains("\"event_type\":\"loop_completed\""));
     assert!(events.contains("model_action_failed"));
     assert!(events.contains("loop_failed"));
+
+    let tool_calls = tool_call_records(directory.path());
+    assert_eq!(tool_calls.len(), 4);
+    assert_eq!(tool_calls[0].tool_id, "edit_markdown");
+    assert_eq!(tool_calls[0].status, "started");
+    assert_eq!(tool_calls[1].tool_id, "edit_markdown");
+    assert_eq!(tool_calls[1].status, "completed");
+    assert_eq!(tool_calls[2].tool_id, "markdown_link_check");
+    assert_eq!(tool_calls[2].status, "started");
+    assert_eq!(tool_calls[3].tool_id, "markdown_link_check");
+    // The verifier tool completed successfully; its result reported missing
+    // links, so the parent workspace action is marked failed separately.
+    assert_eq!(tool_calls[3].status, "completed");
+    assert_eq!(tool_calls[0].tool_call_id, tool_calls[1].tool_call_id);
+    assert_ne!(tool_calls[0].tool_call_id, tool_calls[2].tool_call_id);
 }
 
 #[test]

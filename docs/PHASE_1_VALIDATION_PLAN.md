@@ -86,6 +86,8 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 
 ## 验证用例
 
+2026-10-19 provider runner 回归补充：`provider_foreground_runner` 8 项与 `provider_markdown_runner` 11 项通过。前者验证 OpenAI-compatible/Anthropic 注入式 runner 的现有审计链不回显 auth_ref；后者验证 provider runner 接入的 `tool-calls.jsonl` 中 mutation 与 verification 的 metadata-only 生命周期、identity 分离，以及 verification 失败的 `started/failed`。这些测试不替代 live provider、后台 worker、真实多步 coding loop 或完整 DLP 验收。
+
 ### V0. Phase 1 Core Contract
 
 步骤：

@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+本次增量核对日期：2026-10-19。以下 provider runner 接线与回归结果已在本轮重新执行；此前历史验证仍按原日期和证据边界解释。
+
 状态核对日期：2026-10-18。`5a51851` 为本次 snapshot 实施基线；当前现场另有已提交的 `8cecdef` restore 审计收口，以及已提交的 ToolCallRecord store/runtime 与安全加固切片（`6b2b0fa`、`106afa6`、`a0f3c05`、`c93deed`）；本批快照与共享 editor 改动验收见文末，提交状态以 Git 记录为准，不把旧全量结果覆盖到新代码。未跟踪的历史审核、参考资料与 benchmark 目录不计入交付。`202cec6` 已加入独立 `ModelCallFailureRecord`、failure JSONL 和 `MemoryStore::read_catalog`，`e754d07` 已加入 controller scoped memory retrieval，`5a51851` 已收紧 controller mutation 前审计门禁；`564db6d` 又加入了 resolved-provider local contract fallback 与显式 endpoint protocol；`d140846` 至 `6f45e11` 收口了 controller restore 的 PolicyGate、ApprovalStore、SideEffectLedger 授权路径及旧兼容入口移除；`8cecdef` 补充了未消费 Once approval 的 blocked/uncertain metadata-only 审计，二者均不继续物理 restore；本轮 provider runner 不属于此前历史验证基线，必须以本轮新增的 focused/full regression 证据核验；验证范围仍以实际执行证据为准，不因文件出现或 subagent 报告自动计入完整交付。
 
 本文是剩余验收的归并视图，不替代 [PHASE_1_CONTRACTS.md](PHASE_1_CONTRACTS.md)、[PHASE_1_IMPLEMENTATION_SCOPE.md](PHASE_1_IMPLEMENTATION_SCOPE.md)、[PHASE_1_TODO.md](PHASE_1_TODO.md) 或 [PHASE_1_VALIDATION_PLAN.md](PHASE_1_VALIDATION_PLAN.md)。对象、身份、授权、事件及恢复语义以 Contracts 为准，范围以 Scope 为准，逐项状态和验收用例分别回查 TODO 与 Validation。
@@ -201,6 +203,8 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 2026-10-18 bounded resolved loop 零迭代边界：`max_iterations == 0` 现在先执行 request/pack/controller lineage 校验，再写入 metadata-only `resolved_loop_budget_exhausted` 与 `resolved_loop_stopped(reason=budget_exhausted, iterations=0)`，随后返回既有 `BudgetExhausted(Steps)`；不会调用 provider，也不把未校验请求的事件写入日志。model-call controller audit 28 项通过；该修补仍不扩展为多进程恢复、workspace-edit 自动 loop 或 live provider 验收。
 
 2026-10-18 bounded resolved loop 用户进度增量：`RequestHuman` 与“无已验证 action”停止分支现在向现有 `ProgressSink` 发送 metadata-only `ProgressSubject::Loop + ProgressStatus::Progress`，subject id 使用 loop id，摘要固定为 `bounded resolved loop stopped: request human` 或 `bounded resolved loop stopped: no verified action`；不重复 `CompleteLoop` 已有的 Loop/Completed，不把 budget exhaustion 伪报为 Failed。model-call controller audit 29 项通过；这只是用户可见停止提示，不改变 EventLog、loop status 或 provider/live 验收边界。
+
+2026-10-19 provider runner ToolCallRecord 接线增量：OpenAI-compatible foreground、Anthropic foreground 和 bounded Markdown runner 均从 `events.jsonl` 同目录派生并接入 metadata-only `tool-calls.jsonl`；bounded Markdown focused 回归现在断言 mutation 的 `started/completed`、verification 的独立 `started/completed`，以及 verification 失败时的 `started/failed` 和 identity 分离。`provider_foreground_runner` 8 项、`provider_markdown_runner` 11 项通过；这仍是注入式 fixture/local transport 验收，不是 live provider、真实多步 coding loop、CLI 默认接线或完整 Phase 1 验收。
 
 2026-10-18 memory candidate recording 增量：controller 新增显式 `record_memory_candidate`，先校验当前 project/goal/task scope 与 EventLog source-event identity，再 append caller-owned `MemoryStore`，成功后写入 `memory_candidate_write_requested`/`memory_candidate_written`，存储失败写入固定错误分类的 `memory_candidate_write_failed`（best-effort）。事件只保留 candidate identity、scope/confidence/lifecycle、source count 和 provenance kind，不写 claim summary、source payload 或敏感正文；不实现 promotion、MemoryRecord、PolicyGate 授权、prompt 注入或跨存储原子事务。loop_controller 44 项通过；该切片关闭 candidate 写入回链，不代表 memory/promotion 完整完成。
 

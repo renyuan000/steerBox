@@ -28,6 +28,7 @@ use crate::runtime_config::{
     OPENAI_COMPATIBLE_CHAT_PROTOCOL,
 };
 use crate::stream_reporter::ProgressSink;
+use crate::tool_call_store::{ToolCallRecordStore, ToolCallStoreError};
 use crate::tool_executor::{ReadOnlyToolExecutor, WorkspaceToolExecutor};
 use crate::tool_registry::ToolRegistry;
 use std::fs;
@@ -55,6 +56,8 @@ pub enum ProviderRunError {
     TransportBuild,
     #[error("bounded Markdown run did not reach a completed decision")]
     IncompleteMarkdownRun,
+    #[error(transparent)]
+    ToolCallStore(#[from] ToolCallStoreError),
     #[error(transparent)]
     Controller(#[from] LoopControllerError),
 }
@@ -383,6 +386,7 @@ impl ForegroundProviderRun {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
         let request = self.request;
+        let tool_calls = ToolCallRecordStore::open(tool_call_store_path(events.path()))?;
         let goal = GoalContract::new(
             &request.goal_id,
             &request.project_id,
@@ -399,7 +403,8 @@ impl ForegroundProviderRun {
             LoopBudget::new(1, 0, 1, 1, 0, 1, 1, 1),
             sink,
         )?
-        .with_model_call_store(model_calls);
+        .with_model_call_store(model_calls)
+        .with_tool_call_store(tool_calls);
         let provider =
             OpenAiCompatibleAdapter::new(self.profile.provider, self.profile.endpoint, transport);
         let adapter = ProviderModelAdapter::new(provider, self.profile.auth_ref)
@@ -438,6 +443,7 @@ impl ForegroundProviderRun {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
         let request = self.request;
+        let tool_calls = ToolCallRecordStore::open(tool_call_store_path(events.path()))?;
         let goal = GoalContract::new(
             &request.goal_id,
             &request.project_id,
@@ -454,7 +460,8 @@ impl ForegroundProviderRun {
             LoopBudget::new(1, 0, 1, 1, 0, 1, 1, 1),
             sink,
         )?
-        .with_model_call_store(model_calls);
+        .with_model_call_store(model_calls)
+        .with_tool_call_store(tool_calls);
         let adapter = AnthropicAdapter::new(
             self.profile.provider,
             self.profile.endpoint,
@@ -583,7 +590,10 @@ impl BoundedMarkdownProviderRun {
         model_calls: ModelCallStore,
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
+        let tool_calls_path = tool_call_store_path(events.path());
         validate_markdown_storage_paths(&run, events.path(), &model_calls)?;
+        validate_storage_path(&tool_calls_path)?;
+        let tool_calls = ToolCallRecordStore::open(&tool_calls_path)?;
         let request = inner.request;
         let mut goal = GoalContract::new(
             &request.goal_id,
@@ -604,6 +614,7 @@ impl BoundedMarkdownProviderRun {
             sink,
         )?
         .with_model_call_store(model_calls)
+        .with_tool_call_store(tool_calls)
         .with_checkpoint_store(&run.checkpoint_path)
         .with_audit_stores(&run.trace_path, &run.side_effect_path);
         let adapter = MarkdownBoundAdapter {
@@ -721,6 +732,10 @@ fn validate_markdown_storage_paths(
     }
 
     Ok(())
+}
+
+fn tool_call_store_path(events_path: &std::path::Path) -> PathBuf {
+    events_path.with_file_name("tool-calls.jsonl")
 }
 
 fn validate_storage_path(path: &std::path::Path) -> Result<(), ProviderRunError> {
