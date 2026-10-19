@@ -3343,14 +3343,6 @@ impl ReadOnlyLoopController {
                     "verification_failed",
                     "workspace edit verification failed",
                 )?;
-                self.record_tool_call_record(
-                    registry,
-                    &action.tool_id,
-                    &step_id,
-                    &tool_call_id,
-                    "verification_failed",
-                    "workspace edit verification failed",
-                )?;
                 self.append_model_event(
                     "model_action_failed",
                     &format!("{step_id}:verification_failed"),
@@ -3388,14 +3380,6 @@ impl ReadOnlyLoopController {
                 registry,
                 &action.tool_id,
                 &step_id,
-                "verification_failed",
-                "workspace edit verification reported missing local links",
-            )?;
-            self.record_tool_call_record(
-                registry,
-                &action.tool_id,
-                &step_id,
-                &tool_call_id,
                 "verification_failed",
                 "workspace edit verification reported missing local links",
             )?;

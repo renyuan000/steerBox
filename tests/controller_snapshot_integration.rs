@@ -15,6 +15,7 @@ use steerbox::loop_controller::ReadOnlyLoopController;
 use steerbox::model_contracts::{ActionPathScope, ModelActionEnvelope, VerificationContract};
 use steerbox::policy_gate::PolicyGate;
 use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
+use steerbox::tool_call_store::ToolCallRecordStore;
 use steerbox::tool_executor::{ReadOnlyToolExecutor, WorkspaceToolExecutor};
 use steerbox::tool_registry::ToolRegistry;
 use steerbox::user_command_inbox::{CommandKind, UserCommand, UserCommandInbox};
@@ -41,6 +42,7 @@ struct Fixture {
     checkpoints: PathBuf,
     traces: PathBuf,
     side_effects: PathBuf,
+    tool_calls: PathBuf,
     goal: GoalContract,
 }
 
@@ -70,6 +72,7 @@ impl Fixture {
             checkpoints: workspace.join("checkpoints.jsonl"),
             traces: workspace.join("traces.jsonl"),
             side_effects: workspace.join("side-effects.jsonl"),
+            tool_calls: workspace.join("tool-calls.jsonl"),
             _dir: dir,
             workspace,
             snapshot_root,
@@ -90,7 +93,8 @@ impl Fixture {
         )
         .unwrap()
         .with_checkpoint_store(&self.checkpoints)
-        .with_audit_stores(&self.traces, &self.side_effects);
+        .with_audit_stores(&self.traces, &self.side_effects)
+        .with_tool_call_store(ToolCallRecordStore::open(&self.tool_calls).unwrap());
         match snapshot_root {
             Some(root) => controller.with_snapshot_store(root),
             None => controller,
@@ -238,6 +242,13 @@ impl Fixture {
     fn events(&self) -> Vec<steerbox::domain::EventEnvelope> {
         EventLog::open(&self.events).unwrap().read_all().unwrap()
     }
+
+    fn tool_calls(&self) -> Vec<steerbox::domain::ToolCallRecord> {
+        ToolCallRecordStore::open(&self.tool_calls)
+            .unwrap()
+            .read_page(0, 10)
+            .unwrap()
+    }
 }
 
 fn restore_capability(snapshot_id: &str, relative_path: &str, expected_after_hash: &str) -> String {
@@ -286,6 +297,19 @@ fn opt_in_controller_edit_captures_snapshot_before_mutation_and_explicit_restore
         Some("workspace mutation completed")
     );
     assert_eq!(fixture.snapshot_ids().len(), 1);
+    let tool_calls = fixture.tool_calls();
+    assert_eq!(
+        tool_calls
+            .iter()
+            .map(|record| record.status.as_str())
+            .collect::<Vec<_>>(),
+        ["started", "completed", "started", "completed"]
+    );
+    assert_eq!(tool_calls[0].tool_id, "edit_markdown");
+    assert_eq!(tool_calls[2].tool_id, "markdown_link_check");
+    assert_eq!(tool_calls[0].tool_call_id, tool_calls[1].tool_call_id);
+    assert_eq!(tool_calls[2].tool_call_id, tool_calls[3].tool_call_id);
+    assert_ne!(tool_calls[0].tool_call_id, tool_calls[2].tool_call_id);
     let events = fixture.events();
     let captured = events
         .iter()
@@ -380,6 +404,19 @@ fn verification_failure_records_restore_required_without_automatic_restore() {
     assert_eq!(workspace_events.len(), 2);
     assert_eq!(workspace_events[0].status, ProgressStatus::Started);
     assert_eq!(workspace_events[1].status, ProgressStatus::Completed);
+    let tool_calls = fixture.tool_calls();
+    assert_eq!(
+        tool_calls
+            .iter()
+            .map(|record| record.status.as_str())
+            .collect::<Vec<_>>(),
+        ["started", "completed", "started", "completed"]
+    );
+    assert_eq!(tool_calls[0].tool_id, "edit_markdown");
+    assert_eq!(tool_calls[2].tool_id, "markdown_link_check");
+    assert_eq!(tool_calls[0].tool_call_id, tool_calls[1].tool_call_id);
+    assert_eq!(tool_calls[2].tool_call_id, tool_calls[3].tool_call_id);
+    assert_ne!(tool_calls[0].tool_call_id, tool_calls[2].tool_call_id);
 }
 
 #[test]
@@ -428,6 +465,16 @@ fn mutation_failure_reports_failed_without_leaking_error_details() {
         .events()
         .iter()
         .any(|event| event.event_type == "model_action_failed"));
+    let tool_calls = fixture.tool_calls();
+    assert_eq!(
+        tool_calls
+            .iter()
+            .map(|record| record.status.as_str())
+            .collect::<Vec<_>>(),
+        ["started", "failed"]
+    );
+    assert_eq!(tool_calls[0].tool_id, "edit_markdown");
+    assert_eq!(tool_calls[0].tool_call_id, tool_calls[1].tool_call_id);
 }
 
 #[test]
