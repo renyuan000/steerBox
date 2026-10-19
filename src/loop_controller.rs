@@ -2785,6 +2785,17 @@ impl ReadOnlyLoopController {
         tool_id: impl Into<String>,
         step_id: impl Into<String>,
     ) -> Result<(), LoopControllerError> {
+        self.request_tool_call_with_identity(registry, gate, tool_id, step_id)
+            .map(|_| ())
+    }
+
+    fn request_tool_call_with_identity(
+        &mut self,
+        registry: &ToolRegistry,
+        gate: &PolicyGate,
+        tool_id: impl Into<String>,
+        step_id: impl Into<String>,
+    ) -> Result<String, LoopControllerError> {
         self.prepare_step_action()?;
         let tool_id = tool_id.into();
         let step_id = step_id.into();
@@ -2829,7 +2840,7 @@ impl ReadOnlyLoopController {
             }
             self.sync_task_run_budget();
         }
-        self.append_model_event(
+        let request_sequence = self.append_model_event(
             "tool_call_requested",
             &format!("{step_id}:tool_requested"),
             json!({
@@ -2838,10 +2849,15 @@ impl ReadOnlyLoopController {
                 "risk_level": result.risk_level,
             }),
         )?;
+        let tool_call_id = format!(
+            "{}:tool:{request_sequence}:{step_id}:{tool_id}",
+            self.loop_run.loop_run_id
+        );
         self.record_tool_call_record(
             registry,
             &tool_id,
             &step_id,
+            &tool_call_id,
             "started",
             "tool call started; output withheld",
         )?;
@@ -2852,7 +2868,7 @@ impl ReadOnlyLoopController {
             Some("tool call started"),
             None,
         )?;
-        Ok(())
+        Ok(tool_call_id)
     }
 
     pub fn execute_read_only_tool(
@@ -2882,7 +2898,12 @@ impl ReadOnlyLoopController {
     ) -> Result<ToolCallOutput, LoopControllerError> {
         let step_id = step_id.into();
         let recipe_ref = tool_recipe_ref(registry, &input.tool_id);
-        self.request_tool_call(registry, gate, input.tool_id.clone(), step_id.clone())?;
+        let tool_call_id = self.request_tool_call_with_identity(
+            registry,
+            gate,
+            input.tool_id.clone(),
+            step_id.clone(),
+        )?;
         if let Some((progress, enforce_budget)) = progress {
             // Strategy-aware request_tool_call already accounts for this call.
             if enforce_budget && self.strategy.is_none() {
@@ -2897,13 +2918,12 @@ impl ReadOnlyLoopController {
         let output = match executor.execute(registry, workspace, input.clone()) {
             Ok(output) => output,
             Err(error) => {
-                let tool_call_id =
-                    format!("{}:{step_id}:{}", self.loop_run.loop_run_id, input.tool_id);
                 let failure_event_id = format!("{step_id}:tool_failed");
                 self.record_tool_call_record(
                     registry,
                     &input.tool_id,
                     &step_id,
+                    &tool_call_id,
                     "failed",
                     "tool call failed; error redacted",
                 )?;
@@ -2939,6 +2959,7 @@ impl ReadOnlyLoopController {
             registry,
             &input.tool_id,
             &step_id,
+            &tool_call_id,
             "completed",
             "tool call completed; output redacted",
         )?;
@@ -3551,6 +3572,7 @@ impl ReadOnlyLoopController {
         registry: &ToolRegistry,
         tool_id: &str,
         step_id: &str,
+        tool_call_id: &str,
         status: &str,
         summary: &str,
     ) -> Result<(), LoopControllerError> {
@@ -3562,7 +3584,7 @@ impl ReadOnlyLoopController {
             .map(|profile| format!("{:?}", profile.side_effect_class).to_ascii_lowercase())
             .unwrap_or_else(|| "unknown".into());
         store.append(&crate::domain::ToolCallRecord {
-            tool_call_id: format!("{}:{}:{}", self.loop_run.loop_run_id, step_id, tool_id),
+            tool_call_id: tool_call_id.to_owned(),
             tool_id: tool_id.to_owned(),
             project_id: self.goal.project_id.clone(),
             goal_id: self.goal.goal_id.clone(),

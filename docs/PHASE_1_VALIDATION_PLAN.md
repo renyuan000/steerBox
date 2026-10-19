@@ -67,7 +67,7 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V9 GoalAlignmentCheck | 已验证切片 | `tests/drift_guard.rs`；结果写入完整 loop 仍待接线 |
 | V10 DriftGuard | 已验证切片 | `tests/drift_guard.rs` |
 | V11 Human Steering Mode | 已验证最小运行时切片 | `tests/user_command_inbox.rs`、`tests/loop_controller.rs`、`tests/state_store.rs`；已覆盖 Inbox 幂等、pause/resume/cancel 安全边界和状态重建，takeover、后台 worker、控制面仍未实现 |
-| V12 Baseline Tool Recipes | 部分验证 | registry/recipe 边界已有；`tool_call_failed` 已记录 tool_call_id、failure category 和最小 LessonCandidate，recipe candidate、shell quoting 和 link-check recipe 仍未实现 |
+| V12 Baseline Tool Recipes | 部分验证 | registry/recipe 边界已有；只读工具 `tool_call_requested` 使用 EventLog sequence 派生运行内 `tool_call_id`，同一请求的 started/completed/failed 复用同一 ID，同一 step 重复调用产生不同 ID；`tool_call_failed` 已记录该 ID、failure category 和最小 LessonCandidate；workspace-edit 尚未接入该 identity，recipe candidate、shell quoting 和 link-check recipe 仍未实现 |
 | V13 Model Routing | 已验证本地路由、冻结请求、non-stream adapter 与库审计接线切片 | `tests/model_registry.rs`、`tests/model_router.rs`、`tests/model_role_fixtures.rs`、`tests/loop_model_routing.rs`、`tests/model_call_controller_audit.rs`、`tests/model_call_store.rs`、`tests/model_contracts.rs`、`tests/resolved_prompt.rs`、provider/Anthropic 与 localhost HTTP transport 测试；覆盖 binding/approval fail-closed、wire body hash、成功 resolved 调用的 usage/finish_reason 与成功 store、resolved adapter-error 的独立 `ModelCallFailureRecord`/failure JSONL、未知 response facts 为 None、原始 provider error 不落 failure 日志及失败审计错误；routed fixture fallback 有新 Attempt/真实事件/总预算和失败终态。不覆盖所有失败入口、live provider、resolved-provider fallback 或跨进程恢复；fixture 数值不是实测能力/成本/性能，脱敏不是通用 DLP |
 | V18 StreamReporter | 已验证 CLI 接入切片 | `tests/stream_reporter.rs`、`tests/runtime_cli.rs`；支持 lifecycle/progress/disable/writer error/redaction，readonly/fixture 生命周期输出与事件和状态一致；ContinueObservation/RequestHuman 不伪报 loop completed；尚未接入 LoopController 内部工具/模型 streaming |
 | V19 Execution History Query | 已验证最小只读切片 | `tests/execution_query.rs`、`tests/runtime_cli.rs`；EventLog 事实源、StateStore 当前状态投影、metadata-only `execution list/show/page` 和 detached snapshot 分页；覆盖非法参数、空页、越界和未知 loop；底层仍依赖 `read_all()`，live worker/control plane 未实现 |
@@ -358,6 +358,8 @@ CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 \
 - 失败调用能生成 recipe candidate，但不会直接升级成全局 policy
 
 当前回归：`tests/loop_controller.rs` 的失败工具测试核对内嵌 `LessonCandidate.source_event_ids` 存在于实际 EventLog，且精确引用该失败事件；这不是 recipe 生效、长期记忆或 compact 管线的完整验收。
+
+ToolCall identity 回归还需满足：同一次只读工具调用的 started/completed 或 started/failed 使用同一个 `tool_call_id`；同一 `step_id` 重复调用即使 `tool_id` 相同，也必须因对应 `tool_call_requested` 的 sequence 不同而产生不同 ID。该检查不证明跨进程恢复、全局唯一性或 workspace-edit 的完整 ToolCallRecord 接线。
 
 ### V13. Model Routing、Prompt Resolution 与 Fallback
 

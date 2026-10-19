@@ -86,19 +86,60 @@ fn read_only_runtime_persists_started_completed_and_failed_metadata() {
         ["started", "completed", "started", "failed"]
     );
     assert_eq!(records[3].summary, "tool call failed; error redacted");
-    assert_eq!(
-        records[0].tool_call_id,
-        "loop-tool-record:step-complete:git_status"
-    );
-    assert_eq!(
-        records[2].tool_call_id,
-        "loop-tool-record:step-fail:git_status"
-    );
+    assert!(records[0]
+        .tool_call_id
+        .starts_with("loop-tool-record:tool:"));
+    assert!(records[2]
+        .tool_call_id
+        .starts_with("loop-tool-record:tool:"));
+    assert_ne!(records[0].tool_call_id, records[2].tool_call_id);
     let persisted = fs::read_to_string(tool_calls).expect("tool call log reads");
     assert!(!persisted.contains("arguments"));
     assert!(!persisted.contains("raw_output"));
     assert!(!persisted.contains("error_body"));
     assert!(!persisted.contains("steerbox-tool-record-missing-workspace"));
+}
+
+#[test]
+fn repeated_same_step_tool_calls_get_distinct_call_ids() {
+    let root = tempfile::tempdir().expect("audit root creates");
+    let tool_calls = root.path().join("tool-calls.jsonl");
+    let mut controller = controller(
+        root.path(),
+        "loop-tool-record-repeat",
+        ToolCallRecordStore::open(&tool_calls).expect("tool call store opens"),
+    );
+    let registry = ToolRegistry::baseline().expect("baseline tools register");
+    let workspace = tempfile::tempdir().expect("workspace creates");
+
+    for _ in 0..2 {
+        controller
+            .execute_read_only_tool(
+                &registry,
+                &PolicyGate::new(),
+                &ReadOnlyToolExecutor,
+                workspace.path(),
+                ToolCallInput {
+                    tool_id: "git_status".into(),
+                    arguments: serde_json::json!({}),
+                },
+                "same-step",
+            )
+            .expect("repeated read-only tool completes");
+    }
+
+    let records = ToolCallRecordStore::open(&tool_calls)
+        .expect("tool call store reopens")
+        .read_page(0, 10)
+        .expect("tool call records read");
+    assert_eq!(records.len(), 4);
+    assert_eq!(records[0].status, "started");
+    assert_eq!(records[1].status, "completed");
+    assert_eq!(records[2].status, "started");
+    assert_eq!(records[3].status, "completed");
+    assert_eq!(records[0].tool_call_id, records[1].tool_call_id);
+    assert_eq!(records[2].tool_call_id, records[3].tool_call_id);
+    assert_ne!(records[0].tool_call_id, records[2].tool_call_id);
 }
 
 #[test]

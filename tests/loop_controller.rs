@@ -2838,10 +2838,10 @@ fn controller_records_tool_failure_after_policy_allows_request() {
     assert_eq!(events[3].event_type, "tool_call_failed");
     assert_eq!(events[3].payload["failure_category"], "permission");
     assert_eq!(events[3].payload["recipe_ref"], "git-status-readonly");
-    assert_eq!(
-        events[3].payload["tool_call_id"],
-        "loop-tool-failure:step-tool-failure:git_status"
-    );
+    let tool_call_id = events[3].payload["tool_call_id"]
+        .as_str()
+        .expect("tool call identity is a string");
+    assert!(tool_call_id.starts_with("loop-tool-failure:tool:"));
     assert_eq!(
         events[3].payload["lesson_candidate"]["lifecycle_state"],
         "candidate"
