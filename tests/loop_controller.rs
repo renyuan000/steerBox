@@ -2639,6 +2639,47 @@ fn controller_records_policy_and_denies_forbidden_tool_request() {
 }
 
 #[test]
+fn invalid_tool_call_identity_fails_before_policy_or_request_event() {
+    let directory = test_data_dir();
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.join("events.jsonl")).expect("event log opens"),
+        GoalContract::new(
+            "goal-tool-identity",
+            "project-tool-identity",
+            "inspect repository",
+            vec![".".into()],
+            Vec::new(),
+            vec!["git status".into()],
+        ),
+        "loop-tool-identity",
+        "task-run-tool-identity",
+        LoopBudget::new(1, 1, 1, 1, 0, 1, 1, 1),
+    )
+    .expect("loop starts");
+    let error = controller
+        .request_tool_call(
+            &ToolRegistry::baseline().expect("baseline tools register"),
+            &PolicyGate::new(),
+            "git_status",
+            "step/with/path",
+        )
+        .expect_err("unsafe step identity is rejected");
+    assert!(matches!(
+        error,
+        LoopControllerError::ModelToolContextIdentifierInvalid { field: "step_id" }
+    ));
+    let events = EventLog::open(directory.join("events.jsonl"))
+        .expect("event log reopens")
+        .read_all()
+        .expect("events read");
+    assert!(!events.iter().any(|event| matches!(
+        event.event_type.as_str(),
+        "policy_decision" | "tool_call_requested"
+    )));
+}
+
+#[test]
 fn controller_executes_allowed_git_status_and_records_completion() {
     let directory = test_data_dir();
     fs::create_dir_all(&directory).expect("test directory creates");

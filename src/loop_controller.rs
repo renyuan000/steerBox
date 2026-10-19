@@ -2799,6 +2799,7 @@ impl ReadOnlyLoopController {
         self.prepare_step_action()?;
         let tool_id = tool_id.into();
         let step_id = step_id.into();
+        validate_tool_call_identity_inputs(&self.loop_run.loop_run_id, &step_id, &tool_id)?;
         let request = PolicyRequest {
             policy_event_id: format!("{step_id}:policy"),
             tool_id: tool_id.clone(),
@@ -2849,10 +2850,12 @@ impl ReadOnlyLoopController {
                 "risk_level": result.risk_level,
             }),
         )?;
-        let tool_call_id = format!(
-            "{}:tool:{request_sequence}:{step_id}:{tool_id}",
-            self.loop_run.loop_run_id
-        );
+        let tool_call_id = tool_call_identity(
+            &self.loop_run.loop_run_id,
+            request_sequence,
+            &step_id,
+            &tool_id,
+        )?;
         self.record_tool_call_record(
             registry,
             &tool_id,
@@ -3055,6 +3058,7 @@ impl ReadOnlyLoopController {
             .map_action(registry, workspace, action)
             .map_err(|error| LoopControllerError::WorkspaceToolExecution(error.to_string()))?;
         let step_id = step_id.into();
+        validate_tool_call_identity_inputs(&self.loop_run.loop_run_id, &step_id, &action.tool_id)?;
         let request = PolicyRequest {
             policy_event_id: format!("{step_id}:policy"),
             tool_id: action.tool_id.clone(),
@@ -3181,10 +3185,12 @@ impl ReadOnlyLoopController {
             &format!("{step_id}:action_started"),
             json!({"action_id": action.action_id, "tool_id": action.tool_id}),
         )?;
-        let tool_call_id = format!(
-            "{}:tool:{mutation_started_sequence}:{step_id}:{}",
-            self.loop_run.loop_run_id, action.tool_id
-        );
+        let tool_call_id = tool_call_identity(
+            &self.loop_run.loop_run_id,
+            mutation_started_sequence,
+            &step_id,
+            &action.tool_id,
+        )?;
         self.record_tool_call_record(
             registry,
             &action.tool_id,
@@ -4437,6 +4443,36 @@ fn validate_model_context_identifier(
         return Err(LoopControllerError::ModelToolContextIdentifierInvalid { field });
     }
     Ok(value.to_owned())
+}
+
+fn tool_call_identity(
+    loop_run_id: &str,
+    request_sequence: u64,
+    step_id: &str,
+    tool_id: &str,
+) -> Result<String, LoopControllerError> {
+    validate_tool_call_identity_inputs(loop_run_id, step_id, tool_id)?;
+    let loop_run_id = loop_run_id.to_owned();
+    let step_id = step_id.to_owned();
+    let tool_id = tool_id.to_owned();
+    let identity = format!("{loop_run_id}:tool:{request_sequence}:{step_id}:{tool_id}");
+    if identity.len() > 512 {
+        return Err(LoopControllerError::ModelToolContextIdentifierInvalid {
+            field: "tool_call_id",
+        });
+    }
+    Ok(identity)
+}
+
+fn validate_tool_call_identity_inputs(
+    loop_run_id: &str,
+    step_id: &str,
+    tool_id: &str,
+) -> Result<(), LoopControllerError> {
+    validate_model_context_identifier(loop_run_id, "loop_run_id")?;
+    validate_model_context_identifier(step_id, "step_id")?;
+    validate_model_context_identifier(tool_id, "tool_id")?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
