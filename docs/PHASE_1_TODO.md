@@ -56,7 +56,7 @@
 - [x] 定义 `GoalContract`
 - [x] 定义 `LoopRun`
 - [x] 定义 `LoopStep`
-- [x] 定义 `ToolCallRecord`（schema、独立 store 及只读工具 started/completed/failed runtime 接线已有 focused 测试；分页 limit 有 1024 硬上限；Unix store 的 owner-only、`O_NOFOLLOW`、advisory lock 与并发追加回归已通过；只读工具请求以 `tool_call_requested` 的 EventLog sequence 生成运行内 `tool_call_id`，同一次请求生命周期复用同一 ID，重复调用获得不同 ID；该 identity 仅覆盖只读工具，workspace-edit 尚未接入，不代表跨进程全局唯一或完整恢复；CLI/默认配置及通用工具面仍待完成）
+- [x] 定义 `ToolCallRecord`（schema、独立 store 及只读工具与 bounded workspace-edit 的 started/completed/failed/verification_failed runtime 接线已有 focused 测试；分页 limit 有 1024 硬上限；Unix store 的 owner-only、`O_NOFOLLOW`、advisory lock 与并发追加回归已通过；只读工具以 `tool_call_requested`、workspace-edit 以 `model_action_started` 的 EventLog sequence 生成运行内 `tool_call_id`，同一次请求生命周期复用同一 ID，重复调用获得不同 ID，mutation 与 verification identity 分离；该 identity 不代表跨进程全局唯一或完整恢复；CLI/默认配置及通用工具面仍待完成）
 - [x] 定义 `PolicyDecision`（`PolicyGate` 已提供 Allow/Warn/RequireCheckpoint/RequireHumanApproval/Block 枚举、PolicyRequest/PolicyResult 及 controller 接线；完整跨存储恢复语义仍待完成）
 - [ ] 定义 `SideEffectEvent`
 - [x] 定义 `CheckpointMetadata`

@@ -22,6 +22,7 @@ use steerbox::model_adapter::{
 use steerbox::model_contracts::{ActionPathScope, ModelActionEnvelope, VerificationContract};
 use steerbox::policy_gate::{PolicyDecision, PolicyGate};
 use steerbox::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
+use steerbox::tool_call_store::ToolCallRecordStore;
 use steerbox::tool_executor::{ReadOnlyToolExecutor, ToolCallInput, WorkspaceToolExecutor};
 use steerbox::tool_registry::ToolRegistry;
 use steerbox::user_command_inbox::{
@@ -888,6 +889,10 @@ fn controller_executes_approved_workspace_edit_and_verifies_it() {
         LoopBudget::new(3, 0, 0, 1, 0, 4, 1, 1),
     )
     .expect("loop starts")
+    .with_tool_call_store(
+        ToolCallRecordStore::open(directory.join("tool-calls.jsonl"))
+            .expect("tool call store opens"),
+    )
     .with_checkpoint_store(directory.join("checkpoints.jsonl"))
     .with_audit_stores(
         directory.join("traces.jsonl"),
@@ -956,6 +961,23 @@ fn controller_executes_approved_workspace_edit_and_verifies_it() {
     assert!(side_effects
         .iter()
         .any(|record| record.status == "completed"));
+    let tool_calls = ToolCallRecordStore::open(directory.join("tool-calls.jsonl"))
+        .expect("tool call store reopens")
+        .read_page(0, 10)
+        .expect("tool call records read");
+    assert_eq!(
+        tool_calls
+            .iter()
+            .map(|record| record.status.as_str())
+            .collect::<Vec<_>>(),
+        ["started", "completed", "started", "completed"]
+    );
+    assert_eq!(tool_calls[0].tool_id, "edit_markdown");
+    assert_eq!(tool_calls[2].tool_id, "markdown_link_check");
+    assert_eq!(tool_calls[0].tool_call_id, tool_calls[1].tool_call_id);
+    assert_eq!(tool_calls[2].tool_call_id, tool_calls[3].tool_call_id);
+    assert_ne!(tool_calls[0].tool_call_id, tool_calls[2].tool_call_id);
+    assert!(tool_calls[0].tool_call_id.starts_with("loop-write:tool:"));
     let _ = fs::remove_dir_all(directory);
 }
 

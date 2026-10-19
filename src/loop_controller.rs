@@ -3176,10 +3176,22 @@ impl ReadOnlyLoopController {
             side_effect_refs: checkpoint_side_effect_refs.clone(),
             created_at: chrono::Utc::now().to_rfc3339(),
         })?;
-        self.append_model_event(
+        let mutation_started_sequence = self.append_model_event(
             "model_action_started",
             &format!("{step_id}:action_started"),
             json!({"action_id": action.action_id, "tool_id": action.tool_id}),
+        )?;
+        let tool_call_id = format!(
+            "{}:tool:{mutation_started_sequence}:{step_id}:{}",
+            self.loop_run.loop_run_id, action.tool_id
+        );
+        self.record_tool_call_record(
+            registry,
+            &action.tool_id,
+            &step_id,
+            &tool_call_id,
+            "started",
+            "workspace edit started; output withheld",
         )?;
         self.record_tool_audit(
             registry,
@@ -3238,6 +3250,14 @@ impl ReadOnlyLoopController {
                     "failed",
                     "workspace edit failed before verification",
                 )?;
+                self.record_tool_call_record(
+                    registry,
+                    &action.tool_id,
+                    &step_id,
+                    &tool_call_id,
+                    "failed",
+                    "workspace edit failed; error redacted",
+                )?;
                 self.append_model_event(
                     "model_action_failed",
                     &format!("{step_id}:action_failed"),
@@ -3273,6 +3293,14 @@ impl ReadOnlyLoopController {
             registry,
             &action.tool_id,
             &step_id,
+            "completed",
+            "workspace edit completed; output redacted",
+        )?;
+        self.record_tool_call_record(
+            registry,
+            &action.tool_id,
+            &step_id,
+            &tool_call_id,
             "completed",
             "workspace edit completed; output redacted",
         )?;
@@ -3315,6 +3343,14 @@ impl ReadOnlyLoopController {
                     "verification_failed",
                     "workspace edit verification failed",
                 )?;
+                self.record_tool_call_record(
+                    registry,
+                    &action.tool_id,
+                    &step_id,
+                    &tool_call_id,
+                    "verification_failed",
+                    "workspace edit verification failed",
+                )?;
                 self.append_model_event(
                     "model_action_failed",
                     &format!("{step_id}:verification_failed"),
@@ -3352,6 +3388,14 @@ impl ReadOnlyLoopController {
                 registry,
                 &action.tool_id,
                 &step_id,
+                "verification_failed",
+                "workspace edit verification reported missing local links",
+            )?;
+            self.record_tool_call_record(
+                registry,
+                &action.tool_id,
+                &step_id,
+                &tool_call_id,
                 "verification_failed",
                 "workspace edit verification reported missing local links",
             )?;
