@@ -2047,7 +2047,7 @@ impl ReadOnlyLoopController {
                 )?;
                 self.append_quality_assessment(
                     &step_id,
-                    &route.route_decision_id,
+                    Some(&route.route_decision_id),
                     QualityAssessment::from_observation(QualityObservation {
                         provider_timeout: matches!(
                             error,
@@ -2246,7 +2246,7 @@ impl ReadOnlyLoopController {
         }
         self.append_quality_assessment(
             &step_id,
-            &route.route_decision_id,
+            Some(&route.route_decision_id),
             QualityAssessment::from_observation(QualityObservation {
                 accepted: action_failure.is_none(),
                 verification_passed: record.verification_status == "passed",
@@ -2493,6 +2493,12 @@ impl ReadOnlyLoopController {
                     &format!("{step_id}:model_failed"),
                     json!({"error": redact_audit_text(&error.to_string()), "route_decision_id": route_decision_id}),
                 )?;
+                self.append_quality_assessment(
+                    &step_id,
+                    route_decision_id,
+                    quality_assessment_for_adapter_error(&error),
+                    "model_adapter_failure",
+                )?;
                 append_step_event(
                     &mut self.event_log,
                     &self.goal,
@@ -2547,6 +2553,16 @@ impl ReadOnlyLoopController {
                 action,
                 step_id.clone(),
             ) {
+                self.append_quality_assessment(
+                    &step_id,
+                    route_decision_id,
+                    QualityAssessment::from_observation(QualityObservation {
+                        structured_output_valid: Some(true),
+                        tool_result_failed: true,
+                        ..QualityObservation::default()
+                    }),
+                    "model_action_failure",
+                )?;
                 self.append_model_event(
                     "model_action_failed",
                     &format!("{step_id}:action_failed"),
@@ -2576,6 +2592,16 @@ impl ReadOnlyLoopController {
                 return Err(error);
             }
         }
+        self.append_quality_assessment(
+            &step_id,
+            route_decision_id,
+            QualityAssessment::from_observation(QualityObservation {
+                accepted: true,
+                structured_output_valid: Some(true),
+                ..QualityObservation::default()
+            }),
+            "structured_model_response",
+        )?;
         if decision == ModelDecision::RequestHuman {
             self.append_model_event(
                 "human_intervention_required",
@@ -3756,7 +3782,7 @@ impl ReadOnlyLoopController {
     fn append_quality_assessment(
         &mut self,
         step_id: &str,
-        route_decision_id: &str,
+        route_decision_id: Option<&str>,
         assessment: QualityAssessment,
         evidence_kind: &str,
     ) -> Result<u64, LoopControllerError> {
@@ -4159,6 +4185,22 @@ fn retryable_adaptation_context(
         budget_allows_upgrade: false,
         fallback_available: next_fallback_model(route, attempted_models).is_some(),
     }
+}
+
+fn quality_assessment_for_adapter_error(error: &ModelAdapterError) -> QualityAssessment {
+    QualityAssessment::from_observation(match error {
+        ModelAdapterError::Provider { class } => QualityObservation {
+            provider_timeout: *class == ProviderErrorClass::Timeout,
+            provider_unavailable: matches!(
+                class,
+                ProviderErrorClass::RateLimit
+                    | ProviderErrorClass::Transport
+                    | ProviderErrorClass::Upstream
+            ),
+            ..QualityObservation::default()
+        },
+        _ => QualityObservation::default(),
+    })
 }
 
 fn max_route_risk(route_risk: RouteRiskLevel, goal_risk: RiskLevel) -> RouteRiskLevel {

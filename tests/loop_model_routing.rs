@@ -352,6 +352,12 @@ fn routed_model_step_records_route_decision_before_model_call() {
         events[route_index].payload["selected_model"],
         json!("fixture-model")
     );
+    let quality = events
+        .iter()
+        .find(|event| event.event_type == "model_quality_assessed")
+        .expect("ordinary model quality event exists");
+    assert_eq!(quality.payload["status"], json!("verified"));
+    assert_eq!(quality.payload["signal"], json!("verification_passed"));
     let route_id = events[route_index].payload["route_decision_id"]
         .as_str()
         .expect("route decision id exists");
@@ -665,6 +671,12 @@ fn failed_routed_adapter_records_step_failure_and_rebuilds_failed_state() {
         Some(route_id),
         "model_call_failed must reference its route decision"
     );
+    let quality = events
+        .iter()
+        .find(|event| event.event_type == "model_quality_assessed")
+        .expect("ordinary model failure quality event exists");
+    assert_eq!(quality.payload["status"], json!("failed"));
+    assert_eq!(quality.payload["signal"], json!("insufficient_evidence"));
     let state = StateStore::rebuild(&events).expect("failed step projection rebuilds");
     assert_eq!(
         state.step("step-routing").expect("step exists").status,
