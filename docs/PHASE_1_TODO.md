@@ -268,11 +268,11 @@ Memory 最小实现：
 
 ### P12.3 受约束的主动自适应路由
 
-- [ ] 定义 `EffectLevel`（fast/balanced/strong/xhigh）、`QualityAssessment` 和 `AdaptationDecision` 的版本化契约
+- [x] 定义 `EffectLevel`（fast/balanced/strong/xhigh）、`QualityAssessment` 和 `AdaptationDecision` 的版本化契约（`src/adaptive_routing.rs`；focused contract tests）
 - [ ] 将结构化输出、verification、工具结果、超时、截断、usage、延迟和无进展计数接入质量评估
 - [ ] 实现当前 TaskRun 内的单级效果升级，受总预算、最大 Attempt、最大重试和冷却窗口约束
-- [ ] 实现 retryable provider failure 的新 Attempt／新 RouteDecision／失败证据保留；禁止静默覆盖原 Attempt
-- [ ] 校验自适应决策不能改变 provider allowlist、endpoint、auth_ref、隐私等级、工具权限和安全底线
+- [ ] 实现 retryable provider failure 的新 Attempt／新 RouteDecision／失败证据保留；禁止静默覆盖原 Attempt（当前仅完成 secret-free `plan_adaptation()` 的真实 fallback 规划，尚未接入 controller lineage）
+- [x] 校验自适应决策不能改变 provider allowlist、endpoint、auth_ref、隐私等级、工具权限和安全底线（契约决策不携带这些字段；route planner 只返回已声明 fallback）
 - [ ] 对低质量、不可重试、安全阻断、预算耗尽分别生成可解释的 metadata-only 审计事件
 - [ ] 用 fake/localhost provider 覆盖 Verified、NeedsUpgrade、Retryable、Blocked、Failed 和预算耗尽分支
 

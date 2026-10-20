@@ -1,3 +1,6 @@
+#[path = "../src/adaptive_routing.rs"]
+#[allow(dead_code)]
+mod adaptive_routing;
 #[path = "../src/model_contracts.rs"]
 #[allow(dead_code)]
 mod model_contracts;
@@ -7,11 +10,15 @@ mod model_registry;
 #[path = "../src/model_router.rs"]
 mod model_router;
 
+use adaptive_routing::{
+    AdaptationAction, AdaptationContext, EffectLevel, QualityAssessment, QualitySignal,
+    QualityStatus,
+};
 use model_contracts::RouteDecision;
 use model_registry::{EndpointProfile, ModelProfile, ModelRegistry, ProviderProfile};
 use model_router::{
-    next_fallback_model, ModelRouteProfile, ModelRouter, PrivacyRequirement, RiskLevel,
-    RouteRequest,
+    next_fallback_model, plan_adaptation, ModelRouteProfile, ModelRouter, PrivacyRequirement,
+    RiskLevel, RouteRequest,
 };
 
 fn registry_fixture() -> ModelRegistry {
@@ -234,6 +241,53 @@ fn next_fallback_model_skips_entries_outside_the_candidate_set() {
     decision.fallback_chain = vec!["unregistered-model".into(), "backup".into()];
 
     assert_eq!(next_fallback_model(&decision, &[]), Some("backup"));
+}
+
+#[test]
+fn adaptive_plan_selects_only_an_actual_route_fallback() {
+    let router = router_fixture();
+    let route = router.route(&request(RiskLevel::High)).unwrap();
+    let context = AdaptationContext {
+        current_effect_level: EffectLevel::Strong,
+        maximum_effect_level: EffectLevel::XHigh,
+        assessment: QualityAssessment::new(
+            QualityStatus::Retryable,
+            QualitySignal::ProviderTimeout,
+        ),
+        remaining_attempts: 1,
+        cooldown_active: false,
+        budget_allows_upgrade: true,
+        fallback_available: true,
+    };
+
+    let plan = plan_adaptation(&route, &[], context).unwrap();
+    assert_eq!(plan.decision.action, AdaptationAction::Fallback);
+    assert!(plan.decision.creates_new_attempt);
+    assert_eq!(plan.next_model.as_deref(), Some("backup"));
+}
+
+#[test]
+fn adaptive_plan_blocks_fallback_when_route_has_no_remaining_candidate() {
+    let router = router_fixture();
+    let mut route = router.route(&request(RiskLevel::High)).unwrap();
+    route.fallback_chain.clear();
+    let context = AdaptationContext {
+        current_effect_level: EffectLevel::Strong,
+        maximum_effect_level: EffectLevel::XHigh,
+        assessment: QualityAssessment::new(
+            QualityStatus::Retryable,
+            QualitySignal::ProviderTimeout,
+        ),
+        remaining_attempts: 1,
+        cooldown_active: false,
+        budget_allows_upgrade: true,
+        fallback_available: true,
+    };
+
+    let plan = plan_adaptation(&route, &[], context).unwrap();
+    assert_eq!(plan.decision.action, AdaptationAction::Stop);
+    assert_eq!(plan.next_model, None);
+    assert!(!plan.decision.creates_new_attempt);
 }
 
 #[test]

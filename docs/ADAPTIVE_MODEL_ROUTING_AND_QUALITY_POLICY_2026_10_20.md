@@ -136,4 +136,4 @@ Phase 1 先实现**顺序自适应**：一次只执行一个模型，质量不�
 
 ## 当前状态
 
-当前 steerBox 已有静态 registry、规则路由、策略选择器、RouteExplanation、provider-neutral adapter 和本地 fallback 规划辅助；尚未实现本文件定义的 `QualityAssessment`、`AdaptationController`、自动升级和 resolved-provider 自动 fallback。
+截至 2026-10-20，steerBox 已实现并通过 focused 契约测试验证 `EffectLevel`、`QualityAssessment`、`AdaptationDecision`，以及把受约束决策绑定到真实 `RouteDecision` fallback 链的纯规划接口。当前仍未实现本文件定义的完整 `AdaptationController`、provider response/verification/tool result 的质量信号采集、自动 Attempt/RouteDecision 事件接线和 resolved-provider 自动 fallback；因此这仍是可复用的安全规划切片，不是完整模型连接型 Agent。

@@ -1,3 +1,4 @@
+use crate::adaptive_routing::{AdaptationAction, AdaptationContext, AdaptationDecision};
 use crate::model_contracts::RouteDecision;
 use crate::model_registry::ModelRegistry;
 use chrono::Utc;
@@ -114,6 +115,8 @@ pub enum ModelRouterError {
     InvalidScore,
     #[error("no compatible model for task {task_id}: {reasons}")]
     NoCompatibleModels { task_id: String, reasons: String },
+    #[error("invalid adaptation context: {0}")]
+    InvalidAdaptationContext(String),
 }
 
 /// A pure, secret-free model selector. It does not make network calls and does
@@ -279,6 +282,61 @@ pub fn next_fallback_model<'a>(
             Some(candidate.as_str())
         }
     })
+}
+
+/// A secret-free, pure plan for applying one bounded adaptation decision to a
+/// previously selected route. The returned model is always taken from the
+/// route's declared candidate/fallback set; this function never resolves
+/// credentials, changes an endpoint, or performs a model call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdaptiveRoutePlan {
+    pub decision: AdaptationDecision,
+    pub next_model: Option<String>,
+}
+
+/// Combine the bounded quality decision with the route's real fallback chain.
+/// A stale caller-provided `fallback_available` flag cannot create a new model
+/// attempt: the route itself must contain an unattempted candidate.
+pub fn plan_adaptation(
+    route: &RouteDecision,
+    attempted_models: &[String],
+    context: AdaptationContext,
+) -> Result<AdaptiveRoutePlan, ModelRouterError> {
+    let decision = AdaptationDecision::from_context(context)
+        .map_err(|error| ModelRouterError::InvalidAdaptationContext(error.to_string()))?;
+
+    if decision.action != AdaptationAction::Fallback {
+        return Ok(AdaptiveRoutePlan {
+            decision,
+            next_model: None,
+        });
+    }
+
+    let Some(next_model) = next_fallback_model(route, attempted_models) else {
+        return Ok(AdaptiveRoutePlan {
+            decision: stopped_adaptation("route_fallback_exhausted", decision.from_effect_level),
+            next_model: None,
+        });
+    };
+
+    Ok(AdaptiveRoutePlan {
+        decision,
+        next_model: Some(next_model.to_owned()),
+    })
+}
+
+fn stopped_adaptation(
+    reason_code: &'static str,
+    from_effect_level: crate::adaptive_routing::EffectLevel,
+) -> AdaptationDecision {
+    AdaptationDecision {
+        schema_version: crate::adaptive_routing::ADAPTIVE_ROUTING_SCHEMA_VERSION,
+        action: AdaptationAction::Stop,
+        from_effect_level,
+        to_effect_level: None,
+        reason_code: reason_code.to_owned(),
+        creates_new_attempt: false,
+    }
 }
 
 struct ScoredCandidate {
