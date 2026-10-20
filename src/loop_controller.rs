@@ -2592,16 +2592,6 @@ impl ReadOnlyLoopController {
                 return Err(error);
             }
         }
-        self.append_quality_assessment(
-            &step_id,
-            route_decision_id,
-            QualityAssessment::from_observation(QualityObservation {
-                accepted: true,
-                structured_output_valid: Some(true),
-                ..QualityObservation::default()
-            }),
-            "structured_model_response",
-        )?;
         if decision == ModelDecision::RequestHuman {
             self.append_model_event(
                 "human_intervention_required",
@@ -2630,6 +2620,16 @@ impl ReadOnlyLoopController {
         if decision == ModelDecision::CompleteLoop {
             self.complete()?;
         }
+        self.append_quality_assessment(
+            &step_id,
+            route_decision_id,
+            QualityAssessment::from_observation(QualityObservation {
+                accepted: true,
+                structured_output_valid: Some(true),
+                ..QualityObservation::default()
+            }),
+            "structured_model_response",
+        )?;
         Ok(decision)
     }
 
