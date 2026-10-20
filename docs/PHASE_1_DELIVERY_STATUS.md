@@ -10,7 +10,7 @@
 
 2026-10-20 设计更新：参考项目与交互边界见 [AGENT_REFERENCE_ARCHITECTURE_REVIEW_2026_10_20.md](AGENT_REFERENCE_ARCHITECTURE_REVIEW_2026_10_20.md)。该文档只确认参考仓库入口和设计取舍，不增加已实现能力；紧凑 CLI 输出、统一 ProgressEvent、AI 辅助路由的运行时裁决和 endpoint/auth_ref 输入隔离仍按 TODO/Validation 待验收。
 
-2026-10-20 自适应路由审核：用户要求的主动性纳入 Phase 1，但收敛为当前 TaskRun 内、预算约束下、由确定性质量信号驱动的有限效果升级和低风险 fallback。跨任务在线学习、并行 quorum、自动修改全局路由权重仍属 Phase 2。`EffectLevel`、`QualityAssessment`、`AdaptationDecision` 及 secret-free `plan_adaptation()` 已实现并通过 focused 契约测试；provider response/verification/tool result 质量采集、自动 Attempt/RouteDecision 事件接线、`AdaptationController` 和 resolved-provider 自动 fallback 尚未实现。详细边界见 [ADAPTIVE_MODEL_ROUTING_AND_QUALITY_POLICY_2026_10_20.md](ADAPTIVE_MODEL_ROUTING_AND_QUALITY_POLICY_2026_10_20.md)。
+2026-10-20 自适应路由审核：用户要求的主动性纳入 Phase 1，但收敛为当前 TaskRun 内、预算约束下、由确定性质量信号驱动的有限效果升级和低风险 fallback。跨任务在线学习、并行 quorum、自动修改全局路由权重仍属 Phase 2。`EffectLevel`、`QualityAssessment`、`AdaptationDecision` 及 secret-free `plan_adaptation()` 已实现并通过 focused 契约测试；该 planner 已接入普通 routed 与 resolved routed controller 的 retryable fallback 门禁，保留父 Attempt 失败证据并受总 Attempt 预算约束。provider response/verification/tool result 的全面质量采集、NeedsUpgrade 自动效果升级、完整 `AdaptationController` 和 resolved provider 的质量自适应仍未实现。详细边界见 [ADAPTIVE_MODEL_ROUTING_AND_QUALITY_POLICY_2026_10_20.md](ADAPTIVE_MODEL_ROUTING_AND_QUALITY_POLICY_2026_10_20.md)。
 
 188 项及此前 focused/build/fmt/all-targets 结果仅为历史证据；`e754d07` 和 controller 门禁切片的回归记录见本文末尾，不覆盖本轮 snapshot 代码。未跟踪 benchmark 和历史资料不计入验收。本轮未调用 live provider，不能据本地/fake/localhost 回归宣称真实帐号或完整 Phase 1 通过。当前不提供新的聚合完成百分比：六个交付包的完成边界不等价于可加总的任务数量，且 live provider、真实模型驱动开发任务、跨进程恢复等关键门槛仍未取得本轮完整验收证据；历史 `79.2%` 只能作为当时评估的历史记录，不能引用为当前完成率。
 

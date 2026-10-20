@@ -1,3 +1,7 @@
+use crate::adaptive_routing::{
+    AdaptationAction, AdaptationContext, EffectLevel, QualityAssessment, QualitySignal,
+    QualityStatus,
+};
 use crate::approval_contract::{ApprovalError, ApprovalRequest, ApprovalStatus, ApprovalStore};
 use crate::audit_store::{
     AuditStoreError, CheckpointMetadata, CheckpointStore, SideEffectAuditStatus, SideEffectLedger,
@@ -24,7 +28,8 @@ use crate::model_contracts::{
     RouteDecision, VerificationContract,
 };
 use crate::model_router::{
-    next_fallback_model, ModelRouter, ModelRouterError, RiskLevel as RouteRiskLevel, RouteRequest,
+    next_fallback_model, plan_adaptation, ModelRouter, ModelRouterError,
+    RiskLevel as RouteRiskLevel, RouteRequest,
 };
 use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequest};
 use crate::provider_adapter::ProviderErrorClass;
@@ -1449,11 +1454,43 @@ impl ReadOnlyLoopController {
                 self.close_failed_routed_run()?;
                 return Err(error);
             }
-            let Some(fallback_model) = next_fallback_model(route, &attempted_models) else {
+            if next_fallback_model(route, &attempted_models).is_none() {
                 self.close_failed_routed_run()?;
                 return Err(error);
-            };
-            let fallback_model = fallback_model.to_owned();
+            }
+            let adaptation = plan_adaptation(
+                route,
+                &attempted_models,
+                retryable_adaptation_context(
+                    &self.task_run.budget,
+                    route,
+                    &attempted_models,
+                    &error,
+                ),
+            )?;
+            if adaptation.decision.action != AdaptationAction::Fallback {
+                self.append_model_event(
+                    "model_adaptation_stopped",
+                    &format!("{}:adaptation_stopped", route.route_decision_id),
+                    serde_json::json!({
+                        "route_decision_id": route.route_decision_id,
+                        "attempted_models": attempted_models,
+                        "action": adaptation.decision.action,
+                        "reason": adaptation.decision.reason_code,
+                    }),
+                )?;
+                let stop_error =
+                    if self.task_run.budget.attempts_used >= self.task_run.budget.max_attempts {
+                        LoopControllerError::TaskRun(AttemptLineageError::AttemptBudgetExhausted)
+                    } else {
+                        error
+                    };
+                self.close_failed_routed_run()?;
+                return Err(stop_error);
+            }
+            let fallback_model = adaptation
+                .next_model
+                .expect("fallback adaptation must select a route candidate");
             let fallback_index = attempted_models.len();
             let fallback_step_id = format!("{step_id}:fallback:{fallback_index}");
             let candidate = resolve_candidate(&current_route, &fallback_model)?;
@@ -2631,7 +2668,8 @@ impl ReadOnlyLoopController {
                 }
                 return Err(error);
             }
-            let Some(fallback_model) = next_fallback_model(&route_decision, &attempted_models)
+            let Some(next_candidate) =
+                next_fallback_model(&route_decision, &attempted_models).map(str::to_owned)
             else {
                 self.close_failed_routed_run()?;
                 return Err(error);
@@ -2641,7 +2679,50 @@ impl ReadOnlyLoopController {
                     .goal
                     .allowed_models
                     .iter()
-                    .any(|allowed| allowed == fallback_model)
+                    .any(|allowed| allowed == &next_candidate)
+            {
+                self.close_failed_routed_run()?;
+                return Err(error);
+            }
+            let adaptation = plan_adaptation(
+                &route_decision,
+                &attempted_models,
+                retryable_adaptation_context(
+                    &self.task_run.budget,
+                    &route_decision,
+                    &attempted_models,
+                    &error,
+                ),
+            )?;
+            if adaptation.decision.action != AdaptationAction::Fallback {
+                self.append_model_event(
+                    "model_adaptation_stopped",
+                    &format!("{}:adaptation_stopped", route_decision.route_decision_id),
+                    serde_json::json!({
+                        "route_decision_id": route_decision.route_decision_id,
+                        "attempted_models": attempted_models,
+                        "action": adaptation.decision.action,
+                        "reason": adaptation.decision.reason_code,
+                    }),
+                )?;
+                let stop_error =
+                    if self.task_run.budget.attempts_used >= self.task_run.budget.max_attempts {
+                        LoopControllerError::TaskRun(AttemptLineageError::AttemptBudgetExhausted)
+                    } else {
+                        error
+                    };
+                self.close_failed_routed_run()?;
+                return Err(stop_error);
+            }
+            let fallback_model = adaptation
+                .next_model
+                .expect("fallback adaptation must select a route candidate");
+            if !self.goal.allowed_models.is_empty()
+                && !self
+                    .goal
+                    .allowed_models
+                    .iter()
+                    .any(|allowed| allowed == &fallback_model)
             {
                 self.close_failed_routed_run()?;
                 return Err(error);
@@ -3994,6 +4075,29 @@ impl ReadOnlyLoopController {
             }
         }
         Ok(counts)
+    }
+}
+
+fn retryable_adaptation_context(
+    budget: &LoopBudget,
+    route: &RouteDecision,
+    attempted_models: &[String],
+    error: &LoopControllerError,
+) -> AdaptationContext {
+    let signal = match error {
+        LoopControllerError::ModelAdapter(ModelAdapterError::Provider {
+            class: ProviderErrorClass::Timeout,
+        }) => QualitySignal::ProviderTimeout,
+        _ => QualitySignal::ProviderUnavailable,
+    };
+    AdaptationContext {
+        current_effect_level: EffectLevel::Fast,
+        maximum_effect_level: EffectLevel::Fast,
+        assessment: QualityAssessment::new(QualityStatus::Retryable, signal),
+        remaining_attempts: budget.max_attempts.saturating_sub(budget.attempts_used),
+        cooldown_active: false,
+        budget_allows_upgrade: false,
+        fallback_available: next_fallback_model(route, attempted_models).is_some(),
     }
 }
 

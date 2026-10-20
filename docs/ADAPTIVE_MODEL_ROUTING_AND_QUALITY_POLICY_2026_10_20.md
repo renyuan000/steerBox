@@ -136,4 +136,4 @@ Phase 1 先实现**顺序自适应**：一次只执行一个模型，质量不�
 
 ## 当前状态
 
-截至 2026-10-20，steerBox 已实现并通过 focused 契约测试验证 `EffectLevel`、`QualityAssessment`、`AdaptationDecision`，以及把受约束决策绑定到真实 `RouteDecision` fallback 链的纯规划接口。当前仍未实现本文件定义的完整 `AdaptationController`、provider response/verification/tool result 的质量信号采集、自动 Attempt/RouteDecision 事件接线和 resolved-provider 自动 fallback；因此这仍是可复用的安全规划切片，不是完整模型连接型 Agent。
+截至 2026-10-20，steerBox 已实现并通过 focused 契约测试验证 `EffectLevel`、`QualityAssessment`、`AdaptationDecision`，并将 secret-free `plan_adaptation()` 接入普通 routed 与 resolved routed controller 的顺序 fallback 门禁；现有 fallback 会保留父 Attempt 失败证据并创建受预算约束的子 Attempt。当前仍未实现完整 `AdaptationController`、provider response/verification/tool result 的全面质量信号采集、NeedsUpgrade 自动效果升级和 resolved provider 的完整质量自适应；因此这仍是受约束的运行时切片，不是完整模型连接型 Agent。
