@@ -275,3 +275,73 @@ fn quality_reason(signal: QualitySignal) -> String {
     }
     .to_owned()
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BoundedAdaptationController {
+    pub current_effect_level: EffectLevel,
+    pub maximum_effect_level: EffectLevel,
+    pub remaining_attempts: u32,
+    pub cooldown_active: bool,
+    pub budget_allows_upgrade: bool,
+}
+
+impl BoundedAdaptationController {
+    pub fn new(
+        current_effect_level: EffectLevel,
+        maximum_effect_level: EffectLevel,
+        remaining_attempts: u32,
+        budget_allows_upgrade: bool,
+    ) -> Result<Self, AdaptationError> {
+        if maximum_effect_level < current_effect_level {
+            return Err(AdaptationError::MaximumBelowCurrent);
+        }
+        Ok(Self {
+            current_effect_level,
+            maximum_effect_level,
+            remaining_attempts,
+            cooldown_active: false,
+            budget_allows_upgrade,
+        })
+    }
+
+    /// Assess one host-observable result without performing a retry or model call.
+    pub fn assess(
+        &self,
+        observation: QualityObservation,
+        fallback_available: bool,
+    ) -> AdaptationDecision {
+        AdaptationDecision::from_context(AdaptationContext {
+            current_effect_level: self.current_effect_level,
+            maximum_effect_level: self.maximum_effect_level,
+            assessment: QualityAssessment::from_observation(observation),
+            remaining_attempts: self.remaining_attempts,
+            cooldown_active: self.cooldown_active,
+            budget_allows_upgrade: self.budget_allows_upgrade,
+            fallback_available,
+        })
+        .expect("controller invariants keep maximum effect level valid")
+    }
+
+    /// Commit a previously returned decision. Runtime integrations must still
+    /// create the Attempt/route/audit records; this method only advances the
+    /// bounded task-local controller state.
+    pub fn apply(&mut self, decision: &AdaptationDecision) {
+        match decision.action {
+            AdaptationAction::Upgrade => {
+                if let Some(next) = decision.to_effect_level {
+                    self.current_effect_level = next;
+                    self.remaining_attempts = self.remaining_attempts.saturating_sub(1);
+                    self.cooldown_active = true;
+                }
+            }
+            AdaptationAction::Fallback => {
+                self.remaining_attempts = self.remaining_attempts.saturating_sub(1);
+            }
+            AdaptationAction::Continue | AdaptationAction::Stop => {}
+        }
+    }
+
+    pub fn clear_cooldown(&mut self) {
+        self.cooldown_active = false;
+    }
+}

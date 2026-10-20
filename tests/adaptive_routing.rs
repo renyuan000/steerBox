@@ -1,7 +1,7 @@
 use serde_json::to_string;
 use steerbox::adaptive_routing::{
-    AdaptationAction, AdaptationContext, AdaptationDecision, EffectLevel, QualityAssessment,
-    QualityObservation, QualitySignal, QualityStatus,
+    AdaptationAction, AdaptationContext, AdaptationDecision, BoundedAdaptationController,
+    EffectLevel, QualityAssessment, QualityObservation, QualitySignal, QualityStatus,
 };
 
 fn context(
@@ -188,4 +188,55 @@ fn quality_observation_never_treats_missing_evidence_as_success() {
     let assessment = QualityAssessment::from_observation(QualityObservation::default());
     assert_eq!(assessment.status, QualityStatus::Failed);
     assert_eq!(assessment.signal, QualitySignal::InsufficientEvidence);
+}
+#[test]
+fn bounded_controller_applies_one_upgrade_then_cools_down() {
+    let mut controller =
+        BoundedAdaptationController::new(EffectLevel::Balanced, EffectLevel::XHigh, 2, true)
+            .expect("controller bounds are valid");
+    let observation = QualityObservation {
+        verification_failed: true,
+        ..QualityObservation::default()
+    };
+    let decision = controller.assess(observation, true);
+    assert_eq!(decision.action, AdaptationAction::Upgrade);
+    assert_eq!(decision.to_effect_level, Some(EffectLevel::Strong));
+    controller.apply(&decision);
+    assert_eq!(controller.current_effect_level, EffectLevel::Strong);
+    assert_eq!(controller.remaining_attempts, 1);
+    assert!(controller.cooldown_active);
+
+    let cooled = controller.assess(observation, true);
+    assert_eq!(cooled.action, AdaptationAction::Stop);
+    assert_eq!(cooled.reason_code, "adaptation_cooldown_active");
+    controller.clear_cooldown();
+}
+
+#[test]
+fn bounded_controller_consumes_attempt_only_for_upgrade_or_fallback() {
+    let mut controller =
+        BoundedAdaptationController::new(EffectLevel::Strong, EffectLevel::XHigh, 2, true)
+            .expect("controller bounds are valid");
+    let fallback = controller.assess(
+        QualityObservation {
+            provider_timeout: true,
+            ..QualityObservation::default()
+        },
+        true,
+    );
+    assert_eq!(fallback.action, AdaptationAction::Fallback);
+    controller.apply(&fallback);
+    assert_eq!(controller.remaining_attempts, 1);
+
+    let accepted = controller.assess(
+        QualityObservation {
+            accepted: true,
+            verification_passed: true,
+            ..QualityObservation::default()
+        },
+        true,
+    );
+    assert_eq!(accepted.action, AdaptationAction::Continue);
+    controller.apply(&accepted);
+    assert_eq!(controller.remaining_attempts, 1);
 }
