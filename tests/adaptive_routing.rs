@@ -1,7 +1,7 @@
 use serde_json::to_string;
 use steerbox::adaptive_routing::{
     AdaptationAction, AdaptationContext, AdaptationDecision, EffectLevel, QualityAssessment,
-    QualitySignal, QualityStatus,
+    QualityObservation, QualitySignal, QualityStatus,
 };
 
 fn context(
@@ -140,4 +140,52 @@ fn upgrade_requires_remaining_attempt_budget() {
     let decision = AdaptationDecision::from_context(exhausted).expect("bounded stop decision");
     assert_eq!(decision.action, AdaptationAction::Stop);
     assert_eq!(decision.reason_code, "retry_budget_exhausted");
+}
+
+#[test]
+fn quality_observation_is_fail_closed_and_security_first() {
+    let mut observation = QualityObservation {
+        verification_passed: true,
+        provider_timeout: true,
+        ..QualityObservation::default()
+    };
+    let assessment = QualityAssessment::from_observation(observation);
+    assert_eq!(assessment.status, QualityStatus::Retryable);
+    assert_eq!(assessment.signal, QualitySignal::ProviderTimeout);
+
+    observation = QualityObservation {
+        verification_passed: true,
+        security_boundary: true,
+        ..QualityObservation::default()
+    };
+    let assessment = QualityAssessment::from_observation(observation);
+    assert_eq!(assessment.status, QualityStatus::Blocked);
+    assert_eq!(assessment.signal, QualitySignal::SecurityBoundary);
+}
+
+#[test]
+fn quality_observation_prioritizes_deterministic_failures_over_quality_hints() {
+    let assessment = QualityAssessment::from_observation(QualityObservation {
+        accepted: true,
+        structured_output_valid: Some(false),
+        verification_failed: true,
+        ..QualityObservation::default()
+    });
+    assert_eq!(assessment.status, QualityStatus::NeedsUpgrade);
+    assert_eq!(assessment.signal, QualitySignal::StructuredOutputInvalid);
+
+    let assessment = QualityAssessment::from_observation(QualityObservation {
+        usage_budget_exceeded: true,
+        output_truncated: true,
+        ..QualityObservation::default()
+    });
+    assert_eq!(assessment.status, QualityStatus::Failed);
+    assert_eq!(assessment.signal, QualitySignal::UsageBudgetExceeded);
+}
+
+#[test]
+fn quality_observation_never_treats_missing_evidence_as_success() {
+    let assessment = QualityAssessment::from_observation(QualityObservation::default());
+    assert_eq!(assessment.status, QualityStatus::Failed);
+    assert_eq!(assessment.signal, QualitySignal::InsufficientEvidence);
 }

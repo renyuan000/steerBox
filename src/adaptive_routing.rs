@@ -51,6 +51,11 @@ pub enum QualitySignal {
     ProviderUnavailable,
     OutputTruncated,
     NoProgress,
+    StructuredOutputInvalid,
+    ToolResultFailed,
+    LatencyBudgetExceeded,
+    UsageBudgetExceeded,
+    InsufficientEvidence,
     SecurityBoundary,
 }
 
@@ -70,6 +75,74 @@ impl QualityAssessment {
             signal,
         }
     }
+
+    /// Derive one bounded assessment from host-observable evidence. The
+    /// precedence is fail-closed: security and provider failures outrank
+    /// quality hints, and missing acceptance evidence never becomes success.
+    pub fn from_observation(observation: QualityObservation) -> Self {
+        if observation.security_boundary {
+            return Self::new(QualityStatus::Blocked, QualitySignal::SecurityBoundary);
+        }
+        if observation.provider_timeout {
+            return Self::new(QualityStatus::Retryable, QualitySignal::ProviderTimeout);
+        }
+        if observation.provider_unavailable {
+            return Self::new(QualityStatus::Retryable, QualitySignal::ProviderUnavailable);
+        }
+        if observation.usage_budget_exceeded {
+            return Self::new(QualityStatus::Failed, QualitySignal::UsageBudgetExceeded);
+        }
+        if observation.structured_output_valid == Some(false) {
+            return Self::new(
+                QualityStatus::NeedsUpgrade,
+                QualitySignal::StructuredOutputInvalid,
+            );
+        }
+        if observation.tool_result_failed {
+            return Self::new(QualityStatus::NeedsUpgrade, QualitySignal::ToolResultFailed);
+        }
+        if observation.verification_failed {
+            return Self::new(
+                QualityStatus::NeedsUpgrade,
+                QualitySignal::VerificationFailed,
+            );
+        }
+        if observation.output_truncated {
+            return Self::new(QualityStatus::NeedsUpgrade, QualitySignal::OutputTruncated);
+        }
+        if observation.latency_budget_exceeded {
+            return Self::new(
+                QualityStatus::NeedsUpgrade,
+                QualitySignal::LatencyBudgetExceeded,
+            );
+        }
+        if observation.no_progress {
+            return Self::new(QualityStatus::NeedsUpgrade, QualitySignal::NoProgress);
+        }
+        if observation.verification_passed || observation.accepted {
+            return Self::new(QualityStatus::Verified, QualitySignal::VerificationPassed);
+        }
+        Self::new(QualityStatus::Failed, QualitySignal::InsufficientEvidence)
+    }
+}
+
+/// Host-observable facts used to classify one model call. It carries no model
+/// prompt, response body, endpoint, credential, or tool authorization.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct QualityObservation {
+    pub accepted: bool,
+    pub verification_passed: bool,
+    pub verification_failed: bool,
+    pub structured_output_valid: Option<bool>,
+    pub tool_result_failed: bool,
+    pub provider_timeout: bool,
+    pub provider_unavailable: bool,
+    pub output_truncated: bool,
+    pub latency_budget_exceeded: bool,
+    pub usage_budget_exceeded: bool,
+    pub no_progress: bool,
+    pub security_boundary: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -193,6 +266,11 @@ fn quality_reason(signal: QualitySignal) -> String {
         QualitySignal::VerificationPassed => "verification_passed",
         QualitySignal::ProviderTimeout => "provider_timeout",
         QualitySignal::ProviderUnavailable => "provider_unavailable",
+        QualitySignal::StructuredOutputInvalid => "structured_output_invalid",
+        QualitySignal::ToolResultFailed => "tool_result_failed",
+        QualitySignal::LatencyBudgetExceeded => "latency_budget_exceeded",
+        QualitySignal::UsageBudgetExceeded => "usage_budget_exceeded",
+        QualitySignal::InsufficientEvidence => "insufficient_quality_evidence",
         QualitySignal::SecurityBoundary => "security_boundary_signal",
     }
     .to_owned()
