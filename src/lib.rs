@@ -1,3 +1,4 @@
+pub mod adaptive_routing;
 pub mod anthropic_adapter;
 pub mod approval_contract;
 pub mod audit_store;
