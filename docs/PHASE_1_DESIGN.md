@@ -22,7 +22,7 @@ shared harness core + software development agent vertical slice
 - 本地文件修改有 checkpoint / diff boundary
 - 工具调用有 side-effect 分类
 - 高风险动作能升级到人类介入
-- 为持续运维、安全评估与漏洞研究、安全运营、插件和记忆进化保留接口；多模型实现静态 registry、规则式路由和一个真实 adapter，不实现完整自适应系统
+- 为持续运维、安全评估与漏洞研究、安全运营、插件和记忆进化保留接口；多模型实现静态 registry、规则式路由、AI 辅助但运行时裁决的候选选择、当前任务内有限自适应和一个真实 adapter；不实现跨任务在线学习或完整自适应系统
 
 ## 非目标
 
@@ -37,7 +37,7 @@ shared harness core + software development agent vertical slice
 - 真实多项目并行调度和交互式 TUI/Web control plane
 - 企业级多租户
 - OS 级 sandbox checkpoint
-- 历史表现驱动的自适应多模型路由和无人审批的高风险 fallback
+- 跨任务在线学习、自动训练路由权重和无人审批的高风险 fallback；但允许实现当前任务内、预算约束下、基于确定性质量信号的有限效果升级和低风险 fallback
 
 ## 推荐语言边界
 
@@ -321,13 +321,19 @@ Trace、StateStore 和 BoardProjection 都不是独立事实源；EventLog 是�
 - 按 provider、model、role、task 解析 `ResolvedPromptPack`
 - 对 fallback 做能力兼容检查，禁止静默切换
 - 记录 `RouteDecision`、`ModelCallRecord` 和 prompt 版本
+- 通过统一 `ProgressEvent` 向 CLI/TUI/Web adapter 提供短状态和详情引用
+- 通过 `QualityAssessment` 与 `AdaptationController` 在当前任务内有限升级效果级别；不允许改变安全底线、endpoint、`auth_ref` 或数据出口
 
 第一阶段实现边界：
 
 - 至少一个真实 model adapter
 - 允许配置 cheap/fast、strong/slow、specialized、evaluator、local 等 profile；未接 live endpoint 的 profile 使用静态 fixture 验证
-- 不自动学习路由权重，不自动提升 prompt，不执行无人审批的高风险多模型协作
+- 不自动学习路由权重，不自动提升 prompt，不执行无人审批的高风险多模型协作；AI 只能提出候选或性能档位建议，不能改变 endpoint、auth_ref 或安全底线
 - registry、prompt、trace、event log 和 checkpoint 只保存 `auth_ref`，不保存 API key 或 token
+
+受约束自适应的详细状态机、质量信号、效果级别和 Phase 1/2 边界见 [ADAPTIVE_MODEL_ROUTING_AND_QUALITY_POLICY_2026_10_20.md](ADAPTIVE_MODEL_ROUTING_AND_QUALITY_POLICY_2026_10_20.md)。Phase 1 只做顺序自适应，不做并行 quorum 或跨任务在线学习。
+
+交互输出约束：默认输出紧凑的一行状态/动作摘要，长参数和历史通过详情查询获取；CLI/TUI/Web 只渲染结构化事件，不各自重建事实。交互式 TUI/Web control plane 仍不属于 Phase 1 交付。
 
 ### 15. Portfolio、Task 与 BoardProjection
 

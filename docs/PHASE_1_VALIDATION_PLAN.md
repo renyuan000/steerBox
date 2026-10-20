@@ -16,6 +16,9 @@
 - side effect 必须能区分可恢复和不可恢复
 - 模型路由、prompt 解析、fallback 和调用结果必须可追踪
 - registry、prompt、trace、event log 和 checkpoint 不得包含 API key 或 token 明文
+- endpoint、`auth_ref` 和完整连接配置不得进入模型输入；普通软件配置、日志和性能数据可在授权范围内分析
+- 默认交互输出应紧凑且逐事件刷新，详情通过查询展开；低风险自主路径不得因重复审批造成停顿
+- 当前任务内的模型升级和 fallback 必须共享预算、保留失败 evidence，并在安全底线之外自动执行
 - 占位能力不能被写成已实现能力
 
 ## 验证环境
@@ -67,9 +70,11 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V9 GoalAlignmentCheck | 已验证切片 | `tests/drift_guard.rs`；结果写入完整 loop 仍待接线 |
 | V10 DriftGuard | 已验证切片 | `tests/drift_guard.rs` |
 | V11 Human Steering Mode | 已验证最小运行时切片 | `tests/user_command_inbox.rs`、`tests/loop_controller.rs`、`tests/state_store.rs`；已覆盖 Inbox 幂等、pause/resume/cancel 安全边界和状态重建，takeover、后台 worker、控制面仍未实现 |
-| V12 Baseline Tool Recipes | 部分验证 | registry/recipe 边界已有；只读工具以 `tool_call_requested`、bounded workspace-edit 以 `model_action_started` 的 EventLog sequence 派生运行内 `tool_call_id`，同一请求生命周期复用同一 ID，mutation 与 verification identity 分离，同一 step 重复调用产生不同 ID；identity 字段非法或超长时在 policy/checkpoint/request 事件前 fail-closed；`tool_call_failed` 已记录该 ID、failure category 和最小 LessonCandidate；recipe candidate、shell quoting 和 link-check recipe 仍未实现 |
+| V12 Baseline Tool Recipes | 部分验证 | registry/recipe 边界已有；只读工具以 `tool_call_requested`、bounded workspace-edit 以 `model_action_started` 的 EventLog sequence 派生运行内 `tool_call_id`，同一请求生命周期复用同一 ID，mutation 与 verification identity 分离，同一 step 重复调用产生不同 ID；identity 字段非法或超长时在 policy/checkpoint/request 事件前 fail-closed；`tool_call_failed` 已记录该 ID、failure category 和最小 LessonCandidate；CLI 已通过 `tool-call page` 验证 metadata-only 分页、脱敏字段边界和 1024 limit 上限；recipe candidate、shell quoting 和 link-check recipe 仍未实现 |
 | V13 Model Routing | 已验证本地路由、冻结请求、non-stream adapter 与库审计接线切片 | `tests/model_registry.rs`、`tests/model_router.rs`、`tests/model_role_fixtures.rs`、`tests/loop_model_routing.rs`、`tests/model_call_controller_audit.rs`、`tests/model_call_store.rs`、`tests/model_contracts.rs`、`tests/resolved_prompt.rs`、provider/Anthropic 与 localhost HTTP transport 测试；覆盖 binding/approval fail-closed、wire body hash、成功 resolved 调用的 usage/finish_reason 与成功 store、resolved adapter-error 的独立 `ModelCallFailureRecord`/failure JSONL、未知 response facts 为 None、原始 provider error 不落 failure 日志及失败审计错误；routed fixture fallback 有新 Attempt/真实事件/总预算和失败终态。不覆盖所有失败入口、live provider、resolved-provider fallback 或跨进程恢复；fixture 数值不是实测能力/成本/性能，脱敏不是通用 DLP |
 | V18 StreamReporter | 已验证 CLI 接入切片 | `tests/stream_reporter.rs`、`tests/runtime_cli.rs`；支持 lifecycle/progress/disable/writer error/redaction，readonly/fixture 生命周期输出与事件和状态一致；ContinueObservation/RequestHuman 不伪报 loop completed；尚未接入 LoopController 内部工具/模型 streaming |
+| V26 紧凑交互与路由边界 | 设计已冻结，代码验证待做 | `docs/AGENT_REFERENCE_ARCHITECTURE_REVIEW_2026_10_20.md`、`docs/SECURITY_MODEL_DISCUSSION.md`；待验证短状态/详情分离、窄宽终端格式、endpoint/auth_ref 不进模型输入、低风险路由不重复询问及性能档位有限升级 |
+| V27 主动自适应路由 | 设计已冻结，代码验证待做 | `docs/ADAPTIVE_MODEL_ROUTING_AND_QUALITY_POLICY_2026_10_20.md`；待验证确定性质量信号、单级效果升级、Attempt/预算继承、冷却防震荡、安全边界不可降低和 metadata-only 审计 |
 | V19 Execution History Query | 已验证最小只读切片 | `tests/execution_query.rs`、`tests/runtime_cli.rs`；EventLog 事实源、StateStore 当前状态投影、metadata-only `execution list/show/page` 和 detached snapshot 分页；覆盖非法参数、空页、越界和未知 loop；底层仍依赖 `read_all()`，live worker/control plane 未实现 |
 | V14 Run Summary | 已验证最小切片 | `tests/audit_store.rs`、`tests/runtime_cli.rs`；完整 task/attempt/evidence 反查仍待实现 |
 | V15 Task 状态迁移 | 已验证最小切片 | `tests/domain_contracts.rs`；TaskRun/Attempt 命令 lineage 仍待实现 |
@@ -517,7 +522,7 @@ inspect BoardProjection / JSON board fixture
 
 以下不作为第一阶段验收项：
 
-- 历史表现驱动的自适应多模型路由质量
+- 跨任务历史表现驱动的在线自适应多模型路由质量
 - 多智能体协作质量
 - 向量记忆召回率
 - 图记忆推理能力

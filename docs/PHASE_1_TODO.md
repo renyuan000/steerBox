@@ -51,12 +51,12 @@
 - [x] 定义 TaskRun／Attempt 的最小领域 schema、父关系和跨 Attempt 总预算校验（初始 Attempt、routed fixture/model-adapter fallback 子 Attempt、父链、累计预算与事件证据已接入 controller；retry/resume/fork、resolved provider fallback、持久化恢复和完整依赖投影仍待完成）
 - [x] 定义 Task 状态及合法迁移表
 - [x] 定义最小 BoardProjection / BoardTaskCard
-- [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 与最小 `tool_call_failed` 关联事件已有测试；ToolCallRecordStore 已以 opt-in metadata-only 方式接入只读工具 started/completed/failed 生命周期，并对分页 limit 施加 1024 硬上限；Unix store 已有 owner-only 权限、`O_NOFOLLOW` 和 advisory lock 边界，尚未接入 CLI/生产默认配置）
+- [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 与最小 `tool_call_failed` 关联事件已有测试；ToolCallRecordStore 已以 opt-in metadata-only 方式接入只读工具 started/completed/failed 生命周期，并对分页 limit 施加 1024 硬上限；Unix store 已有 owner-only 权限、`O_NOFOLLOW` 和 advisory lock 边界；CLI 已提供只读 `tool-call page` 分页查询；生产默认运行接线和通用工具面仍待完成）
 
 - [x] 定义 `GoalContract`
 - [x] 定义 `LoopRun`
 - [x] 定义 `LoopStep`
-- [x] 定义 `ToolCallRecord`（schema、独立 store 及只读工具与 bounded workspace-edit 的 started/completed/failed runtime 接线已有 focused 测试；分页 limit 有 1024 硬上限；Unix store 的 owner-only、`O_NOFOLLOW`、advisory lock 与并发追加回归已通过；只读工具以 `tool_call_requested`、workspace-edit 以 `model_action_started` 的 EventLog sequence 生成运行内 `tool_call_id`，同一次请求生命周期复用同一 ID，重复调用获得不同 ID，mutation 与 verification identity 分离；identity 字段使用现有安全 ID 字符集和长度上限，并在请求事件前 fail-closed；该 identity 不代表跨进程全局唯一或完整恢复；CLI/默认配置及通用工具面仍待完成）
+- [x] 定义 `ToolCallRecord`（schema、独立 store 及只读工具与 bounded workspace-edit 的 started/completed/failed runtime 接线已有 focused 测试；分页 limit 有 1024 硬上限；Unix store 的 owner-only、`O_NOFOLLOW`、advisory lock 与并发追加回归已通过；只读工具以 `tool_call_requested`、workspace-edit 以 `model_action_started` 的 EventLog sequence 生成运行内 `tool_call_id`，同一次请求生命周期复用同一 ID，重复调用获得不同 ID，mutation 与 verification identity 分离；identity 字段使用现有安全 ID 字符集和长度上限，并在请求事件前 fail-closed；CLI 已提供 metadata-only `tool-call page` 分页查询；该 identity 不代表跨进程全局唯一或完整恢复；生产默认配置及通用工具面仍待完成）
 - [x] 定义 `PolicyDecision`（`PolicyGate` 已提供 Allow/Warn/RequireCheckpoint/RequireHumanApproval/Block 枚举、PolicyRequest/PolicyResult 及 controller 接线；完整跨存储恢复语义仍待完成）
 - [ ] 定义 `SideEffectEvent`
 - [x] 定义 `CheckpointMetadata`
@@ -256,6 +256,28 @@ Memory 最小实现：
 - [x] 实现能力兼容、非静默的 fallback 事件（routed fixture/model-adapter 路径仅对 retryable provider failure 按声明顺序切换；新建父链可追踪的 Attempt，只引用实际追加的事件，累计预算与 no-progress 不因 fallback 重置；不可恢复失败/额度耗尽后关闭运行；resolved provider fallback 和跨进程恢复仍待完成）
 - [ ] 端到端验证 registry、prompt、provider request、trace、event log 和 checkpoint 均不保存认证明文（registry/config 的 auth_ref 与 endpoint 边界 focused 回归已通过；`ToolCallOutput::redacted_for_model()` 已提供模型交接边界，但多步 loop 强制接线与全链路审计脱敏仍未完成）
 
+### P12.2 紧凑交互与结构化进度边界
+
+- [x] 明确 CLI/TUI/Web 共用结构化 `ProgressEvent`/execution projection，不由各 UI 重新解释事实（设计已记录；当前不代表 TUI/Web 已实现）
+- [ ] 将 CLI 默认输出收敛为短状态、当前动作、耗时/预算和结果摘要；长参数、trace 和历史改为详情查询
+- [ ] 验证 progress/action 生命周期逐事件 flush，且不输出 API key、endpoint、auth_ref、凭据响应或未授权正文
+- [ ] 验证低风险只读动作、路由建议和性能档位升级不触发重复人工询问；安全边界触发时输出短拒绝原因和可查询审计引用
+- [ ] 定义窄屏、宽屏和非交互 stdout 的稳定格式，避免大段竖向输出和无意义横向空白
+
+本项不提前实现完整 TUI/Web control plane；OpenCode 的鼠标交互、DeepSeek Harness 的历史时间线和 Codex 的 TUI 可达性作为后续 adapter 设计参考。
+
+### P12.3 受约束的主动自适应路由
+
+- [ ] 定义 `EffectLevel`（fast/balanced/strong/xhigh）、`QualityAssessment` 和 `AdaptationDecision` 的版本化契约
+- [ ] 将结构化输出、verification、工具结果、超时、截断、usage、延迟和无进展计数接入质量评估
+- [ ] 实现当前 TaskRun 内的单级效果升级，受总预算、最大 Attempt、最大重试和冷却窗口约束
+- [ ] 实现 retryable provider failure 的新 Attempt／新 RouteDecision／失败证据保留；禁止静默覆盖原 Attempt
+- [ ] 校验自适应决策不能改变 provider allowlist、endpoint、auth_ref、隐私等级、工具权限和安全底线
+- [ ] 对低质量、不可重试、安全阻断、预算耗尽分别生成可解释的 metadata-only 审计事件
+- [ ] 用 fake/localhost provider 覆盖 Verified、NeedsUpgrade、Retryable、Blocked、Failed 和预算耗尽分支
+
+Phase 1 不实现跨任务在线学习、并行 quorum、自动修改全局路由配置或根据单次异常永久调整模型权重。
+
 历史验证记录（2026-10-11）：`loop_controller` 25 项、`provider_model_adapter` 7 项、`resolved_provider_model_adapter` 11 项、`model_call_controller_audit` 6 项 focused 测试通过；当轮 focused clippy 通过，构建产物写入 `/tmp/steerbox-phase1-target`。此记录不是当前工作树的完整验收。
 
 此前核验（2026-10-13）：master 独立执行 `CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --offline --tests --quiet`，退出码 0，所有测试目标通过；现有 acceptance 测试仍有 unused variable / unused mut 警告。该次执行包含 Anthropic 7 项、provider bridge 12 项、resolved provider 11 项、本地脱敏 14 项及审批接入 3 项；之后新增测试或修补须重新验收，不能沿用这次结果。该记录当时尚未覆盖后续 checkpoint hash、routed fallback 和 side-effect disposition 切片。
@@ -324,7 +346,7 @@ Memory 最小实现：
 
 以下不要在第一阶段拆任务：
 
-- 历史表现驱动的自适应多模型路由
+- 跨任务历史表现驱动的在线自适应多模型路由
 - 多智能体 supervisor-workers
 - 向量记忆检索
 - 图记忆推理
