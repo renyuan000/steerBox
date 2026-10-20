@@ -136,4 +136,4 @@ Phase 1 先实现**顺序自适应**：一次只执行一个模型，质量不�
 
 ## 当前状态
 
-截至 2026-10-20，steerBox 已实现并通过 focused 契约测试验证 `EffectLevel`、`QualityAssessment`、`QualityObservation`、`AdaptationDecision`，并将 secret-free `plan_adaptation()` 接入普通 routed 与 resolved routed controller 的顺序 fallback 门禁；现有 fallback 会保留父 Attempt 失败证据并创建受预算约束的子 Attempt。`QualityAssessment::from_observation()` 已提供不读模型正文的宿主证据分类，但尚未由所有 provider/verification/tool 生命周期统一填充；完整 `AdaptationController`、NeedsUpgrade 自动效果升级和 resolved provider 的质量自适应仍未实现。因此这仍是受约束的运行时切片，不是完整模型连接型 Agent。
+截至 2026-10-20，steerBox 已实现并通过 focused 契约测试验证 `EffectLevel`、`QualityAssessment`、`QualityObservation`、`AdaptationDecision`，并将 secret-free `plan_adaptation()` 接入普通 routed 与 resolved routed controller 的顺序 fallback 门禁；现有 fallback 会保留父 Attempt 失败证据并创建受预算约束的子 Attempt。resolved provider 的成功、provider 失败和 verification/tool 结果现在会写入 metadata-only `model_quality_assessed`，并可由 execution query 查询；事件不包含模型响应正文、endpoint 或凭据。`QualityAssessment::from_observation()` 尚未由所有普通 model step 生命周期统一填充；完整 `AdaptationController`、NeedsUpgrade 自动效果升级和 resolved provider 的质量自适应仍未实现。因此这仍是受约束的运行时切片，不是完整模型连接型 Agent。

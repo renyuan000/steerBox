@@ -98,14 +98,14 @@ impl QualityAssessment {
                 QualitySignal::StructuredOutputInvalid,
             );
         }
-        if observation.tool_result_failed {
-            return Self::new(QualityStatus::NeedsUpgrade, QualitySignal::ToolResultFailed);
-        }
         if observation.verification_failed {
             return Self::new(
                 QualityStatus::NeedsUpgrade,
                 QualitySignal::VerificationFailed,
             );
+        }
+        if observation.tool_result_failed {
+            return Self::new(QualityStatus::NeedsUpgrade, QualitySignal::ToolResultFailed);
         }
         if observation.output_truncated {
             return Self::new(QualityStatus::NeedsUpgrade, QualitySignal::OutputTruncated);

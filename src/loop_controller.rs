@@ -1,6 +1,6 @@
 use crate::adaptive_routing::{
-    AdaptationAction, AdaptationContext, EffectLevel, QualityAssessment, QualitySignal,
-    QualityStatus,
+    AdaptationAction, AdaptationContext, EffectLevel, QualityAssessment, QualityObservation,
+    QualitySignal, QualityStatus,
 };
 use crate::approval_contract::{ApprovalError, ApprovalRequest, ApprovalStatus, ApprovalStore};
 use crate::audit_store::{
@@ -2045,6 +2045,28 @@ impl ReadOnlyLoopController {
                     &format!("{step_id}:model_failed"),
                     json!({"error": redact_audit_text(&error.to_string()), "route_decision_id": route.route_decision_id}),
                 )?;
+                self.append_quality_assessment(
+                    &step_id,
+                    &route.route_decision_id,
+                    QualityAssessment::from_observation(QualityObservation {
+                        provider_timeout: matches!(
+                            error,
+                            ModelAdapterError::Provider {
+                                class: ProviderErrorClass::Timeout
+                            }
+                        ),
+                        provider_unavailable: matches!(
+                            error,
+                            ModelAdapterError::Provider {
+                                class: ProviderErrorClass::RateLimit
+                                    | ProviderErrorClass::Transport
+                                    | ProviderErrorClass::Upstream
+                            }
+                        ),
+                        ..QualityObservation::default()
+                    }),
+                    "provider_failure",
+                )?;
                 append_step_event(
                     &mut self.event_log,
                     &self.goal,
@@ -2222,6 +2244,23 @@ impl ReadOnlyLoopController {
             )?;
             return Err(LoopControllerError::ModelCallStore(error));
         }
+        self.append_quality_assessment(
+            &step_id,
+            &route.route_decision_id,
+            QualityAssessment::from_observation(QualityObservation {
+                accepted: action_failure.is_none(),
+                verification_passed: record.verification_status == "passed",
+                verification_failed: record.verification_status == "failed",
+                structured_output_valid: Some(true),
+                tool_result_failed: action_failure.is_some(),
+                ..QualityObservation::default()
+            }),
+            if action_failure.is_some() {
+                "tool_or_verification_result"
+            } else {
+                "structured_provider_response"
+            },
+        )?;
         if let Some(error) = action_failure {
             self.append_model_event(
                 "model_action_failed",
@@ -3714,6 +3753,26 @@ impl ReadOnlyLoopController {
         Ok(())
     }
 
+    fn append_quality_assessment(
+        &mut self,
+        step_id: &str,
+        route_decision_id: &str,
+        assessment: QualityAssessment,
+        evidence_kind: &str,
+    ) -> Result<u64, LoopControllerError> {
+        self.append_model_event(
+            "model_quality_assessed",
+            &format!("{step_id}:quality_assessed"),
+            json!({
+                "route_decision_id": route_decision_id,
+                "schema_version": assessment.schema_version,
+                "status": assessment.status,
+                "signal": assessment.signal,
+                "evidence_kind": evidence_kind,
+            }),
+        )
+    }
+
     fn append_model_event(
         &mut self,
         event_type: &str,
@@ -3748,6 +3807,7 @@ impl ReadOnlyLoopController {
                 | "model_call_started"
                 | "model_call_failed"
                 | "model_call_completed"
+                | "model_quality_assessed"
                 | "loop_budget_exhausted"
                 | "no_progress_detected"
                 | "loop_failed"

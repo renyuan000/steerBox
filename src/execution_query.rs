@@ -214,6 +214,7 @@ fn is_current_surface_event(event_type: &str) -> bool {
             | "model_call_started"
             | "model_call_completed"
             | "model_call_failed"
+            | "model_quality_assessed"
             | "tool_call_requested"
             | "tool_call_completed"
             | "tool_call_failed"

@@ -1033,6 +1033,13 @@ fn successful_model_step_persists_complete_audit_identity_and_actual_output_refe
         .iter()
         .find(|event| event.event_type == "model_call_completed")
         .expect("completed model event exists");
+    let quality = events
+        .iter()
+        .find(|event| event.event_type == "model_quality_assessed")
+        .expect("quality assessment event exists");
+    assert_eq!(quality.payload["status"], json!("verified"));
+    assert_eq!(quality.payload["signal"], json!("verification_passed"));
+    assert!(!quality.payload.to_string().contains("fixture response"));
     for field in [
         "model_call_id",
         "provider_id",
@@ -1255,6 +1262,12 @@ fn model_call_completed_and_step_completed_are_not_claimed_after_adapter_failure
         event.event_type == "step_completed"
             && event.step_id.as_deref() == Some("step-audit-failure")
     }));
+    let quality = events
+        .iter()
+        .find(|event| event.event_type == "model_quality_assessed")
+        .expect("provider failure quality event exists");
+    assert_eq!(quality.payload["status"], json!("retryable"));
+    assert_eq!(quality.payload["signal"], json!("provider_unavailable"));
     assert!(!events.iter().any(|event| {
         event.event_type == "model_call_failed"
             && event
@@ -1537,6 +1550,12 @@ fn resolved_action_verification_failure_is_recorded_before_step_failure() {
     assert!(events
         .iter()
         .any(|event| event.event_type == "model_action_failed"));
+    let quality = events
+        .iter()
+        .find(|event| event.event_type == "model_quality_assessed")
+        .expect("verification quality event exists");
+    assert_eq!(quality.payload["status"], json!("needs_upgrade"));
+    assert_eq!(quality.payload["signal"], json!("verification_failed"));
     assert!(!events
         .iter()
         .any(|event| event.event_type == "model_call_completed"));
