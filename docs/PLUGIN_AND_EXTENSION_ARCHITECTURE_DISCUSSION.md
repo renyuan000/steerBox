@@ -298,6 +298,12 @@ minimal core + capability registry + policy gate + extension adapters + audit/tr
 - 高风险任务不能只依赖语义相似度
 - 低相关上下文应被计入效率损耗
 
+#### 上下文投影提议（设计，未实现）
+
+Retrieval/Context 插件可提议排除、去重或替换摘要，但不具有删除审计历史、改写硬规则或直接修改已解析提示包的权限。宿主在下一请求组装前裁决，并保留保护集、工具调用依赖与可撤销的投影版本。前台批量预览确认，后台仅执行显式预授权的保守规则；新用户纠偏、未完成主线及未决副作用不得当作旧噪声清掉。
+
+完整讨论与性能验收边界见 `MODEL_PROMPT_AND_CHECKPOINT_POLICY.md`「7.1 下一请求的上下文投影」。这不是当前 Phase 1 代码能力，也不阻塞原主线。
+
 ### 8. Evaluator Plugin
 
 用于验证结果质量。
