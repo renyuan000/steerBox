@@ -4,11 +4,13 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use steerbox::audit_store::{CheckpointStore, RunSummary, SideEffectLedger, TraceStore};
+use steerbox::domain::ToolCallRecord;
 use steerbox::event_log::EventLog;
 use steerbox::model_call_store::ModelCallStore;
 use steerbox::model_contracts::ModelCallRecord;
 use steerbox::runtime_config::RuntimeConfig;
 use steerbox::state_store::StateStore;
+use steerbox::tool_call_store::ToolCallRecordStore;
 use steerbox::user_command_inbox::{CommandKind, CommandStatus, UserCommandInbox};
 
 fn project_ref() -> String {
@@ -44,6 +46,22 @@ fn model_call_record(id: &str) -> ModelCallRecord {
         started_at: "2026-10-11T00:00:00Z".into(),
         completed_at: Some("2026-10-11T00:00:01Z".into()),
         created_at: "2026-10-11T00:00:01Z".into(),
+    }
+}
+
+fn tool_call_record(id: &str, status: &str) -> ToolCallRecord {
+    ToolCallRecord {
+        tool_call_id: id.into(),
+        tool_id: "git_status".into(),
+        project_id: "project-cli".into(),
+        goal_id: "goal-cli".into(),
+        task_run_id: "task-run-cli".into(),
+        loop_run_id: "loop-cli".into(),
+        step_id: "step-cli".into(),
+        side_effect_class: "none".into(),
+        status: status.into(),
+        summary: "metadata-only tool call".into(),
+        created_at: "2026-10-19T00:00:00Z".into(),
     }
 }
 
@@ -908,6 +926,146 @@ fn model_call_page_cli_reads_bounded_audit_records() {
     assert_eq!(bounded_json["model_calls"][0]["model_call_id"], "call-2");
 
     let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
+}
+
+#[test]
+fn tool_call_page_cli_reads_bounded_metadata_only_records() {
+    let project_ref = project_ref();
+    let config = RuntimeConfig::default_for_project(project_ref.clone()).expect("config builds");
+    let _ = fs::remove_dir_all(&config.data_root);
+    let binary = env!("CARGO_BIN_EXE_steerbox");
+
+    let init = Command::new(binary)
+        .args(["runtime", "init", &project_ref])
+        .output()
+        .expect("runtime init starts");
+    assert!(init.status.success());
+    assert_eq!(
+        config.tool_calls_path(),
+        config.data_root.join(".steerbox").join("tool-calls.jsonl")
+    );
+    assert!(!config.tool_calls_path().exists());
+
+    let missing = Command::new(binary)
+        .args([
+            "tool-call",
+            "page",
+            &config.config_path().display().to_string(),
+            "0",
+            "10",
+        ])
+        .output()
+        .expect("missing tool-call page starts");
+    assert!(missing.status.success());
+    let missing_json: serde_json::Value =
+        serde_json::from_slice(&missing.stdout).expect("missing page JSON");
+    assert_eq!(missing_json["offset"], 0);
+    assert_eq!(missing_json["limit"], 10);
+    assert_eq!(missing_json["count"], 0);
+    assert!(missing_json["tool_calls"].as_array().unwrap().is_empty());
+    assert!(!config.tool_calls_path().exists());
+
+    let store = ToolCallRecordStore::open(config.tool_calls_path()).expect("tool call store opens");
+    store
+        .append(&tool_call_record("call-1", "started"))
+        .expect("first tool call appends");
+    let mut completed = tool_call_record("call-2", "completed");
+    completed.summary = "password=synthetic-cli-summary-marker".into();
+    store.append(&completed).expect("second tool call appends");
+
+    let page = Command::new(binary)
+        .args([
+            "tool-call",
+            "page",
+            &config.config_path().display().to_string(),
+            "1",
+            "1",
+        ])
+        .output()
+        .expect("tool-call page starts");
+    assert!(
+        page.status.success(),
+        "page stderr: {}",
+        String::from_utf8_lossy(&page.stderr)
+    );
+    let page_json: serde_json::Value = serde_json::from_slice(&page.stdout).expect("page JSON");
+    assert_eq!(page_json["offset"], 1);
+    assert_eq!(page_json["limit"], 1);
+    assert_eq!(page_json["count"], 1);
+    assert_eq!(page_json["tool_calls"][0]["tool_call_id"], "call-2");
+    assert_eq!(page_json["tool_calls"][0]["status"], "completed");
+    assert!(page_json["tool_calls"][0].get("arguments").is_none());
+    assert!(page_json["tool_calls"][0].get("raw_output").is_none());
+    assert!(page_json["tool_calls"][0].get("error_body").is_none());
+    assert!(!String::from_utf8_lossy(&page.stdout).contains("synthetic-cli-summary-marker"));
+
+    for (offset, limit) in [("0", "0"), ("2", "1024")] {
+        let empty = Command::new(binary)
+            .args([
+                "tool-call",
+                "page",
+                &config.config_path().display().to_string(),
+                offset,
+                limit,
+            ])
+            .output()
+            .expect("empty tool-call page starts");
+        assert!(empty.status.success());
+        let empty_json: serde_json::Value =
+            serde_json::from_slice(&empty.stdout).expect("empty page JSON");
+        assert_eq!(empty_json["count"], 0);
+        assert!(empty_json["tool_calls"].as_array().unwrap().is_empty());
+    }
+
+    let too_large = Command::new(binary)
+        .args([
+            "tool-call",
+            "page",
+            &config.config_path().display().to_string(),
+            "0",
+            "1025",
+        ])
+        .output()
+        .expect("oversized tool-call page starts");
+    assert!(!too_large.status.success());
+    assert!(String::from_utf8_lossy(&too_large.stderr).contains("exceeds maximum"));
+
+    let _ = fs::remove_dir_all(PathBuf::from("/temp/steerbox").join(project_ref));
+}
+
+#[test]
+fn tool_call_page_cli_does_not_echo_malformed_record_contents() {
+    let project_ref = project_ref();
+    let config = RuntimeConfig::default_for_project(project_ref.clone()).expect("config builds");
+    let binary = env!("CARGO_BIN_EXE_steerbox");
+    let init = Command::new(binary)
+        .args(["runtime", "init", &project_ref])
+        .output()
+        .expect("runtime init starts");
+    assert!(init.status.success());
+    let store = ToolCallRecordStore::open(config.tool_calls_path()).expect("tool store opens");
+    store
+        .append(&tool_call_record("call-1", "started"))
+        .expect("fixture creates owner-only log");
+    fs::write(config.tool_calls_path(), "\"synthetic-cli-parse-marker\"\n")
+        .expect("malformed fixture writes");
+
+    let output = Command::new(binary)
+        .args([
+            "tool-call",
+            "page",
+            &config.config_path().display().to_string(),
+            "0",
+            "1",
+        ])
+        .output()
+        .expect("malformed tool-call page starts");
+    fs::remove_dir_all(&config.data_root).expect("fixture cleans up");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("line 1"));
+    assert!(!stderr.contains("synthetic-cli-parse-marker"));
 }
 
 #[test]

@@ -23,6 +23,7 @@ use steerbox::provider_runner::{ForegroundProviderRun, ProviderRunRequest};
 use steerbox::runtime_config::RuntimeConfig;
 use steerbox::state_store::StateStore;
 use steerbox::stream_reporter::StreamReporter;
+use steerbox::tool_call_store::{ToolCallRecordStore, ToolCallStoreError};
 use steerbox::tool_registry::{SideEffectClass, ToolProfile, ToolRegistry};
 use steerbox::user_command_inbox::{UserCommand, UserCommandEntry, UserCommandInbox};
 use steerbox::workspace_edit::{edit_markdown, verify_markdown_links};
@@ -202,6 +203,38 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                     "limit": limit,
                     "count": model_calls.len(),
                     "model_calls": model_calls,
+                }))?
+            );
+        }
+        (Some("tool-call"), Some("page")) => {
+            let path = args.next().ok_or("missing config path")?;
+            let offset = args
+                .next()
+                .ok_or("missing offset")?
+                .parse::<usize>()
+                .map_err(|error| format!("invalid offset: {error}"))?;
+            let limit = args
+                .next()
+                .ok_or("missing limit")?
+                .parse::<usize>()
+                .map_err(|error| format!("invalid limit: {error}"))?;
+            let config = RuntimeConfig::load(path)?;
+            let store = ToolCallRecordStore::open(config.tool_calls_path())?;
+            let tool_calls = store
+                .read_page(offset, limit)
+                .map_err(|error| match error {
+                    ToolCallStoreError::InvalidJson { line, .. } => {
+                        format!("tool call record line {line} is invalid JSON")
+                    }
+                    other => other.to_string(),
+                })?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "offset": offset,
+                    "limit": limit,
+                    "count": tool_calls.len(),
+                    "tool_calls": tool_calls,
                 }))?
             );
         }
@@ -758,6 +791,7 @@ fn print_usage() {
     eprintln!("  steerbox execution show <config.json> <loop_run_id>");
     eprintln!("  steerbox execution page <config.json> <loop_run_id> <offset> <limit>");
     eprintln!("  steerbox model-call page <config.json> <offset> <limit>");
+    eprintln!("  steerbox tool-call page <config.json> <offset> <limit>");
     eprintln!("  steerbox command submit <config.json> <command-json>");
     eprintln!("  steerbox command show <config.json> <command_id>");
     eprintln!("  steerbox board list <config.json>");

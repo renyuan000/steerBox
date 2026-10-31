@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+2026-10-31 tool-call CLI 复核：`tool-call page <config.json> <offset> <limit>` 查询固定 metadata schema，缺日志返回空页且不创建主 JSONL；沿用 store 锁机制，可能创建父目录和 `.lock`，不是零磁盘写入。正常 append 的 summary 会先脱敏，但读取不对任意导入记录提供通用 DLP。已复现并修复坏记录类型错误回显正文的问题，CLI 现在只报告行号；合成敏感 summary、错误回显、零 limit、越界 offset、1024/1025 边界回归通过。master 在 `/tmp/steerbox-cli-resume-20261031-target` 下执行 `cargo test --locked --offline --test runtime_cli --test tool_call_store`，16 + 14 项通过；不代表 live provider 或完整 Phase 1 已验收。
+
 2026-10-31 增量：已实现 `BoundedAdaptationController` 纯状态切片的执行前复核和无 panic 错误处理，以及 `OpenAiCompatibleAdapter` 按精确 wire model 显式 opt-in 的效果参数绑定。默认请求不新增字段，普通/resolved/stream 共用绑定校验，实际请求哈希含 native 参数，prepared 不能绕过当前策略。纯状态机不证明决定来源，也不创建真实 Attempt；同级 fallback 防重放、CLI/profile 装配、NeedsUpgrade 自动新 Attempt/RouteDecision 与重新调用、统一质量采集和 live 验证仍未完成。以下旧记录按原日期解释，不能将底层绑定等同完整自适应 runtime。
 
 本增量由 master 在 `3865e52` 基线的隔离工作树重新验收：`CARGO_TARGET_DIR=/tmp/steerbox-adaptive-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --tests --quiet` 全部通过（其中 `adaptive_routing` 22 项、`provider_effect_binding` 8 项、`resolved_provider_model_adapter` 13 项）；相同 target/jobs 下严格 `cargo clippy --locked --offline --lib --bins --tests -- -D warnings` 和 `cargo build --locked --offline --lib --bins` 均退出 0；`cargo fmt --all -- --check`、`git diff --check` 通过。已复核独立需求/质量审核及主审 diff；不使用主目录既有未提交代码，构建产物不写入项目目录。以上仅为 fixture/local 回归，不包含真实帐号、live provider 或完整 Phase 1 验收。
