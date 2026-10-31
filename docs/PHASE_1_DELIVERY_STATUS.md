@@ -6,6 +6,8 @@
 
 本增量由 master 在 `3865e52` 基线的隔离工作树重新验收：`CARGO_TARGET_DIR=/tmp/steerbox-adaptive-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --tests --quiet` 全部通过（其中 `adaptive_routing` 22 项、`provider_effect_binding` 8 项、`resolved_provider_model_adapter` 13 项）；相同 target/jobs 下严格 `cargo clippy --locked --offline --lib --bins --tests -- -D warnings` 和 `cargo build --locked --offline --lib --bins` 均退出 0；`cargo fmt --all -- --check`、`git diff --check` 通过。已复核独立需求/质量审核及主审 diff；不使用主目录既有未提交代码，构建产物不写入项目目录。以上仅为 fixture/local 回归，不包含真实帐号、live provider 或完整 Phase 1 验收。
 
+2026-10-31 独立产物目录复验：在 `/tmp/steerbox-effect-final-target`、`CARGO_BUILD_JOBS=2` 下，全量 `cargo test --locked --offline --tests --quiet`、严格 `cargo clippy --locked --offline --lib --bins --tests -- -D warnings`、`cargo build --locked --offline --lib --bins`，以及 fmt/diff 检查均通过。此前在不同修订工作树共用 `/tmp/steerbox-adaptive-target` 后，曾出现测试编译找不到新 API 的失败；该失败不计为通过。共享目录内已查到旧验证工作树来源的库 metadata；推断（高置信度）为跨修订缓存复用，新独立目录源码不变复验通过。后续不同工作树／修订不共用该构建目录。
+
 本次增量核对日期：2026-10-19。以下 provider runner 接线与回归结果已在本轮重新执行；此前历史验证仍按原日期和证据边界解释。
 
 状态核对日期：2026-10-18。`5a51851` 为本次 snapshot 实施基线；当前现场另有已提交的 `8cecdef` restore 审计收口，以及已提交的 ToolCallRecord store/runtime 与安全加固切片（`6b2b0fa`、`106afa6`、`a0f3c05`、`c93deed`）；本批快照与共享 editor 改动验收见文末，提交状态以 Git 记录为准，不把旧全量结果覆盖到新代码。未跟踪的历史审核、参考资料与 benchmark 目录不计入交付。`202cec6` 已加入独立 `ModelCallFailureRecord`、failure JSONL 和 `MemoryStore::read_catalog`，`e754d07` 已加入 controller scoped memory retrieval，`5a51851` 已收紧 controller mutation 前审计门禁；`564db6d` 又加入了 resolved-provider local contract fallback 与显式 endpoint protocol；`d140846` 至 `6f45e11` 收口了 controller restore 的 PolicyGate、ApprovalStore、SideEffectLedger 授权路径及旧兼容入口移除；`8cecdef` 补充了未消费 Once approval 的 blocked/uncertain metadata-only 审计，二者均不继续物理 restore；本轮 provider runner 不属于此前历史验证基线，必须以本轮新增的 focused/full regression 证据核验；验证范围仍以实际执行证据为准，不因文件出现或 subagent 报告自动计入完整交付。
@@ -73,10 +75,10 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 剩余：
 
-- 现有 `PreparedProviderRequest`、resolver、opt-in provider bridge 及 controller 审计接线不等于真实 provider 可达、live credential 可用或 resolved-provider/live fallback 已完成。
-- 在 live provider 和未来 resolved fallback 中复用并验收现有 resolver、冻结请求及模板 binding，扩展适用 skill/context 层；现有静态解析及模板进入最终请求已有回归，不重复列为未实现。
+- 现有 `PreparedProviderRequest`、resolver、opt-in provider bridge 及 controller 审计接线不等于真实 provider 可达、live credential 可用或 resolved-provider fallback 的生产接线与 live 验收已完成。
+- 在 live provider 和 resolved fallback 的生产接入中复用并验收现有 resolver、冻结请求及模板 binding，扩展适用 skill/context 层；现有静态解析及模板进入最终请求已有回归，不重复列为未实现。
 - 将实际模型调用与 prompt 版本、route、结果和验证状态继续扩展到真实 provider、attempt lineage、trace/output artifact 和验证结果；当前 opt-in 路径已覆盖 fake/localhost transport，不代表完整 coding loop。
-- 补齐能力兼容、非静默的 resolved-provider fallback；沿用 routed 子集已有的新 Attempt／父链／累计预算门禁，保留失败证据和消耗，再创建新 route、重新解析 prompt/后端并验证。新增路径前置门禁未通过时关闭该路径，不事后补记 lineage。
+- resolved-provider local contract fallback 已有能力兼容校验、非静默事件、新 Attempt／父链／共享累计预算、失败 JSONL 保留及候选 route/prompt 重新解析；剩余为生产入口接线、相关分支和 live 验收。新增路径仍须复用并单独验收 lineage／总预算门禁，未通过时关闭该路径，不事后补记 lineage。
 
 历史验收记录（非 2026-10-14 复跑）：`cargo test --locked --test http_transport --test model_call_controller_audit --test task_attempt_lineage --test prepared_provider_request --test resolved_prompt --test resolved_provider_model_adapter --test provider_adapter --test provider_model_adapter`，49 passed、0 failed；随后 all-targets/all-features test、clippy 和 build 均退出 0。当前基线复跑见末尾；live provider、resolved-provider/live fallback、跨进程恢复和完整 coding loop 仍未验收。
 
@@ -94,9 +96,9 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 剩余：
 
-- resolved provider 的 opt-in 路径已接入 `run_resolved_model_step_with_action`：fake provider 响应经 `PolicyGate → ReadOnlyToolExecutor → verification`，最终 `ModelCallRecord` 写入实际 `tool_call_count`、`verification_status` 和错误分类；旧 resolved 入口遇到 action 会 fail-closed。真实 provider、文件写入／Bash、完整 artifact 持久化和跨进程恢复仍待完成。
-- 扩展文件读／写／edit、Bash 等副作用工具；当前 Markdown edit 只完成工具边界和显式审批切片，尚未接入模型动作 controller 的 checkpoint／side-effect ledger／写后验证和失败恢复闭环。每项都必须有 PolicyGate、checkpoint／side-effect ledger、写后验证和失败恢复边界。模型说 complete 不得替代真实验证。
-- 将 goal alignment／drift 检查及 ToolCallRecord／VerificationResult 的适用关联接入实际链；限制模型、工具、步骤、重试和无进展，不允许无限自循环。当前只读工具的 raw output 脱敏已接线，`ToolCallOutput::redacted_for_model()` 提供显式的模型交接脱敏边界；多步 loop 尚未强制接线，文件写入／Bash 的副作用验证与恢复仍待完成。
+- resolved provider 的 opt-in 路径已接入 `run_resolved_model_step_with_action`：fake provider 响应经 `PolicyGate → ReadOnlyToolExecutor → verification`，最终 `ModelCallRecord` 写入实际 `tool_call_count`、`verification_status` 和错误分类；旧 resolved 入口遇到 action 会 fail-closed。真实 provider、通用文件写入／Bash、完整 artifact 持久化和跨进程恢复仍待完成。
+- 扩展文件读／写／edit、Bash 等副作用工具；当前 bounded Markdown runner 已接入模型动作 controller 的 PolicyGate、checkpoint／side-effect ledger、写后验证和失败证据，失败不自动恢复；CLI／生产接线、模型驱动多步写入与 live 验收仍待完成。通用工具仍必须有 PolicyGate、checkpoint／side-effect ledger、写后验证和失败恢复边界。模型说 complete 不得替代真实验证。
+- 将 goal alignment／drift 检查及 ToolCallRecord／VerificationResult 的适用关联接入实际链；限制模型、工具、步骤、重试和无进展，不允许无限自循环。当前只读工具的 raw output 脱敏已接线，`ToolCallOutput::redacted_for_model()` 提供显式的模型交接脱敏边界；多步只读 `run_resolved_model_loop()` 已强制通过该边界构造下一步 observation，全链路审计脱敏验收及通用文件写入／Bash 的副作用验证与恢复仍待完成。
 
 可复现验收证据：现有入口为 `cargo test --test loop_controller --test tool_policy --test tool_executor --test workspace_edit --test dev_vertical_slice --test drift_guard`。新增受控闭环验收须让模型提出一次限定文件修改，验证器检查实际产物后将结果回传，最终 summary 可反查各步骤、policy、工具、diff boundary、验证及副作用。另覆盖越界／未注册／未审批的零副作用路径、验证失败后不伪报成功和预算耗尽停止。现有手工指定 Markdown 替换输入不能作为模型提出动作的证据。
 
@@ -135,7 +137,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 剩余：
 
-- 补齐单 Portfolio／Project／Task／TaskRun／Attempt 及依赖身份；已有初始 Attempt controller 绑定、完成/失败写回及 routed fixture/model-adapter fallback 新 Attempt、父链和共享累计预算。retry/resume/fork、resolved-provider fallback、完整依赖/evidence 投影及跨进程恢复仍待完成。
+- 补齐单 Portfolio／Project／Task／TaskRun／Attempt 及依赖身份；已有初始 Attempt controller 绑定、完成/失败写回，以及 routed fixture/model-adapter 和 resolved-provider local contract fallback 的新 Attempt、父链和共享累计预算。retry/resume/fork、resolved-provider fallback 的生产接线与 live 验收、完整依赖/evidence 投影及跨进程恢复仍待完成。
 - 新增 fallback 路径必须复用并单独验收 lineage/总预算门禁，未通过时关闭该路径；不能以包 5 其它修订/恢复尚未交付为理由推迟门禁或新建 controller 补额度。
 - 相关 steer 创建 GoalRevision，使旧 PlanRevision 失效后重新规划；无关请求进入独立 Task。补齐 object_version 冲突、审批／接管及 InterruptRequest 的 side_effect_uncertain 分支。
 - 从事件和已记录边界恢复 controller 的目标、计划、策略修订、预算消耗及无进展历史；执行恢复前协调 workspace／checkpoint／外部副作用，无法确认时等待人工，不自动重放。
@@ -188,7 +190,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 2026-10-17 受控命令 recipe 增量由 master 验收：新增 baseline `git_diff`，仅接受 `{"scope":"workspace"}`，固定执行 `git diff --no-ext-diff --no-color --`，不接受 shell 字符串或额外 argv；沿用 workspace 校验、5 秒超时和 16 KiB stdout/stderr 上限。`tool_executor` focused 14 项、`tool_policy` 2 项、`tool_capability_display` 12 项通过；`cargo test --locked --offline --all-targets --quiet`、`cargo clippy --locked --offline --all-targets -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check` 均通过。该切片扩大的是受控只读 recipe，不是任意 Bash、文件写入、live provider 或完整 coding loop。
 
-2026-10-17 模型交接脱敏边界增量：`ToolCallOutput::redacted_for_model()` 对 summary 与结构化 result 使用本地 `Redactor` 生成副本；超限或脱敏错误直接返回错误，不静默转发原始结果。`tool_executor` focused 16 项通过，覆盖正常敏感字段脱敏与超限 fail-closed。该 API 尚未替代未来多步 loop 的强制接线，也不宣称完成全链路 DLP 或 live provider 验收。
+历史记录（2026-10-17）模型交接脱敏边界增量：`ToolCallOutput::redacted_for_model()` 对 summary 与结构化 result 使用本地 `Redactor` 生成副本；超限或脱敏错误直接返回错误，不静默转发原始结果。`tool_executor` focused 16 项通过，覆盖正常敏感字段脱敏与超限 fail-closed。该 API 尚未替代未来多步 loop 的强制接线，也不宣称完成全链路 DLP 或 live provider 验收。
 
 2026-10-18 event history 分页增量：`event list <config.json> [offset limit]` 在提供分页参数时使用 `EventLog::read_page`，只加载请求页；不提供参数仍保留兼容的全量读取。`runtime_cli` 14 项、`cargo test --locked --offline --all-targets --quiet` 和 `cargo clippy --locked --offline --all-targets -- -D warnings` 均通过。该分页是 detached history 查询，不是 live cursor、后台 worker 或跨进程恢复。
 
@@ -196,7 +198,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 2026-10-18 模型工具结果交接增量：controller 新增 `run_model_step_with_tool_output()` 与 `run_model_step_with_tool_results()`，在 legacy `ModelAdapter` 下一次调用前对 action/verification 的 `ToolCallOutput` 分别执行本地规则脱敏，并对组合 JSON observation 施加 64 KiB 总大小门禁；脱敏失败、序列化失败或超限均在 adapter 调用前 fail-closed。`loop_controller` 41 项、全量 all-targets、clippy 和 `git diff --check` 均通过。本切片仍不是完整多步 coding loop：resolved provider 路径尚未强制接入该 handoff，`ResolvedPromptPack` 尚未提供不可变下一步派生，启发式 Redactor 也不是完整 DLP；因此不能据此声明全链路模型出站安全或 Phase 1 完成。
 
-2026-10-18 resolved handoff 增量：`ResolvedPromptPack::next_step()` 以不可变方式保留 system/developer/provider/model 绑定、objective 和 context package，只替换 user observation，并重新计算 `rendered_messages_hash` 与 `prompt_pack_id`；controller 新增 `run_resolved_model_step_with_tool_results()`，先对 action/verification 结果脱敏和做 64 KiB 总大小门禁，再派生新 pack 后调用 resolved adapter。OpenAI-compatible capture transport、超限 fail-closed、旧 pack 不变和 pack identity 更新均有 focused 回归；`resolved_prompt` 21 项、`model_call_controller_audit` 21 项通过，clippy 通过。本入口仍是“已执行结果 → 下一次 resolved 调用”的受控桥接，不是自动多步 loop；现有单步 resolved action 执行路径仍未自动串接下一步，也不覆盖 live provider 验收或完整 DLP。
+历史记录（2026-10-18）resolved handoff 增量：`ResolvedPromptPack::next_step()` 以不可变方式保留 system/developer/provider/model 绑定、objective 和 context package，只替换 user observation，并重新计算 `rendered_messages_hash` 与 `prompt_pack_id`；controller 新增 `run_resolved_model_step_with_tool_results()`，先对 action/verification 结果脱敏和做 64 KiB 总大小门禁，再派生新 pack 后调用 resolved adapter。OpenAI-compatible capture transport、超限 fail-closed、旧 pack 不变和 pack identity 更新均有 focused 回归；`resolved_prompt` 21 项、`model_call_controller_audit` 21 项通过，clippy 通过。本入口仍是“已执行结果 → 下一次 resolved 调用”的受控桥接，不是自动多步 loop；现有单步 resolved action 执行路径仍未自动串接下一步，也不覆盖 live provider 验收或完整 DLP。
 
 2026-10-18 bounded resolved loop 增量：新增只读 `run_resolved_model_loop()`。它复用每次 resolved step 的 `prepare_step_action`、预算、UserCommandInbox 安全边界、no-progress 检查、PolicyGate、ToolExecutor、verification 和 ModelCallStore；只有 `ContinueObservation + 已验证只读 action` 才会生成脱敏 observation、派生新 prompt pack 并继续下一次 provider 调用；`CompleteLoop`、`RequestHuman` 或无 action 的 `ContinueObservation` 都停止，不空转。action/tool 标识符现在限制为短安全 ID，handoff 入口校验 prior request 与 pack/controller 身份一致，bounded loop 入口也执行同一 lineage 校验；每轮 step ID 按固定基线递增生成，不嵌套重复；sequence capture、pack identity 递增、unsafe identifier fail-closed 和第二次调用前边界均有回归。该 loop 仍只覆盖只读动作，不包含 workspace-edit 自动 loop、live provider、Anthropic capture、完整 resume/fork 或完整 DLP。
 

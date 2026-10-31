@@ -48,7 +48,7 @@
 
 - [x] 定义 EventEnvelope、event_id、sequence_no、correlation_id 和 causation_id
 - [ ] 定义 Portfolio、Project、Task 和 TaskDependency
-- [x] 定义 TaskRun／Attempt 的最小领域 schema、父关系和跨 Attempt 总预算校验（初始 Attempt、routed fixture/model-adapter fallback 子 Attempt、父链、累计预算与事件证据已接入 controller；retry/resume/fork、resolved provider fallback、持久化恢复和完整依赖投影仍待完成）
+- [x] 定义 TaskRun／Attempt 的最小领域 schema、父关系和跨 Attempt 总预算校验（初始 Attempt、routed fixture/model-adapter 与 resolved-provider local contract fallback 的子 Attempt、父链、累计预算与事件证据已接入 controller；retry/resume/fork、resolved-provider fallback 的生产接线与 live 验收、持久化恢复和完整依赖投影仍待完成）
 - [x] 定义 Task 状态及合法迁移表
 - [x] 定义最小 BoardProjection / BoardTaskCard
 - [x] 定义 ToolUseErrorEvent、LessonCandidate 和最小 FailureCategory（schema 与最小 `tool_call_failed` 关联事件已有测试；ToolCallRecordStore 已以 opt-in metadata-only 方式接入只读工具 started/completed/failed 生命周期，并对分页 limit 施加 1024 硬上限；Unix store 已有 owner-only 权限、`O_NOFOLLOW` 和 advisory lock 边界；CLI 已提供只读 `tool-call page` 分页查询；生产默认运行接线和通用工具面仍待完成）
@@ -64,7 +64,7 @@
 - [x] 定义 `TraceRecord`
 - [x] 定义 `ProviderProfile`、`EndpointProfile`、`ModelProfile`（已有注册/序列化及关联验证）
 - [x] 定义并测试 `PromptProfile`、`AgentRolePrompt`、`TaskPromptPack`、`ResolvedPromptPack`（静态 resolver 已验证 registry/provider/endpoint/model/role/task/version 绑定、审批阻断、低信任 user JSON 分层；resolved controller 成功调用的审计路径已有 focused 验收）
-- [x] 定义 `RouteDecision`、成功 `ModelCallRecord` 和独立 `ModelCallFailureRecord`（resolved controller 成功调用与 adapter-error 分支分别写入成功/failure JSONL；失败记录不保存 provider 原始错误正文，不伪造未知 response facts；routed fallback 的 Attempt lineage 已接线，live provider、resolved provider fallback、所有失败路径覆盖和恢复仍待完成）
+- [x] 定义 `RouteDecision`、成功 `ModelCallRecord` 和独立 `ModelCallFailureRecord`（resolved controller 成功调用与 adapter-error 分支分别写入成功/failure JSONL；失败记录不保存 provider 原始错误正文，不伪造未知 response facts；routed fixture/model-adapter 与 resolved-provider local contract fallback 的 Attempt lineage 已接线，live provider、resolved-provider fallback 的生产接线、所有失败路径覆盖和恢复仍待完成）
 
 验收：
 
@@ -251,10 +251,10 @@ Memory 最小实现：
 - [x] 定义、校验并持久化 `RouteDecision` 到 EventLog；routed 模型调用的开始/成功/失败事件关联 route ID
 - [x] 实现按 prompt ID/version、role/task 的最小 prompt binding 查询
 - [x] 接入 provider/model 兼容条件及角色、任务、skill 和上下文分层，形成可冻结的 `ResolvedPromptPack` 并由 opt-in resolved bridge 使用（fake/localhost 请求已验证模板实际进入最终 messages、logical model 与 wire model 分离、wire body hash 一致；resolved controller 审计路径已接线）
-- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（opt-in resolved controller 成功记录与 adapter-error 分支的独立 `ModelCallFailureRecord`/failure JSONL 已接线；失败审计不存原始 provider error 或伪造 response facts，审计错误 fail-closed；live provider、resolved fallback Attempt 和完整验证结果仍待完成）
-- [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider 的只读 action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；只读工具 raw output 已从 EventLog/TraceStore/SideEffectLedger 脱敏；文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
-- [x] 实现能力兼容、非静默的 fallback 事件（routed fixture/model-adapter 路径仅对 retryable provider failure 按声明顺序切换；新建父链可追踪的 Attempt，只引用实际追加的事件，累计预算与 no-progress 不因 fallback 重置；不可恢复失败/额度耗尽后关闭运行；resolved provider fallback 和跨进程恢复仍待完成）
-- [ ] 端到端验证 registry、prompt、provider request、trace、event log 和 checkpoint 均不保存认证明文（registry/config 的 auth_ref 与 endpoint 边界 focused 回归已通过；`ToolCallOutput::redacted_for_model()` 已提供模型交接边界，但多步 loop 强制接线与全链路审计脱敏仍未完成）
+- [x] 定义并校验 `ModelCallRecord`、prompt 版本和验证状态，提供独立 append-only `ModelCallStore` 及有界 `read_page(offset, limit)` 查询（opt-in resolved controller 成功记录与 adapter-error 分支的独立 `ModelCallFailureRecord`/failure JSONL 已接线；失败审计不存原始 provider error 或伪造 response facts，审计错误 fail-closed；resolved-provider local contract fallback 已建立子 Attempt 并保留失败 JSONL；live provider、resolved fallback 的生产接线与 live 验收及完整验证结果仍待完成）
+- [x] 定义并校验版本化 `ModelActionEnvelope`、路径范围和 verification contract；fixture/resolved provider 的只读 action 已接入模型输出→PolicyGate→ReadOnlyToolExecutor→verification，并写入最终 `ModelCallRecord` 审计；bounded Markdown runner 已接入模型动作 controller 的 PolicyGate、checkpoint／side-effect ledger、写后验证与失败证据，失败不自动恢复；只读工具 raw output 已从 EventLog/TraceStore/SideEffectLedger 脱敏；模型驱动 Markdown CLI／生产接线、多步写入、通用文件写入／Bash、真实 provider、完整 artifact 与跨进程恢复仍待完成
+- [x] 实现能力兼容、非静默的 fallback 事件（routed fixture/model-adapter 路径仅对 retryable provider failure 按声明顺序切换；新建父链可追踪的 Attempt，只引用实际追加的事件，累计预算与 no-progress 不因 fallback 重置；不可恢复失败/额度耗尽后关闭运行；resolved-provider local contract fallback 已有候选 route/prompt 重新解析、子 Attempt／父链、共享累计预算、失败 JSONL 和非静默事件；生产接线、相关分支与 live 验收及跨进程恢复仍待完成）
+- [ ] 端到端验证 registry、prompt、provider request、trace、event log 和 checkpoint 均不保存认证明文（registry/config 的 auth_ref 与 endpoint 边界 focused 回归已通过；`ToolCallOutput::redacted_for_model()` 已提供模型交接边界，多步只读 `run_resolved_model_loop()` 已强制通过该边界构造下一步 observation；全链路审计脱敏与 live 验收仍未完成）
 
 ### P12.2 紧凑交互与结构化进度边界
 
@@ -284,7 +284,7 @@ Phase 1 不实现跨任务在线学习、并行 quorum、自动修改全局路�
 
 本次 focused 复核（2026-10-13）：`model_registry` 6 项、`config_anthropic_binding` 8 项、`model_call_store` 23 项、`model_call_controller_audit` 18 项全部通过；该结果只证明当前 focused 切片，不替代全量 fmt/clippy、live provider、常驻 runtime、完整审计脱敏、fallback 或跨进程恢复验收。
 
-最新核验（2026-10-13）：`cargo fmt --all -- --check`、`CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --lib -- -D warnings`、`CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --tests --quiet` 和 `git diff --check` 均通过。新增 routed fallback、checkpoint before/after hash、side-effect disposition/status focused 测试通过；全量 acceptance 仍有既有 `ui_responsiveness_test.rs` 的 unused `mut` / unused variable 警告。该结果仍不代表 live provider、真实 credential store、resolved-provider fallback、Attempt lineage 恢复、后台常驻接管、文件写入/Bash 全工具面或完整 Phase 1 已完成。
+历史核验（2026-10-13，非当前复跑）：`cargo fmt --all -- --check`、`CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo clippy --locked --offline --lib -- -D warnings`、`CARGO_TARGET_DIR=/tmp/steerbox-phase1-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --tests --quiet` 和 `git diff --check` 均通过。新增 routed fallback、checkpoint before/after hash、side-effect disposition/status focused 测试通过；全量 acceptance 仍有既有 `ui_responsiveness_test.rs` 的 unused `mut` / unused variable 警告。该结果仍不代表 live provider、真实 credential store、resolved-provider fallback、Attempt lineage 恢复、后台常驻接管、文件写入/Bash 全工具面或完整 Phase 1 已完成。
 
 验收：
 
