@@ -11,7 +11,7 @@ use steerbox::loop_controller::{
     LoopControllerError, ModelActionRuntime, ReadOnlyLoopController, ResolvedModelLoopStopReason,
     WorkspaceEditActionRuntime,
 };
-use steerbox::model_adapter::ModelRequest;
+use steerbox::model_adapter::{DecisionOutputRejection, ModelAdapterError, ModelRequest};
 use steerbox::model_call_store::ModelCallStore;
 use steerbox::model_contracts::RouteDecision;
 use steerbox::model_registry::{EndpointProfile, ModelProfile, ModelRegistry, ProviderProfile};
@@ -1947,6 +1947,98 @@ fn resolved_routed_retryable_failure_creates_child_and_keeps_failure_jsonl() {
     assert!(events
         .iter()
         .all(|event| !event.payload.to_string().contains("auth")));
+}
+
+#[test]
+fn resolved_routed_decision_rejection_keeps_failure_audit_without_fallback_or_upgrade() {
+    for (content, reason) in [
+        (
+            "fixture-response-body-not-json",
+            DecisionOutputRejection::JsonSyntaxInvalid,
+        ),
+        (
+            r#"{"decision":"complete_loop","summary":"fixture-response-body","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"shell":"fixture-response-body"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]},"verification":{"verifier_tool_id":"verify","parameters":{"path":"README.md"}}}}"#,
+            DecisionOutputRejection::ActionRejected,
+        ),
+    ] {
+        let directory = TestDirectory::new();
+        let (pack, route) = resolved_fixture_for(
+            "logical-model",
+            "route-primary",
+            vec!["backup-model".into()],
+        );
+        let transport = FakeTransport::with_decision_content(content.into());
+        let sends = Arc::clone(&transport.sends);
+        let mut controller = controller_with_budget(
+            &directory,
+            vec![".".into()],
+            LoopBudget::new(4, 0, 2, 2, 0, 2, 2, 2),
+        )
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let mut resolutions = 0;
+        let result = controller.run_resolved_routed_model_step(
+            &route,
+            "step-decision-rejection",
+            |candidate_route, model_id| {
+                resolutions += 1;
+                assert_eq!(model_id, "logical-model");
+                Ok(steerbox::loop_controller::ResolvedProviderCandidate {
+                    adapter: Box::new(ProviderModelAdapter::new(
+                        OpenAiCompatibleAdapter::new(
+                            "fixture-provider",
+                            BASE_URL,
+                            transport.clone(),
+                        ),
+                        None,
+                    )),
+                    request: ModelRequest {
+                        model_id: pack.model_id().into(),
+                        goal_id: "goal-model-audit".into(),
+                        loop_run_id: "loop-model-audit".into(),
+                        step_id: "step-decision-rejection".into(),
+                        objective: pack.objective().into(),
+                        observation: pack.observation().into(),
+                    },
+                    pack: pack.clone(),
+                    route: candidate_route.clone(),
+                })
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::DecisionOutputRejected { reason: actual }
+            )) if actual == reason
+        ));
+        assert_eq!(resolutions, 1);
+        assert_eq!(sends.lock().unwrap().len(), 1);
+        assert_eq!(controller.task_run().attempts.len(), 1);
+        let store = ModelCallStore::open(directory.model_calls()).unwrap();
+        assert!(store.read_all().unwrap().is_empty());
+        let failures = store.read_failures().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].failure_stage, "provider_response");
+        assert_eq!(failures[0].failure_class, "response_unmappable");
+        let events = EventLog::open(directory.events())
+            .unwrap()
+            .read_all()
+            .unwrap();
+        let quality = events
+            .iter()
+            .find(|event| event.event_type == "model_quality_assessed")
+            .expect("failure quality assessment exists");
+        assert_eq!(quality.payload["status"], "failed");
+        assert_eq!(quality.payload["signal"], "insufficient_evidence");
+        assert!(!events
+            .iter()
+            .any(|event| event.event_type == "model_route_fallback"));
+        assert!(!serde_json::to_string(&failures)
+            .unwrap()
+            .contains("fixture-response-body"));
+        assert!(!serde_json::to_string(&events)
+            .unwrap()
+            .contains("fixture-response-body"));
+    }
 }
 
 #[test]

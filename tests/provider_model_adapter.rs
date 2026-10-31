@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use steerbox::model_adapter::{ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest};
+use steerbox::model_adapter::{
+    DecisionOutputRejection, ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest,
+};
 use steerbox::provider_adapter::{
     OpenAiCompatibleAdapter, ProviderStreamEvent, ProviderTransport, TransportError,
     TransportResponse,
@@ -73,6 +75,24 @@ fn adapter_for_content(content: &str) -> ProviderModelAdapter<FakeTransport> {
 }
 
 #[test]
+fn decision_json_syntax_rejection_has_a_metadata_only_display() {
+    for content in [
+        "fixture-response-body-not-json",
+        r#"{"decision":"complete_loop","summary":"fixture-response-body",}"#,
+        r#"{"decision":"complete_loop","summary":"fixture-response-body""#,
+    ] {
+        let error = adapter_for_content(content)
+            .complete_with_action(request())
+            .expect_err("invalid decision JSON must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "provider decision output rejected: invalid decision JSON syntax"
+        );
+        assert!(!format!("{error:?}").contains("fixture-response-body"));
+    }
+}
+
+#[test]
 fn strict_provider_decision_envelope_maps_to_existing_model_response() {
     let transport = FakeTransport::response(
         r#"{"id":"chatcmpl-1","model":"provider-model","choices":[{"message":{"role":"assistant","content":"{\"decision\":\"complete_loop\",\"summary\":\"done\"}"},"finish_reason":"stop"}]}"#,
@@ -126,11 +146,15 @@ fn provider_model_summary_over_limit_fails_closed_for_both_entry_points() {
     let adapter = adapter_for_content(&content);
     assert!(matches!(
         ModelAdapter::complete_with_action(&adapter, request()),
-        Err(ModelAdapterError::ProviderTextUnmappable)
+        Err(ModelAdapterError::DecisionOutputRejected {
+            reason: DecisionOutputRejection::SummaryRedactionRejected
+        })
     ));
     assert!(matches!(
         ModelAdapter::complete(&adapter, request()),
-        Err(ModelAdapterError::ProviderTextUnmappable)
+        Err(ModelAdapterError::DecisionOutputRejected {
+            reason: DecisionOutputRejection::SummaryRedactionRejected
+        })
     ));
 }
 
@@ -161,11 +185,66 @@ fn structured_provider_response_rejects_unknown_shell_and_out_of_scope_action_fi
         r#"{"decision":"continue_observation","summary":"bad","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"token":"[REDACTED]"},"path_scope":{"root":"/tmp/workspace","allowed_paths":["workspace"]},"verification":{"verifier_tool_id":"verify","parameters":{"path":"workspace"}}}}"#,
     ];
 
-    for content in cases {
+    let reasons = [
+        DecisionOutputRejection::EnvelopeInvalid,
+        DecisionOutputRejection::ActionRejected,
+        DecisionOutputRejection::ActionRejected,
+        DecisionOutputRejection::ActionRejected,
+    ];
+    assert_eq!(cases.len(), reasons.len());
+    for (content, reason) in cases.into_iter().zip(reasons) {
         let error = adapter_for_content(content)
             .complete_with_action(request())
             .expect_err("invalid action must fail closed");
-        assert_eq!(error, ModelAdapterError::ProviderTextUnmappable);
+        assert_eq!(error, ModelAdapterError::DecisionOutputRejected { reason });
+    }
+}
+
+#[test]
+fn verification_rejections_keep_empty_summary_precedence_and_safe_errors() {
+    let action = serde_json::json!({
+        "schema_version": 1,
+        "action_id": "action-1",
+        "tool_id": "git_status",
+        "parameters": {"path": "workspace"},
+        "path_scope": {"root": "/tmp/workspace", "allowed_paths": ["workspace"]},
+        "verification": {"verifier_tool_id": "verify", "parameters": {"path": "workspace"}},
+    });
+    for (summary, parameters, reason) in [
+        (
+            " ",
+            serde_json::json!({"shell": "fixture-response-body"}),
+            DecisionOutputRejection::EmptySummary,
+        ),
+        (
+            "fixture-response-body",
+            serde_json::json!({"shell": "fixture-response-body"}),
+            DecisionOutputRejection::ActionRejected,
+        ),
+        (
+            "fixture-response-body",
+            serde_json::json!({"path": "../fixture-response-body"}),
+            DecisionOutputRejection::ActionRejected,
+        ),
+        (
+            "fixture-response-body",
+            serde_json::json!({"token": "fixture-response-body"}),
+            DecisionOutputRejection::ActionRejected,
+        ),
+    ] {
+        let mut proposed_action = action.clone();
+        proposed_action["verification"]["parameters"] = parameters;
+        let content = serde_json::json!({
+            "decision": "continue_observation",
+            "summary": summary,
+            "action": proposed_action,
+        })
+        .to_string();
+        let error = adapter_for_content(&content)
+            .complete_with_action(request())
+            .expect_err("invalid verification must fail closed");
+        assert_eq!(error, ModelAdapterError::DecisionOutputRejected { reason });
+        assert!(!format!("{error}\n{error:?}").contains("fixture-response-body"));
     }
 }
 
@@ -251,7 +330,7 @@ fn provider_stream_rejects_invalid_input_and_provider_failures_without_transport
 }
 
 #[test]
-fn plain_provider_text_returns_explicit_unmappable_error() {
+fn plain_provider_text_returns_typed_json_rejection() {
     let adapter = ProviderModelAdapter::new(
         OpenAiCompatibleAdapter::new(
             "provider-a",
@@ -267,7 +346,12 @@ fn plain_provider_text_returns_explicit_unmappable_error() {
         .complete(request())
         .expect_err("natural language must not be guessed into a decision");
 
-    assert_eq!(error, ModelAdapterError::ProviderTextUnmappable);
+    assert_eq!(
+        error,
+        ModelAdapterError::DecisionOutputRejected {
+            reason: DecisionOutputRejection::JsonSyntaxInvalid
+        }
+    );
 }
 
 #[test]

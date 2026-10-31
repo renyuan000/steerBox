@@ -76,6 +76,22 @@ impl ModelResponseWithAction {
     }
 }
 
+/// Metadata-only diagnostics that do not authorize retries or effect-level upgrades.
+/// Each category reflects the first rejection, not an exhaustive safety assessment.
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+pub enum DecisionOutputRejection {
+    #[error("invalid decision JSON syntax")]
+    JsonSyntaxInvalid,
+    #[error("invalid decision envelope")]
+    EnvelopeInvalid,
+    #[error("empty decision summary")]
+    EmptySummary,
+    #[error("action contract rejected")]
+    ActionRejected,
+    #[error("summary redaction rejected")]
+    SummaryRedactionRejected,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ModelAdapterError {
     #[error("model request model_id must not be empty")]
@@ -84,6 +100,8 @@ pub enum ModelAdapterError {
     EmptyObjective,
     #[error("provider response text did not contain a supported decision envelope")]
     ProviderTextUnmappable,
+    #[error("provider decision output rejected: {reason}")]
+    DecisionOutputRejected { reason: DecisionOutputRejection },
     #[error("resolved model request binding mismatch: {field}")]
     ResolvedBindingMismatch { field: &'static str },
     #[error("provider call failed: {class:?}")]

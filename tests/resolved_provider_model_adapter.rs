@@ -5,7 +5,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use steerbox::adaptive_routing::EffectLevel;
-use steerbox::model_adapter::{ModelAdapterError, ModelDecision, ModelRequest};
+use steerbox::model_adapter::{
+    DecisionOutputRejection, ModelAdapterError, ModelDecision, ModelRequest,
+};
 use steerbox::model_contracts::RouteDecision;
 use steerbox::model_registry::{EndpointProfile, ModelProfile, ModelRegistry, ProviderProfile};
 use steerbox::prompt_registry::{PromptProfile, PromptRegistry};
@@ -469,18 +471,31 @@ fn resolved_bridge_does_not_invent_missing_usage_or_finish_reason() {
 #[test]
 fn resolved_bridge_rejects_invalid_decision_without_guessing() {
     let pack = resolved_pack();
-    for text in [
+    let cases = [
         "The task is done.",
         r#"{"decision":"execute_tool","summary":"fixture"}"#,
         r#"{"decision":"complete_loop","summary":" "}"#,
         r#"{"decision":"complete_loop","summary":"done","extra":true}"#,
-    ] {
+        r#"{"decision":"complete_loop","summary":" ","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"shell":"fixture-response-body"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]},"verification":{"verifier_tool_id":"verify","parameters":{"path":"README.md"}}}}"#,
+        r#"{"decision":"execute_tool","summary":"fixture-response-body","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"shell":"fixture-response-body"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]},"verification":{"verifier_tool_id":"verify","parameters":{"path":"README.md"}}}}"#,
+    ];
+    let reasons = [
+        DecisionOutputRejection::JsonSyntaxInvalid,
+        DecisionOutputRejection::EnvelopeInvalid,
+        DecisionOutputRejection::EmptySummary,
+        DecisionOutputRejection::EnvelopeInvalid,
+        DecisionOutputRejection::EmptySummary,
+        DecisionOutputRejection::EnvelopeInvalid,
+    ];
+    assert_eq!(cases.len(), reasons.len());
+    for (text, reason) in cases.into_iter().zip(reasons) {
         let transport = FakeTransport::response(text, None, Some("stop"));
         let sends = Arc::clone(&transport.sends);
         let error = adapter(transport)
             .complete_resolved(request_for(&pack), &pack)
             .expect_err("invalid decision must be rejected");
-        assert_eq!(error, ModelAdapterError::ProviderTextUnmappable);
+        assert_eq!(error, ModelAdapterError::DecisionOutputRejected { reason });
+        assert!(!format!("{error}\n{error:?}").contains("fixture-response-body"));
         assert_eq!(sends.lock().expect("capture lock").len(), 1);
     }
 }

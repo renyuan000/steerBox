@@ -1,6 +1,6 @@
 use crate::model_adapter::{
-    ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest, ModelResponse,
-    ModelResponseWithAction, DECISION_SYSTEM_PROMPT,
+    DecisionOutputRejection, ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest,
+    ModelResponse, ModelResponseWithAction, DECISION_SYSTEM_PROMPT,
 };
 use crate::model_contracts::ModelActionEnvelope;
 use crate::provider_adapter::{
@@ -498,35 +498,65 @@ fn parse_response(body: &str) -> Result<AnthropicResponse, AnthropicAdapterError
 }
 
 fn parse_decision(text: &str) -> Result<ModelResponse, ModelAdapterError> {
-    let envelope = serde_json::from_str::<DecisionEnvelope>(text)
-        .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?;
+    let envelope = serde_json::from_str::<DecisionEnvelope>(text).map_err(|error| {
+        ModelAdapterError::DecisionOutputRejected {
+            reason: match error.classify() {
+                serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
+                    DecisionOutputRejection::JsonSyntaxInvalid
+                }
+                serde_json::error::Category::Data | serde_json::error::Category::Io => {
+                    DecisionOutputRejection::EnvelopeInvalid
+                }
+            },
+        }
+    })?;
     if envelope.summary.trim().is_empty() {
-        return Err(ModelAdapterError::ProviderTextUnmappable);
+        return Err(ModelAdapterError::DecisionOutputRejected {
+            reason: DecisionOutputRejection::EmptySummary,
+        });
     }
     Ok(ModelResponse {
         decision: envelope.decision,
         summary: Redactor::default()
             .redact_text(&envelope.summary)
-            .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?,
+            .map_err(|_| ModelAdapterError::DecisionOutputRejected {
+                reason: DecisionOutputRejection::SummaryRedactionRejected,
+            })?,
     })
 }
 
 fn parse_decision_with_action(text: &str) -> Result<ModelResponseWithAction, ModelAdapterError> {
-    let envelope = serde_json::from_str::<DecisionEnvelopeWithAction>(text)
-        .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?;
+    let envelope = serde_json::from_str::<DecisionEnvelopeWithAction>(text).map_err(|error| {
+        ModelAdapterError::DecisionOutputRejected {
+            reason: match error.classify() {
+                serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
+                    DecisionOutputRejection::JsonSyntaxInvalid
+                }
+                serde_json::error::Category::Data | serde_json::error::Category::Io => {
+                    DecisionOutputRejection::EnvelopeInvalid
+                }
+            },
+        }
+    })?;
     if envelope.summary.trim().is_empty() {
-        return Err(ModelAdapterError::ProviderTextUnmappable);
+        return Err(ModelAdapterError::DecisionOutputRejected {
+            reason: DecisionOutputRejection::EmptySummary,
+        });
     }
     if let Some(action) = &envelope.action {
         action
             .validate()
-            .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?;
+            .map_err(|_| ModelAdapterError::DecisionOutputRejected {
+                reason: DecisionOutputRejection::ActionRejected,
+            })?;
     }
     Ok(ModelResponseWithAction {
         decision: envelope.decision,
         summary: Redactor::default()
             .redact_text(&envelope.summary)
-            .map_err(|_| ModelAdapterError::ProviderTextUnmappable)?,
+            .map_err(|_| ModelAdapterError::DecisionOutputRejected {
+                reason: DecisionOutputRejection::SummaryRedactionRejected,
+            })?,
         action: envelope.action,
     })
 }

@@ -4362,7 +4362,10 @@ fn model_call_failure_metadata(error: &ModelAdapterError) -> (&'static str, &'st
                 ProviderErrorClass::ResponseParse => "response_parse",
             },
         ),
-        ModelAdapterError::ProviderTextUnmappable => ("provider_response", "response_unmappable"),
+        ModelAdapterError::ProviderTextUnmappable
+        | ModelAdapterError::DecisionOutputRejected { .. } => {
+            ("provider_response", "response_unmappable")
+        }
         ModelAdapterError::EmptyModelId | ModelAdapterError::EmptyObjective => {
             ("provider_request", "invalid_request")
         }

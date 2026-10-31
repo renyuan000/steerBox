@@ -5,7 +5,9 @@ use steerbox::anthropic_adapter::{
     AnthropicAdapter, AnthropicAdapterError, AnthropicHeaders, AnthropicTransport,
     AnthropicTransportError,
 };
-use steerbox::model_adapter::{ModelAdapter, ModelDecision, ModelRequest};
+use steerbox::model_adapter::{
+    DecisionOutputRejection, ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest,
+};
 use steerbox::provider_adapter::{ProviderMessage, ProviderRequest, TransportResponse};
 
 #[derive(Clone)]
@@ -303,14 +305,23 @@ fn model_adapter_action_entry_point_preserves_valid_action_and_rejects_unsafe_sh
         r#"{"decision":"continue_observation","summary":"bad","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"README.md"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]}}}"#,
         r#"{"decision":"continue_observation","summary":"bad","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"path":"README.md"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]},"verification":{"verifier_tool_id":"markdown_link_check","parameters":{"path":"README.md"}},"unexpected":true}}"#,
     ];
-    for content in unsafe_cases {
+    let reasons = [
+        DecisionOutputRejection::ActionRejected,
+        DecisionOutputRejection::EnvelopeInvalid,
+        DecisionOutputRejection::EnvelopeInvalid,
+    ];
+    assert_eq!(unsafe_cases.len(), reasons.len());
+    for (content, reason) in unsafe_cases.into_iter().zip(reasons) {
         let adapter = AnthropicAdapter::new(
             "anthropic",
             "http://localhost:4318",
             FakeTransport::response(&response_body(content)),
             None,
         );
-        assert!(adapter.complete_with_action(request.clone()).is_err());
+        assert_eq!(
+            adapter.complete_with_action(request.clone()),
+            Err(ModelAdapterError::DecisionOutputRejected { reason })
+        );
     }
 }
 
@@ -340,6 +351,144 @@ fn anthropic_model_summary_is_redacted_before_returning_to_controller() {
 
     let legacy = ModelAdapter::complete(&adapter, request).expect("legacy decision envelope");
     assert_eq!(legacy.summary, response.summary);
+}
+
+#[test]
+fn decision_output_rejections_are_typed_and_metadata_only_for_both_entry_points() {
+    let request = ModelRequest {
+        model_id: "claude-fixture".into(),
+        goal_id: "goal-1".into(),
+        loop_run_id: "loop-1".into(),
+        step_id: "step-1".into(),
+        objective: "inspect repository".into(),
+        observation: "read-only evidence".into(),
+    };
+    for (content, reason) in [
+        (
+            "fixture-response-body-not-json".to_owned(),
+            DecisionOutputRejection::JsonSyntaxInvalid,
+        ),
+        (
+            r#"{"decision":"complete_loop","summary":"fixture-response-body""#.to_owned(),
+            DecisionOutputRejection::JsonSyntaxInvalid,
+        ),
+        (
+            r#"{"decision":"fixture-response-body","summary":"done"}"#.to_owned(),
+            DecisionOutputRejection::EnvelopeInvalid,
+        ),
+        (
+            r#"{"decision":"complete_loop","summary":"done","unexpected":"fixture-response-body"}"#.to_owned(),
+            DecisionOutputRejection::EnvelopeInvalid,
+        ),
+        (
+            r#"{"decision":"complete_loop","summary":" "}"#.to_owned(),
+            DecisionOutputRejection::EmptySummary,
+        ),
+        (
+            serde_json::json!({
+                "decision": "complete_loop",
+                "summary": format!("fixture-response-body{}", "x".repeat(steerbox::redaction::DEFAULT_MAX_INPUT_BYTES)),
+            })
+            .to_string(),
+            DecisionOutputRejection::SummaryRedactionRejected,
+        ),
+    ] {
+        let adapter = AnthropicAdapter::new(
+            "anthropic",
+            "https://fixture.example.test",
+            FakeTransport::response(&response_body(&content)),
+            None,
+        );
+        for error in [
+            ModelAdapter::complete(&adapter, request.clone())
+                .expect_err("legacy parser must reject invalid output"),
+            adapter
+                .complete_with_action(request.clone())
+                .expect_err("action parser must reject invalid output"),
+        ] {
+            assert_eq!(error, ModelAdapterError::DecisionOutputRejected { reason });
+            assert!(!format!("{error}\n{error:?}").contains("fixture-response-body"));
+        }
+    }
+}
+
+#[test]
+fn actionful_rejections_preserve_first_failure_and_hide_unsafe_verification_content() {
+    let request = ModelRequest {
+        model_id: "claude-fixture".into(),
+        goal_id: "goal-1".into(),
+        loop_run_id: "loop-1".into(),
+        step_id: "step-1".into(),
+        objective: "inspect repository".into(),
+        observation: "read-only evidence".into(),
+    };
+    for (decision, summary, verification_parameters, reason) in [
+        (
+            "complete_loop",
+            " ",
+            serde_json::json!({"shell": "fixture-unsafe-verification-body"}),
+            DecisionOutputRejection::EmptySummary,
+        ),
+        (
+            "fixture-unknown-decision",
+            "fixture-unsafe-summary-body",
+            serde_json::json!({"shell": "fixture-unsafe-verification-body"}),
+            DecisionOutputRejection::EnvelopeInvalid,
+        ),
+        (
+            "complete_loop",
+            "fixture-unsafe-summary-body",
+            serde_json::json!({"shell": "fixture-unsafe-verification-body"}),
+            DecisionOutputRejection::ActionRejected,
+        ),
+        (
+            "complete_loop",
+            "fixture-unsafe-summary-body",
+            serde_json::json!({"path": "../fixture-unsafe-verification-body"}),
+            DecisionOutputRejection::ActionRejected,
+        ),
+        (
+            "complete_loop",
+            "fixture-unsafe-summary-body",
+            serde_json::json!({"token": "fixture-unsafe-verification-body"}),
+            DecisionOutputRejection::ActionRejected,
+        ),
+    ] {
+        let content = serde_json::json!({
+            "decision": decision,
+            "summary": summary,
+            "action": {
+                "schema_version": 1,
+                "action_id": "action-1",
+                "tool_id": "git_status",
+                "parameters": {"path": "README.md"},
+                "path_scope": {"root": "/workspace", "allowed_paths": ["README.md"]},
+                "verification": {
+                    "verifier_tool_id": "markdown_link_check",
+                    "parameters": verification_parameters,
+                },
+            },
+        })
+        .to_string();
+        let adapter = AnthropicAdapter::new(
+            "anthropic",
+            "https://fixture.example.test",
+            FakeTransport::response(&response_body(&content)),
+            None,
+        );
+        let error = adapter
+            .complete_with_action(request.clone())
+            .expect_err("unsafe actionful output must fail closed");
+        assert_eq!(error, ModelAdapterError::DecisionOutputRejected { reason });
+        let diagnostic = format!("{error}\n{error:?}");
+        for raw_content in [
+            "fixture-unknown-decision",
+            "fixture-unsafe-summary-body",
+            "fixture-unsafe-verification-body",
+        ] {
+            assert!(!diagnostic.contains(raw_content));
+        }
+    }
 }
 
 #[test]

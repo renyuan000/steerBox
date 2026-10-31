@@ -160,6 +160,14 @@ Phase 1 先实现**顺序自适应**：一次只执行一个模型，质量不�
 - provider prompt cache 和跨任务复用；
 - 根据长期反馈自动修改路由配置。
 
+## 2026-10-31 决策拒绝分类前置
+
+OpenAI-compatible 与 Anthropic 的决策解析使用 metadata-only `DecisionOutputRejection`：JSON Syntax/EOF、结构 Data/Io、空摘要、动作合同拒绝、摘要脱敏拒绝分别诊断。它只记录首先遇到的拒绝，并不证明剩余内容安全；例如空摘要会先于 action 校验失败，未知 decision 可能先于不安全 action 被拒绝。任何类别均不授予重试或效果升级权限，当前 controller 仍保持 `failed/insufficient_evidence`，不触发新的 Attempt 或 fallback。
+
+这是明确的 Rust 公开错误契约变化：决策 parser 改为 `ModelAdapterError::DecisionOutputRejected { reason }`，调用方穷尽匹配须更新；静态 Display/Debug 不包含响应正文。OpenAI 既有显式 actionless 门禁、Markdown 调用方权限拒绝及缺 action runtime 仍使用原 `ProviderTextUnmappable`；Anthropic actionless 入口通过 `deny_unknown_fields` 拒绝 action，属于本次结构解析错误分类，不增加旧错误兼容层。持久化失败分类仍为 `provider_response/response_unmappable`，失败审计顺序及既有预算不变。
+
+本切片不保留解析失败后已取得的 usage/hash/finish reason，也不实现 token/成本累计预算或自动升级。后续须先把安全投影后的失败测量证据保留下来，未知 usage 不可视为零；当前 `LoopBudget` 八维为次数限制，不是金额计费上限。
+
 ## 当前状态
 
 截至 2026-10-20，steerBox 已实现并通过 focused 契约测试验证 `EffectLevel`、`QualityAssessment`、`QualityObservation`、`AdaptationDecision` 和纯 task-local `BoundedAdaptationController`，并将 secret-free `plan_adaptation()` 接入普通 routed 与 resolved routed controller 的顺序 fallback 门禁；现有 fallback 会保留父 Attempt 失败证据并创建受预算约束的子 Attempt。普通与 resolved model step 的成功、adapter/provider 失败和 action/verification 结果现在会写入 metadata-only `model_quality_assessed`，并可由 execution query 查询；事件不包含模型响应正文、endpoint 或凭据。`BoundedAdaptationController` 只推进效果级别、Attempt 预算和冷却状态，不执行重试或网络调用；完整 runtime controller、NeedsUpgrade 自动效果升级和根据质量事件自动重路由仍未实现。因此这仍是受约束的运行时切片，不是完整模型连接型 Agent。

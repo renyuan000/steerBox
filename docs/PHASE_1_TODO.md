@@ -276,6 +276,8 @@ Memory 最小实现：
 - [x] 校验自适应决策不能改变 provider allowlist、endpoint、auth_ref、隐私等级、工具权限和安全底线（契约决策不携带这些字段；route planner 只返回已声明 fallback）
 - [ ] 对低质量、不可重试、安全阻断、预算耗尽分别生成可解释的 metadata-only 审计事件（当前 routed retryable fallback 已有 `model_route_fallback` 与 `model_adaptation_stopped`；NeedsUpgrade、Blocked、Failed 的统一自适应事件仍待完成）
 - [ ] 用 fake/localhost provider 覆盖 Verified、NeedsUpgrade、Retryable、Blocked、Failed 和预算耗尽分支
+- [x] 将两协议决策 parser 的 JSON 语法、结构、空摘要、动作合同及脱敏拒绝区分为无正文 typed 诊断（公开错误契约变化；controller 审计仍为 `response_unmappable`、质量仍保守失败，不授予重调/升级；保留首先拒绝而非完整安全结论）
+- [ ] 让 resolved 解析/后置边界失败保留已知的安全 usage/hash/finish reason 证据；未知用量保持未知，token/成本累计预算须另行接入，不能将八维次数预算当作计费预算
 
 Phase 1 不实现跨任务在线学习、并行 quorum、自动修改全局路由配置或根据单次异常永久调整模型权重。
 
