@@ -181,12 +181,29 @@ pub struct AdaptationDecision {
 pub enum AdaptationError {
     #[error("maximum effect level is below current effect level")]
     MaximumBelowCurrent,
+    #[error("unsupported adaptive routing schema version")]
+    UnsupportedSchemaVersion,
+    #[error("decision source does not match current effect level")]
+    DecisionSourceMismatch,
+    #[error("invalid adaptation decision shape or upgrade step")]
+    InvalidDecision,
+    #[error("upgrade exceeds maximum effect level")]
+    MaximumEffectLevelExceeded,
+    #[error("attempt budget exhausted")]
+    AttemptBudgetExhausted,
+    #[error("adaptation cooldown is active")]
+    CooldownActive,
+    #[error("upgrade budget exhausted")]
+    UpgradeBudgetExhausted,
 }
 
 impl AdaptationDecision {
     pub fn from_context(context: AdaptationContext) -> Result<Self, AdaptationError> {
         if context.maximum_effect_level < context.current_effect_level {
             return Err(AdaptationError::MaximumBelowCurrent);
+        }
+        if context.assessment.schema_version != ADAPTIVE_ROUTING_SCHEMA_VERSION {
+            return Err(AdaptationError::UnsupportedSchemaVersion);
         }
 
         let current = context.current_effect_level;
@@ -246,7 +263,7 @@ impl AdaptationDecision {
                             from_effect_level: current,
                             to_effect_level: Some(next),
                             reason_code: quality_reason(context.assessment.signal),
-                            creates_new_attempt: false,
+                            creates_new_attempt: true,
                         }
                     }
                 }
@@ -309,7 +326,7 @@ impl BoundedAdaptationController {
         &self,
         observation: QualityObservation,
         fallback_available: bool,
-    ) -> AdaptationDecision {
+    ) -> Result<AdaptationDecision, AdaptationError> {
         AdaptationDecision::from_context(AdaptationContext {
             current_effect_level: self.current_effect_level,
             maximum_effect_level: self.maximum_effect_level,
@@ -319,26 +336,66 @@ impl BoundedAdaptationController {
             budget_allows_upgrade: self.budget_allows_upgrade,
             fallback_available,
         })
-        .expect("controller invariants keep maximum effect level valid")
     }
 
     /// Commit a previously returned decision. Runtime integrations must still
     /// create the Attempt/route/audit records; this method only advances the
     /// bounded task-local controller state.
-    pub fn apply(&mut self, decision: &AdaptationDecision) {
+    /// Revalidates current bounds but does not authenticate decision provenance
+    /// or provide nonce-based replay protection. Fallback only consumes the
+    /// remaining Attempt budget.
+    pub fn apply(&mut self, decision: &AdaptationDecision) -> Result<(), AdaptationError> {
+        if self.maximum_effect_level < self.current_effect_level {
+            return Err(AdaptationError::MaximumBelowCurrent);
+        }
+        if decision.schema_version != ADAPTIVE_ROUTING_SCHEMA_VERSION {
+            return Err(AdaptationError::UnsupportedSchemaVersion);
+        }
+        if decision.from_effect_level != self.current_effect_level {
+            return Err(AdaptationError::DecisionSourceMismatch);
+        }
+        let creates_new_attempt = matches!(
+            decision.action,
+            AdaptationAction::Upgrade | AdaptationAction::Fallback
+        );
+        if decision.creates_new_attempt != creates_new_attempt
+            || (decision.action != AdaptationAction::Upgrade && decision.to_effect_level.is_some())
+        {
+            return Err(AdaptationError::InvalidDecision);
+        }
         match decision.action {
             AdaptationAction::Upgrade => {
-                if let Some(next) = decision.to_effect_level {
-                    self.current_effect_level = next;
-                    self.remaining_attempts = self.remaining_attempts.saturating_sub(1);
-                    self.cooldown_active = true;
+                let next = decision
+                    .to_effect_level
+                    .ok_or(AdaptationError::InvalidDecision)?;
+                if self.current_effect_level.next() != Some(next) {
+                    return Err(AdaptationError::InvalidDecision);
                 }
+                if next > self.maximum_effect_level {
+                    return Err(AdaptationError::MaximumEffectLevelExceeded);
+                }
+                if self.remaining_attempts == 0 {
+                    return Err(AdaptationError::AttemptBudgetExhausted);
+                }
+                if self.cooldown_active {
+                    return Err(AdaptationError::CooldownActive);
+                }
+                if !self.budget_allows_upgrade {
+                    return Err(AdaptationError::UpgradeBudgetExhausted);
+                }
+                self.current_effect_level = next;
+                self.remaining_attempts -= 1;
+                self.cooldown_active = true;
             }
             AdaptationAction::Fallback => {
-                self.remaining_attempts = self.remaining_attempts.saturating_sub(1);
+                if self.remaining_attempts == 0 {
+                    return Err(AdaptationError::AttemptBudgetExhausted);
+                }
+                self.remaining_attempts -= 1;
             }
             AdaptationAction::Continue | AdaptationAction::Stop => {}
         }
+        Ok(())
     }
 
     pub fn clear_cooldown(&mut self) {
