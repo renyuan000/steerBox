@@ -15,10 +15,8 @@ use crate::model_contracts::RouteDecision;
 use crate::model_registry::{EndpointProfile, ModelProfile, ModelRegistry, ProviderProfile};
 use crate::policy_gate::PolicyGate;
 use crate::prompt_registry::{PromptProfile, PromptRegistry};
-use crate::provider_adapter::{OpenAiCompatibleAdapter, ProviderTransport};
-use crate::provider_model_adapter::{
-    ProviderModelAdapter, ResolvedModelAdapter, ResolvedModelResponseWithAction,
-};
+use crate::provider_adapter::ProviderTransport;
+use crate::provider_model_adapter::{ResolvedModelAdapter, ResolvedModelResponseWithAction};
 use crate::resolved_prompt::{
     resolve_prompt, AgentRolePrompt, ModelPromptFragment, ProviderPromptFragment,
     ResolvePromptInput, ResolvedPromptPack, TaskPromptPack, VersionedPromptFragment,
@@ -385,6 +383,7 @@ impl ForegroundProviderRun {
         if self.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
+        let adapter = self.profile.build_openai_adapter(transport)?;
         let request = self.request;
         let tool_calls = ToolCallRecordStore::open(tool_call_store_path(events.path()))?;
         let goal = GoalContract::new(
@@ -405,10 +404,6 @@ impl ForegroundProviderRun {
         )?
         .with_model_call_store(model_calls)
         .with_tool_call_store(tool_calls);
-        let provider =
-            OpenAiCompatibleAdapter::new(self.profile.provider, self.profile.endpoint, transport);
-        let adapter = ProviderModelAdapter::new(provider, self.profile.auth_ref)
-            .with_model_id(&request.model_id);
         let decision = controller.run_resolved_model_step(
             &adapter,
             ModelRequest {
@@ -549,15 +544,7 @@ impl BoundedMarkdownProviderRun {
         if inner.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
-        let adapter = ProviderModelAdapter::new(
-            OpenAiCompatibleAdapter::new(
-                inner.profile.provider.clone(),
-                inner.profile.endpoint.clone(),
-                transport,
-            ),
-            inner.profile.auth_ref.clone(),
-        )
-        .with_model_id(&inner.request.model_id);
+        let adapter = inner.profile.build_openai_adapter(transport)?;
         Self::run_with_resolved_adapter(inner, run, adapter, events, model_calls, sink)
     }
 

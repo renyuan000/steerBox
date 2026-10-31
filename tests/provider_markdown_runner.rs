@@ -1,5 +1,11 @@
 use serde_json::json;
-use std::{cell::Cell, fs, path::Path, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{
+    cell::{Cell, RefCell},
+    fs,
+    path::Path,
+    time::Duration,
+};
 use steerbox::anthropic_adapter::{AnthropicHeaders, AnthropicTransport, AnthropicTransportError};
 use steerbox::domain::{HumanSteeringMode, LoopStatus};
 use steerbox::event_log::EventLog;
@@ -8,7 +14,7 @@ use steerbox::provider_adapter::{ProviderTransport, TransportError, TransportRes
 use steerbox::provider_runner::{
     BoundedMarkdownRunConfig, ForegroundProviderRun, ProviderRunRequest,
 };
-use steerbox::runtime_config::RuntimeConfig;
+use steerbox::runtime_config::{ConfigError, RuntimeConfig};
 use steerbox::stream_reporter::StreamReporter;
 use steerbox::tool_call_store::ToolCallRecordStore;
 
@@ -60,6 +66,136 @@ struct FakeTransport<'a> {
     action_path: &'a str,
     decision: &'a str,
     calls: Cell<usize>,
+}
+
+struct EffectCaptureTransport<'a> {
+    inner: FakeTransport<'a>,
+    body: RefCell<String>,
+}
+
+impl ProviderTransport for &EffectCaptureTransport<'_> {
+    fn send(
+        &self,
+        endpoint: &str,
+        auth_ref: Option<&str>,
+        body: &str,
+        timeout: Duration,
+        streaming: bool,
+    ) -> Result<TransportResponse, TransportError> {
+        *self.body.borrow_mut() = body.into();
+        (&self.inner).send(endpoint, auth_ref, body, timeout, streaming)
+    }
+}
+
+#[test]
+fn configured_effect_binds_markdown_wire_and_exact_audit_hash() {
+    run_markdown_effect_fixture(true, false);
+    run_markdown_effect_fixture(false, false);
+}
+
+#[test]
+fn invalid_mutated_markdown_effect_is_rejected_before_runtime_or_transport() {
+    run_markdown_effect_fixture(true, true);
+}
+
+fn run_markdown_effect_fixture(configured: bool, invalid: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::write(root.join("README.md"), "before\n").unwrap();
+    let mut encoded = json!({
+        "schema_version":1,"project_ref":"markdown-fixture","data_root":"/temp/steerbox/markdown-fixture",
+        "model_profiles":[{"model_id":"test-model","provider":"openai-compatible",
+            "endpoint":"https://fixture.example.test/v1","auth_ref":"secret-ref:markdown-fixture",
+            "capabilities":["text"],"effect":{"selected_level":"strong","mapping":{"strong":"high"}}}]
+    });
+    if !configured {
+        encoded["model_profiles"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("effect");
+    }
+    let mut config = RuntimeConfig::from_json_str(&encoded.to_string()).unwrap();
+    if invalid {
+        let mut profile = encoded["model_profiles"][0].clone();
+        profile["effect"]["selected_level"] = json!("fast");
+        config.model_profiles[0] = serde_json::from_value(profile).unwrap();
+    }
+    let request = ProviderRunRequest {
+        project_id: "project".into(),
+        goal_id: "goal".into(),
+        loop_run_id: "loop".into(),
+        task_run_id: "task".into(),
+        model_id: "test-model".into(),
+        objective: "Update README.md".into(),
+        observation: "before\n".into(),
+    };
+    let run = BoundedMarkdownRunConfig {
+        workspace: root.into(),
+        allowed_paths: vec!["README.md".into()],
+        checkpoint_path: root.join("checkpoints.jsonl"),
+        trace_path: root.join("traces.jsonl"),
+        side_effect_path: root.join("effects.jsonl"),
+        approved: true,
+        human_steering_mode: HumanSteeringMode::HumanSteerableLoop,
+    };
+    let transport = EffectCaptureTransport {
+        inner: FakeTransport {
+            workspace: root,
+            replacement: "after\n",
+            action_path: "README.md",
+            decision: "complete_loop",
+            calls: Cell::new(0),
+        },
+        body: RefCell::new(String::new()),
+    };
+    if invalid {
+        let error = ForegroundProviderRun::prepare_markdown(&config, request, run)
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error,
+            steerbox::provider_runner::ProviderRunError::Config(
+                ConfigError::InvalidModelEffect { .. }
+            )
+        ));
+        assert_eq!(transport.inner.calls.get(), 0);
+        assert!(transport.body.borrow().is_empty());
+        assert_eq!(
+            fs::read_to_string(root.join("README.md")).unwrap(),
+            "before\n"
+        );
+        assert_eq!(root.read_dir().unwrap().count(), 1);
+        return;
+    }
+    let calls = ModelCallStore::open(root.join("calls.jsonl")).unwrap();
+    let outcome = ForegroundProviderRun::prepare_markdown(&config, request, run)
+        .unwrap()
+        .run_with_transport(
+            &transport,
+            EventLog::open(root.join("events.jsonl")).unwrap(),
+            calls.clone(),
+            StreamReporter::new(Vec::new()),
+        )
+        .unwrap();
+    assert_eq!(outcome.loop_status, LoopStatus::Completed);
+    assert_eq!(
+        fs::read_to_string(root.join("README.md")).unwrap(),
+        "after\n"
+    );
+    let body = transport.body.borrow();
+    let wire: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(wire["model"], "test-model");
+    if configured {
+        assert_eq!(wire["reasoning_effort"], "high");
+    } else {
+        assert!(wire.get("reasoning_effort").is_none());
+    }
+    assert_eq!(
+        calls.read_all().unwrap()[0].input_context_hash,
+        format!("sha256:{:x}", Sha256::digest(body.as_bytes()))
+    );
+    assert_eq!(transport.inner.calls.get(), 1);
+    assert!(!body.contains("secret-ref:"));
 }
 
 impl ProviderTransport for &FakeTransport<'_> {

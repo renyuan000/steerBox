@@ -152,3 +152,35 @@ fn runtime_config_rejects_non_opaque_auth_ref_and_authenticated_endpoint() {
         }
     }
 }
+
+#[test]
+fn anthropic_effect_is_rejected_in_json_instead_of_silently_ignored() {
+    let mut encoded = serde_json::to_value(config("anthropic", &["text"])).unwrap();
+    encoded["model_profiles"][0]["effect"] = serde_json::json!({
+        "selected_level":"fast", "mapping":{"fast":"low"}
+    });
+    let error = RuntimeConfig::from_json_str(&encoded.to_string()).unwrap_err();
+    assert!(matches!(error, ConfigError::InvalidModelEffect { .. }));
+}
+
+#[test]
+fn anthropic_factories_reject_mutated_effect_before_transport_activity() {
+    let mut config = config("anthropic", &["text"]);
+    let mut profile = serde_json::to_value(&config.model_profiles[0]).unwrap();
+    profile["effect"] = serde_json::json!({
+        "selected_level":"fast", "mapping":{"fast":"low"}
+    });
+    config.model_profiles[0] = serde_json::from_value(profile).unwrap();
+    let transport = CountingTransport::default();
+    let sends = Arc::clone(&transport.sends);
+    let error = config
+        .build_anthropic_adapter("claude-fixture", transport)
+        .err()
+        .expect("mutated Anthropic effect is rejected");
+    assert!(matches!(error, ConfigError::InvalidModelEffect { .. }));
+    assert_eq!(sends.load(Ordering::SeqCst), 0);
+    let error = config
+        .build_http_anthropic_adapter("claude-fixture", FixtureResolver)
+        .expect_err("HTTP factory also rejects mutated Anthropic effect");
+    assert!(matches!(error, ConfigError::InvalidModelEffect { .. }));
+}

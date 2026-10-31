@@ -1,5 +1,7 @@
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::time::Duration;
 use steerbox::anthropic_adapter::{AnthropicHeaders, AnthropicTransport, AnthropicTransportError};
 use steerbox::domain::LoopStatus;
@@ -287,4 +289,94 @@ fn blank_objective_is_rejected_during_preparation() {
         input
     )
     .is_err());
+}
+
+struct EffectCaptureTransport {
+    inner: TestTransport,
+    body: RefCell<String>,
+}
+
+impl ProviderTransport for &EffectCaptureTransport {
+    fn send(
+        &self,
+        endpoint: &str,
+        auth_ref: Option<&str>,
+        body: &str,
+        timeout: Duration,
+        streaming: bool,
+    ) -> Result<TransportResponse, TransportError> {
+        *self.body.borrow_mut() = body.into();
+        (&self.inner).send(endpoint, auth_ref, body, timeout, streaming)
+    }
+}
+
+#[test]
+fn configured_effect_binds_foreground_wire_and_exact_audit_hash() {
+    for (level, effort) in [
+        ("legacy", None),
+        ("fast", Some("low")),
+        ("balanced", Some("medium")),
+        ("strong", Some("high")),
+        ("x_high", Some("xhigh")),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut encoded =
+            serde_json::to_value(config(Some("secret-ref:provider-fixture"), "openai")).unwrap();
+        if effort.is_some() {
+            encoded["model_profiles"][0]["effect"] = json!({
+                "selected_level":level,
+                "mapping":{"fast":"low","balanced":"medium","strong":"high","x_high":"xhigh"}
+            });
+        }
+        let config = RuntimeConfig::from_json_str(&encoded.to_string()).unwrap();
+        let transport = EffectCaptureTransport {
+            inner: TestTransport {
+                calls: Cell::new(0),
+                status: 200,
+            },
+            body: RefCell::new(String::new()),
+        };
+        let calls = ModelCallStore::open(directory.path().join("calls.jsonl")).unwrap();
+        ForegroundProviderRun::prepare(&config, request())
+            .unwrap()
+            .run_with_transport(
+                &transport,
+                EventLog::open(directory.path().join("events.jsonl")).unwrap(),
+                calls.clone(),
+                StreamReporter::new(Vec::new()),
+            )
+            .unwrap();
+        let body = transport.body.borrow();
+        let wire: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(wire["model"], "test-model");
+        if effort.is_none() {
+            assert!(wire.get("reasoning_effort").is_none());
+        }
+        assert_eq!(
+            wire.get("reasoning_effort")
+                .and_then(serde_json::Value::as_str),
+            effort
+        );
+        assert_eq!(
+            calls.read_all().unwrap()[0].input_context_hash,
+            format!("sha256:{:x}", Sha256::digest(body.as_bytes()))
+        );
+        assert_eq!(transport.inner.calls.get(), 1);
+        assert!(!body.contains("secret-ref:"));
+    }
+}
+
+#[test]
+fn invalid_effect_is_rejected_during_prepare_before_missing_auth() {
+    let mut config = config(None, "openai");
+    let mut profile = serde_json::to_value(&config.model_profiles[0]).unwrap();
+    profile["effect"] = json!({"selected_level":"strong", "mapping":{"fast":"low"}});
+    config.model_profiles[0] = serde_json::from_value(profile).unwrap();
+    let error = ForegroundProviderRun::prepare(&config, request())
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        ProviderRunError::Config(ConfigError::InvalidModelEffect { .. })
+    ));
 }

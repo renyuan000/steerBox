@@ -1,7 +1,7 @@
 # 受约束的主动自适应模型路由与质量策略
 
 **日期**：2026-10-20
-**状态**：Phase 1 设计增量；纯状态契约及 opt-in OpenAI-compatible 参数绑定已实现，完整自动运行链未完成
+**状态**：Phase 1 设计增量；纯状态契约、opt-in OpenAI-compatible 参数绑定及 profile 固定效果装配已实现，完整自动运行链未完成
 
 ## 2026-10-31 实现边界
 
@@ -9,7 +9,23 @@
 - `apply` 不证明决定的来源，不提供 nonce 或跨任务防重放；同级 fallback 在仍有额度时的重复调用仍须由 runtime 的调用身份与 Attempt 审计约束。升级预算/冷却仅控制升级，Fallback 消费剩余尝试额度。
 - `OpenAiCompatibleAdapter::with_effect_policy()` 接受宿主显式声明的 `ModelEffectPolicy` 和选定 `EffectLevel`，不改 `ProviderRequest`，不从模型名或自由 capability 字符串猜支持。策略绑定精确 wire model name；缺失档位、错模型、空策略或不递增映射都拒绝。声明是宿主配置，不等于已验证服务端能力。
 - 默认不注入推理参数；显式绑定后普通、resolved 与 stream 请求共用准备入口，生成 native `reasoning_effort`。最终发送 body 的 SHA256 包含参数，prepared 请求发送前按当前策略重新验证，不能跨策略绕过。endpoint、认证、工具权限及 timeout 不受效果选择改变。
-- 本切片不配置 CLI/profile 自动装配，不实现 NeedsUpgrade 后自动创建真实新 Attempt/RouteDecision 和重新调用；usage/latency/truncation/no-progress 的统一采集、Anthropic native 参数适配及 live provider 验收仍待完成。
+- profile 可显式声明固定 `effect`；配置 HTTP factory、foreground 和 bounded Markdown 三入口共用装配 helper。配置及公开字段变异在使用前重新校验，非法效果在 controller 启动前拒绝；无配置仍省略 native 参数。Anthropic 当前拒绝该效果声明，不静默忽略。
+- 固定效果不授予自动升级权限。NeedsUpgrade 后自动创建真实新 Attempt/RouteDecision 和重新调用、usage/latency/truncation/no-progress 的统一采集、Anthropic native 参数适配及 live provider 验收仍待完成。
+
+### 固定 profile 配置
+
+在现有 OpenAI-compatible model profile 中可添加以下字段（不包含 endpoint 或凭据）：
+
+```json
+"effect": {
+  "selected_level": "strong",
+  "mapping": {"fast": "low", "balanced": "medium", "strong": "high", "x_high": "xhigh"}
+}
+```
+
+`EffectLevel` 的配置值为 `fast/balanced/strong/x_high`，native `ReasoningEffort` 为 `low/medium/high/xhigh`。允许稀疏 mapping，但必须非空、严格递增且包含 selected level；重复 key、未知字段/枚举、同值或逆序均拒绝。schema 仍为 v1 的可选扩展，无配置时序列化省略；旧二进制会按未知字段拒绝新配置，不能宣称兼容旧二进制。映射是宿主声明，不代表服务端已实测支持，不能根据模型名推断。
+
+验证覆盖 foreground 四档及无配置、bounded Markdown 有/无配置的实际请求 body/SHA256，以及非法公开配置变异的零执行路径。HTTP 出站覆盖仅在 `#[cfg(test)]` 中向共用 helper 注入 loopback transport；公开生产 HTTP factory 仍强制 HTTPS，该测试不证明公开 factory 支持普通 HTTP，也不等于 live provider 验收。
 
 协议参考：OpenAI 官方 [Create chat completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) 说明 `reasoning_effort` 支持值因模型而异。本切片仅提供 low/medium/high/xhigh 的显式 typed 声明，不向未声明模型发送该字段。
 
@@ -46,7 +62,7 @@ ProviderAdapter       使用受保护 endpoint/credential 发请求
 
 ### 可以自动调节的运行参数
 
-- 效果级别：`fast`、`balanced`、`strong`、`xhigh`；
+- 效果级别：`fast`、`balanced`、`strong`、`x_high`；
 - 已授权候选模型之间的切换；
 - 单次调用 timeout、验证频率和有限重试次数；
 - 在预算和并发上限内的局部执行策略。
