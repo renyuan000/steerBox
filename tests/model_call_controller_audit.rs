@@ -14,7 +14,9 @@ use steerbox::loop_controller::{
     LoopControllerError, ModelActionRuntime, ReadOnlyLoopController, ResolvedModelLoopStopReason,
     WorkspaceEditActionRuntime,
 };
-use steerbox::model_adapter::{DecisionOutputRejection, ModelAdapterError, ModelRequest};
+use steerbox::model_adapter::{
+    DecisionOutputRejection, ModelAdapterError, ModelDecision, ModelRequest,
+};
 use steerbox::model_call_store::ModelCallStore;
 use steerbox::model_contracts::RouteDecision;
 use steerbox::model_registry::{EndpointProfile, ModelProfile, ModelRegistry, ProviderProfile};
@@ -195,6 +197,16 @@ fn resolved_fixture_for_protocol(
     fallback_chain: Vec<String>,
     protocol: &str,
 ) -> (ResolvedPromptPack, RouteDecision) {
+    resolved_fixture_with_boundary(model_id, route_decision_id, fallback_chain, protocol, "")
+}
+
+fn resolved_fixture_with_boundary(
+    model_id: &str,
+    route_decision_id: &str,
+    fallback_chain: Vec<String>,
+    protocol: &str,
+    boundary: &str,
+) -> (ResolvedPromptPack, RouteDecision) {
     let mut models = ModelRegistry::default();
     models
         .register_provider(ProviderProfile::new("fixture-provider", "Fixture", None).unwrap())
@@ -221,7 +233,7 @@ fn resolved_fixture_for_protocol(
     prompts
         .register(PromptProfile::new("inspect", 1, "reviewer", "review", "TASK_BODY").unwrap())
         .unwrap();
-    let route = RouteDecision {
+    let mut route = RouteDecision {
         route_decision_id: route_decision_id.into(),
         task_id: "task-model-audit".into(),
         task_type: "review".into(),
@@ -244,12 +256,28 @@ fn resolved_fixture_for_protocol(
         approval_required: false,
         created_at: "2026-10-11T00:00:00Z".into(),
     };
+    if boundary == "privacy" {
+        route.privacy_requirement = "restricted".into();
+    }
+    if boundary == "risk" {
+        route.risk_level = "medium".into();
+    }
+    if boundary == "task" {
+        route.task_id = "another-task".into();
+    }
     let pack = resolve_prompt(
         &models,
         &prompts,
         ResolvePromptInput {
             route: &route,
-            base: &fragment("base", "BASE"),
+            base: &fragment(
+                "base",
+                if boundary == "prompt" {
+                    "OTHER_BASE"
+                } else {
+                    "BASE"
+                },
+            ),
             provider: &ProviderPromptFragment {
                 provider_id: "fixture-provider".into(),
                 fragment: fragment("provider", "PROVIDER"),
@@ -269,11 +297,23 @@ fn resolved_fixture_for_protocol(
                 task_type: "review".into(),
             },
             skills: &[],
-            policy_summary: &json!({"mode":"read_only"}),
-            tool_summary: &json!({"tools":[]}),
-            context_package: &json!({"fixture":true}),
-            objective: "inspect the repository",
-            observation: "repository observed",
+            policy_summary: &json!({"mode":if boundary == "policy" {"other"} else {"read_only"}}),
+            tool_summary: &if boundary == "tool" {
+                json!({"tools":["git_status"]})
+            } else {
+                json!({"tools":[]})
+            },
+            context_package: &json!({"fixture":boundary != "context"}),
+            objective: if boundary == "objective" {
+                "another objective"
+            } else {
+                "inspect the repository"
+            },
+            observation: if boundary == "observation" {
+                "another observation"
+            } else {
+                "repository observed"
+            },
             resolution_reason: "explicit fixture",
             created_at: "2026-10-11T00:00:00Z",
         },
@@ -330,6 +370,1111 @@ fn controller_with_allowed_tools(
         allowed_tools,
         LoopBudget::new(2, 0, 1, 1, 0, 1, 1, 1),
     )
+}
+
+fn effect_upgrade_config(automatic_upgrade: bool) -> steerbox::runtime_config::RuntimeConfig {
+    let mut effect = json!({
+        "selected_level": "fast",
+        "mapping": {"fast": "low", "balanced": "medium", "strong": "high"},
+    });
+    if automatic_upgrade {
+        effect["automatic_upgrade"] = json!(true);
+        effect["maximum_level"] = json!("strong");
+    }
+    steerbox::runtime_config::RuntimeConfig::from_json_str(&json!({
+        "schema_version": 1, "project_ref": "upgrade-fixture",
+        "data_root": "/temp/steerbox/upgrade-fixture",
+        "model_profiles": [{"model_id": "wire-model", "provider": "fixture-provider",
+            "endpoint": BASE_URL, "endpoint_protocol": "openai-compatible-chat", "effect": effect}],
+    }).to_string()).unwrap()
+}
+
+fn upgrade_controller(directory: &TestDirectory, budget: LoopBudget) -> ReadOnlyLoopController {
+    upgrade_controller_with_models(directory, budget, vec![])
+}
+
+fn upgrade_controller_with_models(
+    directory: &TestDirectory,
+    budget: LoopBudget,
+    allowed_models: Vec<String>,
+) -> ReadOnlyLoopController {
+    let mut goal = GoalContract::new(
+        "goal-model-audit",
+        "project-model-audit",
+        "inspect the repository",
+        vec![".".into()],
+        Vec::new(),
+        vec!["model_result_recorded".into()],
+    );
+    goal.allowed_models = allowed_models;
+    ReadOnlyLoopController::start_with_task_run(
+        EventLog::open(directory.events()).unwrap(),
+        goal,
+        "loop-model-audit",
+        steerbox::domain::TaskRun::new("task-run-model-audit", "task-model-audit", budget).unwrap(),
+    )
+    .unwrap()
+}
+
+fn upgrade_request(pack: &ResolvedPromptPack) -> ModelRequest {
+    ModelRequest {
+        model_id: pack.model_id().into(),
+        goal_id: "goal-model-audit".into(),
+        loop_run_id: "loop-model-audit".into(),
+        step_id: "step-upgrade".into(),
+        objective: pack.objective().into(),
+        observation: pack.observation().into(),
+    }
+}
+
+fn primary_upgrade_candidate(
+    config: &steerbox::runtime_config::RuntimeConfig,
+    transport: FakeTransport,
+) -> steerbox::runtime_config::EffectBoundResolvedCandidate {
+    let (pack, route) = resolved_fixture_for("wire-model", "route-upgrade-primary", vec![]);
+    config
+        .build_effect_bound_candidate(
+            "wire-model",
+            steerbox::adaptive_routing::EffectLevel::Fast,
+            transport,
+            upgrade_request(&pack),
+            pack,
+            route,
+        )
+        .unwrap()
+}
+
+#[test]
+fn resolved_effect_upgrade_is_off_by_default_and_accepted_quality_sends_once() {
+    use steerbox::adaptive_routing::QualityObservation;
+    for opt_in in [false, true] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(opt_in);
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let mut controller =
+            upgrade_controller(&directory, LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+                .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let mut evaluations = 0;
+        let result = controller.run_resolved_upgrade_model_step(
+            primary_upgrade_candidate(&config, transport),
+            "step-upgrade",
+            |_| {
+                evaluations += 1;
+                QualityObservation {
+                    accepted: true,
+                    ..QualityObservation::default()
+                }
+            },
+            |_, _| panic!("opt-out or accepted quality cannot resolve a second candidate"),
+        );
+        assert!(result.is_ok());
+        assert_eq!(evaluations, usize::from(opt_in));
+        assert_eq!(sends.lock().unwrap().len(), 1);
+        assert_eq!(controller.task_run().attempts.len(), 1);
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_rejects_non_whitelisted_host_observations() {
+    use steerbox::adaptive_routing::QualityObservation;
+    let baseline = QualityObservation {
+        no_progress: true,
+        ..QualityObservation::default()
+    };
+    for observation in [
+        QualityObservation {
+            security_boundary: true,
+            ..baseline
+        },
+        QualityObservation {
+            provider_timeout: true,
+            ..baseline
+        },
+        QualityObservation {
+            provider_unavailable: true,
+            ..baseline
+        },
+        QualityObservation {
+            structured_output_valid: Some(false),
+            ..baseline
+        },
+        QualityObservation {
+            tool_result_failed: true,
+            ..baseline
+        },
+        QualityObservation {
+            verification_failed: true,
+            ..baseline
+        },
+        QualityObservation {
+            verification_passed: true,
+            ..baseline
+        },
+        QualityObservation {
+            usage_budget_exceeded: true,
+            ..baseline
+        },
+        QualityObservation {
+            output_truncated: true,
+            ..baseline
+        },
+        QualityObservation {
+            latency_budget_exceeded: true,
+            ..baseline
+        },
+    ] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(true);
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let mut controller =
+            upgrade_controller(&directory, LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+                .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let result = controller.run_resolved_upgrade_model_step(
+            primary_upgrade_candidate(&config, transport),
+            "step-upgrade",
+            |_| observation,
+            |_, _| panic!("forbidden observation cannot resolve another candidate"),
+        );
+        assert!(result.is_err());
+        assert_eq!(sends.lock().unwrap().len(), 1);
+        assert_eq!(controller.task_run().attempts.len(), 1);
+        assert_eq!(controller.status(), steerbox::domain::LoopStatus::Failed);
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_does_not_evaluate_parser_provider_or_action_failure() {
+    use steerbox::adaptive_routing::QualityObservation;
+    for transport in [
+        FakeTransport::with_decision_content("fixture-private-not-json".into()),
+        FakeTransport::with_decision_content(r#"{"decision":"complete_loop","summary":" "}"#.into()),
+        FakeTransport::with_decision_content(json!({"decision":"complete_loop","summary":"fixture",
+            "action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status",
+            "parameters":{"path":"README.md"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]},
+            "verification":{"verifier_tool_id":"verify","parameters":{"path":"README.md"}}}}).to_string()),
+        FakeTransport::failing(),
+    ] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(true);
+        let sends = transport.sends.clone();
+        let mut controller = upgrade_controller(&directory,
+            LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+            .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let result = controller.run_resolved_upgrade_model_step(
+            primary_upgrade_candidate(&config, transport), "step-upgrade",
+            |_| -> QualityObservation { panic!("failed/actionful response must not reach evaluator") },
+            |_, _| panic!("failed response cannot resolve another candidate"),
+        );
+        assert!(result.is_err());
+        assert_eq!(sends.lock().unwrap().len(), 1);
+        assert_eq!(controller.task_run().attempts.len(), 1);
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_requires_positive_host_acceptance_before_completion() {
+    use steerbox::adaptive_routing::QualityObservation;
+    use steerbox::domain::LoopStatus;
+    for accepted in [false, true] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(true);
+        let transport = FakeTransport::with_decision_content(
+            json!({"decision":"complete_loop","summary":"fixture complete"}).to_string(),
+        );
+        let sends = transport.sends.clone();
+        let mut controller =
+            upgrade_controller(&directory, LoopBudget::new(2, 0, 2, 2, 0, 2, 2, 2))
+                .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let result = controller.run_resolved_upgrade_model_step(
+            primary_upgrade_candidate(&config, transport),
+            "step-upgrade",
+            |_| QualityObservation {
+                accepted,
+                ..QualityObservation::default()
+            },
+            |_, _| panic!("neither acceptance nor missing evidence may upgrade"),
+        );
+        assert_eq!(result.is_ok(), accepted);
+        assert_eq!(
+            controller.status(),
+            if accepted {
+                LoopStatus::Completed
+            } else {
+                LoopStatus::Failed
+            }
+        );
+        assert_eq!(sends.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_exhausted_budgets_stop_before_second_resolution() {
+    use steerbox::adaptive_routing::QualityObservation;
+    for (steps, calls, attempts) in [(1, 2, 2), (2, 1, 2), (2, 2, 1)] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(true);
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let mut controller = upgrade_controller(
+            &directory,
+            LoopBudget::new(steps, 0, calls, attempts, 0, 4, 4, 4),
+        )
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let result = controller.run_resolved_upgrade_model_step(
+            primary_upgrade_candidate(&config, transport),
+            "step-upgrade",
+            |_| QualityObservation {
+                low_quality: true,
+                ..QualityObservation::default()
+            },
+            |_, _| panic!("exhausted budget cannot resolve a second candidate"),
+        );
+        assert!(matches!(
+            result,
+            Err(LoopControllerError::BudgetExhausted(_))
+        ));
+        assert_eq!(sends.lock().unwrap().len(), 1);
+        assert_eq!(controller.budget().steps_used, 1);
+        assert_eq!(controller.budget().model_calls_used, 1);
+        assert_eq!(controller.budget().attempts_used, 1);
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_enforces_goal_model_allowlist_before_send() {
+    let directory = TestDirectory::new();
+    let config = effect_upgrade_config(true);
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let mut controller = upgrade_controller_with_models(
+        &directory,
+        LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4),
+        vec!["other-allowed-model".into()],
+    )
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    let before = controller.budget().clone();
+    assert!(controller
+        .run_resolved_upgrade_model_step(
+            primary_upgrade_candidate(&config, transport),
+            "step-upgrade",
+            |_| panic!("disallowed model cannot evaluate"),
+            |_, _| panic!("disallowed model cannot resolve")
+        )
+        .is_err());
+    assert!(sends.lock().unwrap().is_empty());
+    assert_eq!(controller.budget(), &before);
+}
+
+#[test]
+fn resolved_effect_upgrade_cannot_upgrade_twice_after_legacy_interleaving() {
+    use steerbox::adaptive_routing::QualityObservation;
+    let directory = TestDirectory::new();
+    let config = effect_upgrade_config(true);
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let mut controller = upgrade_controller(&directory, LoopBudget::new(6, 0, 6, 6, 0, 6, 6, 6))
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    let mut evaluations = 0;
+    controller
+        .run_resolved_upgrade_model_step(
+            primary_upgrade_candidate(&config, transport.clone()),
+            "step-upgrade",
+            |_| {
+                evaluations += 1;
+                QualityObservation {
+                    no_progress: evaluations == 1,
+                    accepted: evaluations == 2,
+                    ..QualityObservation::default()
+                }
+            },
+            |child_route, level| {
+                let (pack, route) =
+                    resolved_fixture_for("wire-model", &child_route.route_decision_id, vec![]);
+                Ok(config
+                    .build_effect_bound_candidate(
+                        "wire-model",
+                        level,
+                        transport.clone(),
+                        upgrade_request(&pack),
+                        pack,
+                        route,
+                    )
+                    .unwrap())
+            },
+        )
+        .unwrap();
+    let (pack, route) = resolved_fixture_for("wire-model", "route-fixed-interleave", vec![]);
+    // The ordinary API remains available, but it cannot reset TaskRun lineage.
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport.clone()),
+        None,
+    );
+    controller
+        .run_resolved_model_step(
+            &adapter,
+            upgrade_request(&pack),
+            &pack,
+            &route,
+            "legacy-interleave",
+        )
+        .unwrap();
+    assert_eq!(sends.lock().unwrap().len(), 3);
+    assert!(controller
+        .run_resolved_upgrade_model_step(
+            primary_upgrade_candidate(&config, transport),
+            "step-upgrade-again",
+            |_| panic!("one upgrade per TaskRun"),
+            |_, _| panic!("one upgrade per TaskRun")
+        )
+        .is_err());
+    assert_eq!(sends.lock().unwrap().len(), 3);
+    assert_eq!(controller.task_run().attempts.len(), 2);
+}
+
+#[test]
+fn resolved_effect_upgrade_rejects_controller_identity_before_send_and_budget() {
+    use steerbox::adaptive_routing::EffectLevel;
+    for boundary in ["task", "goal", "loop", "objective"] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(true);
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let (pack, route) = resolved_fixture_with_boundary(
+            "wire-model",
+            "route-primary",
+            vec![],
+            "openai",
+            boundary,
+        );
+        let mut request = upgrade_request(&pack);
+        if boundary == "goal" {
+            request.goal_id = "other-goal".into();
+        }
+        if boundary == "loop" {
+            request.loop_run_id = "other-loop".into();
+        }
+        let candidate = config
+            .build_effect_bound_candidate(
+                "wire-model",
+                EffectLevel::Fast,
+                transport,
+                request,
+                pack,
+                route,
+            )
+            .unwrap();
+        let mut controller =
+            upgrade_controller(&directory, LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+                .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let before = controller.budget().clone();
+        assert!(controller
+            .run_resolved_upgrade_model_step(
+                candidate,
+                "step-upgrade",
+                |_| panic!("identity rejected before response"),
+                |_, _| panic!("identity rejected before resolution")
+            )
+            .is_err());
+        assert!(sends.lock().unwrap().is_empty(), "boundary: {boundary}");
+        assert_eq!(controller.budget(), &before);
+        assert!(controller.task_run().attempts[0]
+            .route_decision_id
+            .is_none());
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_rejects_each_child_boundary_before_second_send() {
+    use steerbox::adaptive_routing::{EffectLevel, QualityObservation};
+    for boundary in [
+        "auth",
+        "maximum",
+        "mapping",
+        "level",
+        "privacy",
+        "risk",
+        "task",
+        "prompt",
+        "policy",
+        "tool",
+        "context",
+        "objective",
+        "observation",
+    ] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(true);
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let mut child_config = config.clone();
+        if boundary == "auth" {
+            child_config.model_profiles[0].auth_ref = Some("env:SYNTHETIC_OTHER_REF".into());
+        }
+        if boundary == "maximum" {
+            child_config.model_profiles[0]
+                .effect
+                .as_mut()
+                .unwrap()
+                .maximum_level = Some(EffectLevel::Balanced);
+        }
+        if boundary == "mapping" {
+            use steerbox::provider_adapter::ReasoningEffort;
+            let effect = child_config.model_profiles[0].effect.as_mut().unwrap();
+            effect
+                .mapping
+                .insert(EffectLevel::Balanced, ReasoningEffort::High);
+            effect
+                .mapping
+                .insert(EffectLevel::Strong, ReasoningEffort::XHigh);
+        }
+        let primary = primary_upgrade_candidate(&config, transport.clone());
+        let mut controller =
+            upgrade_controller(&directory, LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+                .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let result = controller.run_resolved_upgrade_model_step(
+            primary,
+            "step-upgrade",
+            |_| QualityObservation {
+                low_quality: true,
+                ..QualityObservation::default()
+            },
+            |child_route, level| {
+                let (pack, route) = resolved_fixture_with_boundary(
+                    "wire-model",
+                    &child_route.route_decision_id,
+                    vec![],
+                    "openai",
+                    boundary,
+                );
+                Ok(child_config
+                    .build_effect_bound_candidate(
+                        "wire-model",
+                        if boundary == "level" {
+                            EffectLevel::Fast
+                        } else {
+                            level
+                        },
+                        transport,
+                        upgrade_request(&pack),
+                        pack,
+                        route,
+                    )
+                    .unwrap())
+            },
+        );
+        assert!(result.is_err(), "boundary: {boundary}");
+        assert_eq!(sends.lock().unwrap().len(), 1, "boundary: {boundary}");
+        assert_eq!(controller.task_run().attempts.len(), 1);
+        assert_eq!(controller.status(), steerbox::domain::LoopStatus::Failed);
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_preserves_strategy_approval_and_terminal_rejections() {
+    use steerbox::domain::{LoopStatus, RiskLevel};
+    use steerbox::task_features::{BlastRadius, ProfessionalDomain, TaskFeatures};
+    for state in ["approval", "completed", "paused", "cancelled"] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(true);
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let budget = LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4);
+        let mut controller = upgrade_controller(&directory, budget.clone())
+            .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let expected = match state {
+            "approval" => {
+                controller
+                    .select_strategy(
+                        TaskFeatures {
+                            estimated_steps: 1,
+                            uncertainty_level: 0.0,
+                            interdependency_count: 0,
+                            risk_level: RiskLevel::Low,
+                            reversible: false,
+                            blast_radius: BlastRadius::Local,
+                            domain: ProfessionalDomain::SoftwareDevelopment,
+                            requires_human_approval: false,
+                            max_budget_multiplier: 4.0,
+                        },
+                        &budget,
+                    )
+                    .unwrap();
+                LoopStatus::Running
+            }
+            "completed" => {
+                controller.complete().unwrap();
+                LoopStatus::Completed
+            }
+            _ => {
+                use steerbox::user_command_inbox::{CommandKind, UserCommand, UserCommandInbox};
+                let inbox = UserCommandInbox::open(directory.path.join("upgrade-commands.jsonl"));
+                inbox
+                    .submit(
+                        UserCommand::new(
+                            "state-command",
+                            "fixture-user",
+                            "project-model-audit",
+                            "goal-model-audit",
+                            "task-run-model-audit",
+                            "loop-model-audit",
+                            if state == "paused" {
+                                CommandKind::Pause
+                            } else {
+                                CommandKind::Cancel
+                            },
+                            "fixture-correlation",
+                            json!({}),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                controller = controller.with_command_inbox(inbox);
+                // The next invocation processes this safe-boundary command.
+                if state == "paused" {
+                    LoopStatus::Paused
+                } else {
+                    LoopStatus::Cancelled
+                }
+            }
+        };
+        let result = controller.run_resolved_upgrade_model_step(
+            primary_upgrade_candidate(&config, transport),
+            "step-upgrade",
+            |_| panic!("blocked state cannot evaluate"),
+            |_, _| panic!("blocked state cannot resolve"),
+        );
+        assert!(result.is_err(), "state: {state}");
+        assert_eq!(controller.status(), expected, "state: {state}");
+        assert!(sends.lock().unwrap().is_empty());
+        let events = EventLog::open(directory.events())
+            .unwrap()
+            .read_all()
+            .unwrap();
+        assert!(!events.iter().any(|event| event.event_type == "loop_failed"));
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_request_human_never_evaluates_or_upgrades() {
+    let directory = TestDirectory::new();
+    let config = effect_upgrade_config(true);
+    let transport = FakeTransport::with_decision_content(
+        json!({"decision":"request_human","summary":"host review needed"}).to_string(),
+    );
+    let sends = transport.sends.clone();
+    let mut controller = upgrade_controller(&directory, LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    assert_eq!(
+        controller
+            .run_resolved_upgrade_model_step(
+                primary_upgrade_candidate(&config, transport),
+                "step-upgrade",
+                |_| panic!("request-human is not host quality"),
+                |_, _| panic!("request-human cannot upgrade")
+            )
+            .unwrap(),
+        ModelDecision::RequestHuman
+    );
+    assert_eq!(sends.lock().unwrap().len(), 1);
+    assert_eq!(controller.task_run().attempts.len(), 1);
+}
+
+#[test]
+fn resolved_effect_upgrade_child_request_human_stops_without_quality_or_completion() {
+    use steerbox::adaptive_routing::{EffectLevel, QualityObservation};
+    let directory = TestDirectory::new();
+    let config = effect_upgrade_config(true);
+    let transport = SequenceTransport::new(vec![
+        openai_response(
+            json!({"decision":"complete_loop","summary":"fixture incomplete"}).to_string(),
+        ),
+        openai_response(
+            json!({"decision":"request_human","summary":"host review needed"}).to_string(),
+        ),
+    ]);
+    let sends = transport.sends.clone();
+    let (pack, route) = resolved_fixture_for("wire-model", "route-primary", vec![]);
+    let primary = config
+        .build_effect_bound_candidate(
+            "wire-model",
+            EffectLevel::Fast,
+            transport.clone(),
+            upgrade_request(&pack),
+            pack,
+            route,
+        )
+        .unwrap();
+    let mut controller = upgrade_controller(&directory, LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    let mut evaluations = 0;
+    let mut resolutions = 0;
+    let result = controller
+        .run_resolved_upgrade_model_step(
+            primary,
+            "step-upgrade",
+            |response| {
+                evaluations += 1;
+                assert_eq!(response.summary, "fixture incomplete");
+                QualityObservation {
+                    low_quality: true,
+                    ..QualityObservation::default()
+                }
+            },
+            |child_route, level| {
+                resolutions += 1;
+                assert_eq!(level, EffectLevel::Balanced);
+                let (pack, route) =
+                    resolved_fixture_for("wire-model", &child_route.route_decision_id, vec![]);
+                Ok(config
+                    .build_effect_bound_candidate(
+                        "wire-model",
+                        level,
+                        transport,
+                        upgrade_request(&pack),
+                        pack,
+                        route,
+                    )
+                    .unwrap())
+            },
+        )
+        .unwrap();
+    assert_eq!(result, ModelDecision::RequestHuman);
+    assert_eq!(sends.lock().unwrap().len(), 2);
+    assert_eq!(evaluations, 1);
+    assert_eq!(resolutions, 1);
+    assert_eq!(controller.task_run().attempts.len(), 2);
+    assert_ne!(controller.status(), steerbox::domain::LoopStatus::Completed);
+    let events = EventLog::open(directory.events())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "loop_completed"));
+}
+
+#[test]
+fn resolved_effect_upgrade_failure_closes_before_followup_send() {
+    use steerbox::adaptive_routing::QualityObservation;
+    struct FailCompleted;
+    impl ProgressSink for FailCompleted {
+        fn report(&mut self, event: ProgressEvent) -> std::io::Result<()> {
+            if event.subject == ProgressSubject::Model && event.status == ProgressStatus::Completed
+            {
+                return Err(std::io::Error::other("synthetic progress failure"));
+            }
+            Ok(())
+        }
+    }
+    for audit_failure in [false, true] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(true);
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let mut controller =
+            upgrade_controller(&directory, LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+                .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        if audit_failure {
+            fs::create_dir(directory.model_calls()).unwrap();
+        } else {
+            controller = controller.with_progress_sink(FailCompleted);
+        }
+        assert!(controller
+            .run_resolved_upgrade_model_step(
+                primary_upgrade_candidate(&config, transport.clone()),
+                "step-upgrade",
+                |_| QualityObservation {
+                    accepted: true,
+                    ..QualityObservation::default()
+                },
+                |_, _| panic!("audit/progress failure cannot upgrade")
+            )
+            .is_err());
+        assert_eq!(controller.status(), steerbox::domain::LoopStatus::Failed);
+        let sent = sends.lock().unwrap().len();
+        assert!(controller
+            .run_resolved_upgrade_model_step(
+                primary_upgrade_candidate(&config, transport),
+                "step-after-failure",
+                |_| panic!("failed controller cannot evaluate"),
+                |_, _| panic!("failed controller cannot resolve")
+            )
+            .is_err());
+        assert_eq!(sends.lock().unwrap().len(), sent);
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_route_and_host_audit_failures_close_before_retry() {
+    use steerbox::adaptive_routing::QualityObservation;
+    fn block_log(directory: &TestDirectory) {
+        fs::rename(
+            directory.events(),
+            directory.path.join("saved-events.jsonl"),
+        )
+        .unwrap();
+        fs::create_dir(directory.events()).unwrap();
+    }
+    for stage in ["primary_route", "child_route", "host_quality"] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(true);
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let mut controller =
+            upgrade_controller(&directory, LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+                .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        if stage == "primary_route" {
+            block_log(&directory);
+        }
+        assert!(controller
+            .run_resolved_upgrade_model_step(
+                primary_upgrade_candidate(&config, transport.clone()),
+                "step-upgrade",
+                |_| {
+                    if stage == "host_quality" {
+                        block_log(&directory);
+                    }
+                    QualityObservation {
+                        no_progress: true,
+                        ..QualityObservation::default()
+                    }
+                },
+                |child_route, level| {
+                    let (pack, route) =
+                        resolved_fixture_for("wire-model", &child_route.route_decision_id, vec![]);
+                    let child = config
+                        .build_effect_bound_candidate(
+                            "wire-model",
+                            level,
+                            transport.clone(),
+                            upgrade_request(&pack),
+                            pack,
+                            route,
+                        )
+                        .unwrap();
+                    block_log(&directory);
+                    Ok(child)
+                }
+            )
+            .is_err());
+        assert_eq!(controller.status(), steerbox::domain::LoopStatus::Failed);
+        let sent = sends.lock().unwrap().len();
+        assert_eq!(sent, usize::from(stage != "primary_route"));
+        assert!(controller
+            .run_resolved_upgrade_model_step(
+                primary_upgrade_candidate(&config, transport),
+                "retry-blocked",
+                |_| panic!("closed state cannot evaluate"),
+                |_, _| panic!("closed state cannot resolve")
+            )
+            .is_err());
+        assert_eq!(sends.lock().unwrap().len(), sent);
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_factory_rejects_profile_and_skipped_target() {
+    use steerbox::adaptive_routing::EffectLevel;
+    for boundary in ["provider", "endpoint", "model", "protocol", "skip"] {
+        let mut config = effect_upgrade_config(true);
+        if boundary == "provider" {
+            config.model_profiles[0].provider = "other-provider".into();
+        }
+        if boundary == "endpoint" {
+            config.model_profiles[0].endpoint = "https://other.example.test/v1".into();
+        }
+        if boundary == "model" {
+            config.model_profiles[0].model_id = "other-model".into();
+        }
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let (pack, route) = resolved_fixture_for_protocol(
+            "wire-model",
+            "route-primary",
+            vec![],
+            if boundary == "protocol" {
+                "anthropic-messages"
+            } else {
+                "openai"
+            },
+        );
+        assert!(
+            config
+                .build_effect_bound_candidate(
+                    "wire-model",
+                    if boundary == "skip" {
+                        EffectLevel::Strong
+                    } else {
+                        EffectLevel::Fast
+                    },
+                    transport,
+                    upgrade_request(&pack),
+                    pack,
+                    route
+                )
+                .is_err(),
+            "boundary: {boundary}"
+        );
+        assert!(sends.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_child_requires_acceptance_and_never_attempts_a_third_call() {
+    use steerbox::adaptive_routing::{EffectLevel, QualityObservation};
+    for child_quality in [
+        "accepted",
+        "low_quality",
+        "no_progress",
+        "empty",
+        "provider_failure",
+    ] {
+        let directory = TestDirectory::new();
+        let config = effect_upgrade_config(true);
+        let transport = SequenceTransport::new(if child_quality == "provider_failure" {
+            vec![openai_response(
+                json!({"decision":"complete_loop","summary":"first"}).to_string(),
+            )]
+        } else {
+            vec![
+                openai_response(json!({"decision":"complete_loop","summary":"first"}).to_string()),
+                openai_response(json!({"decision":"complete_loop","summary":"second"}).to_string()),
+            ]
+        });
+        let sends = transport.sends.clone();
+        let (pack, route) = resolved_fixture_for("wire-model", "route-primary", vec![]);
+        let primary = config
+            .build_effect_bound_candidate(
+                "wire-model",
+                EffectLevel::Fast,
+                transport.clone(),
+                upgrade_request(&pack),
+                pack,
+                route,
+            )
+            .unwrap();
+        let mut controller =
+            upgrade_controller(&directory, LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+                .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let mut evaluations = 0;
+        let result = controller.run_resolved_upgrade_model_step(
+            primary,
+            "step-upgrade",
+            |_| {
+                evaluations += 1;
+                if evaluations == 1 || child_quality == "low_quality" {
+                    QualityObservation {
+                        low_quality: true,
+                        ..QualityObservation::default()
+                    }
+                } else if child_quality == "no_progress" {
+                    QualityObservation {
+                        no_progress: true,
+                        ..QualityObservation::default()
+                    }
+                } else {
+                    QualityObservation {
+                        accepted: child_quality == "accepted",
+                        ..QualityObservation::default()
+                    }
+                }
+            },
+            |child_route, level| {
+                let (pack, route) =
+                    resolved_fixture_for("wire-model", &child_route.route_decision_id, vec![]);
+                Ok(config
+                    .build_effect_bound_candidate(
+                        "wire-model",
+                        level,
+                        transport,
+                        upgrade_request(&pack),
+                        pack,
+                        route,
+                    )
+                    .unwrap())
+            },
+        );
+        assert_eq!(
+            result.is_ok(),
+            child_quality == "accepted",
+            "quality: {child_quality}"
+        );
+        assert_eq!(
+            evaluations,
+            if child_quality == "provider_failure" {
+                1
+            } else {
+                2
+            }
+        );
+        assert_eq!(sends.lock().unwrap().len(), 2);
+        assert_eq!(controller.task_run().attempts.len(), 2);
+        assert_eq!(
+            controller.status(),
+            if child_quality == "accepted" {
+                steerbox::domain::LoopStatus::Completed
+            } else {
+                steerbox::domain::LoopStatus::Failed
+            }
+        );
+    }
+}
+
+#[test]
+fn resolved_effect_upgrade_changes_wire_and_preserves_attempt_lineage_and_budget() {
+    use steerbox::adaptive_routing::{EffectLevel, QualityObservation};
+    let directory = TestDirectory::new();
+    let config = effect_upgrade_config(true);
+    let (pack, route) = resolved_fixture_for("wire-model", "route-upgrade-primary", vec![]);
+    let transport = SequenceTransport::new(vec![
+        openai_response(r#"{"decision":"complete_loop","summary":"fixture incomplete"}"#.into()),
+        openai_response(r#"{"decision":"complete_loop","summary":"fixture done"}"#.into()),
+    ]);
+    let sends = transport.sends.clone();
+    let primary = config
+        .build_effect_bound_candidate(
+            "wire-model",
+            EffectLevel::Fast,
+            transport.clone(),
+            upgrade_request(&pack),
+            pack,
+            route,
+        )
+        .unwrap();
+    let mut controller = upgrade_controller(&directory, LoopBudget::new(2, 0, 2, 2, 0, 2, 2, 2))
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    let mut evaluations = 0;
+    let result = controller
+        .run_resolved_upgrade_model_step(
+            primary,
+            "step-upgrade",
+            |response| {
+                evaluations += 1;
+                if evaluations == 1 {
+                    assert_eq!(response.summary, "fixture incomplete");
+                    QualityObservation {
+                        no_progress: true,
+                        ..QualityObservation::default()
+                    }
+                } else {
+                    assert_eq!(response.summary, "fixture done");
+                    QualityObservation {
+                        accepted: true,
+                        ..QualityObservation::default()
+                    }
+                }
+            },
+            |child_route, level| {
+                assert_eq!(level, EffectLevel::Balanced);
+                let (pack, route) =
+                    resolved_fixture_for("wire-model", &child_route.route_decision_id, vec![]);
+                Ok(config
+                    .build_effect_bound_candidate(
+                        "wire-model",
+                        level,
+                        transport,
+                        upgrade_request(&pack),
+                        pack,
+                        route,
+                    )
+                    .unwrap())
+            },
+        )
+        .unwrap();
+    assert_eq!(result, ModelDecision::CompleteLoop);
+    assert_eq!(evaluations, 2);
+    let bodies = sends.lock().unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(
+        serde_json::from_str::<Value>(&bodies[0]).unwrap()["reasoning_effort"],
+        "low"
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&bodies[1]).unwrap()["reasoning_effort"],
+        "medium"
+    );
+    let attempts = &controller.task_run().attempts;
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[1].reason, steerbox::domain::AttemptReason::Upgrade);
+    assert_eq!(
+        attempts[1].parent_attempt_id.as_deref(),
+        Some(attempts[0].attempt_id.as_str())
+    );
+    assert!(attempts[0].finished_at.is_some());
+    assert!(!attempts[0].evidence_refs.is_empty());
+    assert!(attempts[0]
+        .evidence_refs
+        .iter()
+        .all(|reference| attempts[1].evidence_refs.contains(reference)));
+    assert_eq!(controller.budget().steps_used, 2);
+    assert_eq!(controller.budget().model_calls_used, 2);
+    assert_eq!(controller.budget().attempts_used, 2);
+    let records = ModelCallStore::open(directory.model_calls())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    assert_eq!(records.len(), 2);
+    assert_ne!(records[0].route_decision_id, records[1].route_decision_id);
+    assert_ne!(
+        records[0].resolved_prompt_pack_id,
+        records[1].resolved_prompt_pack_id
+    );
+    assert_ne!(records[0].input_context_hash, records[1].input_context_hash);
+    let events = EventLog::open(directory.events())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    let routes: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "model_route_decided")
+        .collect();
+    assert_eq!(routes.len(), 2);
+    for (index, attempt) in attempts.iter().enumerate() {
+        assert_eq!(
+            attempt.route_decision_id.as_ref(),
+            Some(&records[index].route_decision_id)
+        );
+        assert_eq!(
+            attempt.resolved_prompt_pack_id.as_ref(),
+            Some(&records[index].resolved_prompt_pack_id)
+        );
+        assert_eq!(
+            routes[index].payload["route_decision_id"],
+            records[index].route_decision_id
+        );
+        assert_eq!(
+            routes[index].attempt_id.as_deref(),
+            Some(attempt.attempt_id.as_str())
+        );
+        assert!(attempt
+            .evidence_refs
+            .iter()
+            .all(|reference| events.iter().any(|event| event.event_id == *reference)));
+    }
+    let query = steerbox::execution_query::ExecutionQuery::from_events(&events).unwrap();
+    let page = query
+        .events_page("loop-model-audit", 0, events.len())
+        .unwrap();
+    for event in page.events.iter().filter(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "model_quality_assessed" | "model_effect_upgraded"
+        )
+    }) {
+        assert_eq!(
+            event.surface,
+            steerbox::execution_query::ExecutionEventSurface::Current
+        );
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "model_quality_assessed"
+                && event.payload["evidence_kind"] == "host_quality")
+            .count(),
+        2
+    );
 }
 
 #[test]

@@ -1,7 +1,32 @@
 # 受约束的主动自适应模型路由与质量策略
 
 **日期**：2026-10-20
-**状态**：Phase 1 设计增量；纯状态契约、opt-in OpenAI-compatible 参数绑定、profile 固定效果装配及 resolved 失败安全证据投影已验证，完整自动运行链未完成
+**状态**：Phase 1 设计增量；已接入显式 opt-in、同授权边界的单次相邻效果升档库入口；生产 runner 接线、统一用量约束及 live 验收未完成
+
+## 2026-11-01 单次升档库入口
+
+`RuntimeConfig::build_effect_bound_candidate()` 校验 profile 并将目标档位绑定到具体 OpenAI-compatible adapter；`ReadOnlyLoopController::run_resolved_upgrade_model_step()` 在原 controller/TaskRun 内执行。候选不开放可变字段，不能用普通 adapter 自报标签代替真实 wire 参数绑定。
+
+宿主可在模型 profile 中明确开启以下配置（仅列 `effect`，不包含连接信息或凭据）：
+
+```json
+"effect": {
+  "selected_level": "fast",
+  "automatic_upgrade": true,
+  "maximum_level": "balanced",
+  "mapping": {"fast": "low", "balanced": "medium"}
+}
+```
+
+- 默认关闭。`automatic_upgrade=true` 与严格高于初始档位的 `maximum_level` 必须同时声明；初始档位至上限之间的相邻 mapping 必须完整且递增。一次执行最多相邻一档，即使上限更高也不跳级或连续升档。
+- 开启自动升档时，仅已解析成功、无工具动作的结果可交给受信任宿主 evaluator；只允许明确的 `LowQuality`/`NoProgress` 发起一次升档。首轮和 child 都须得到明确的质量接受才能完成；child 仍低质量或证据不足则停止，绝不发第三次请求。`RequestHuman` 沿既有人工介入语义返回，不代表 takeover 已实现。
+- 新建 child Attempt、RouteDecision、ResolvedPromptPack 和 ModelCall；父项失败证据保留，step/model/attempt 消耗累计。TaskRun 已有 Upgrade Attempt 时不能再取得升档机会。单次上限代替本入口的反复升降/冷却循环；此入口不调用纯状态机的多次 adaptation/cooldown 流程。
+- 始终保持同一 model/provider/endpoint/auth_ref、mapping/上限及 prompt/policy/tool/context/privacy/risk 边界；先核验当前 goal/task/loop 和 `allowed_models`，再发请求。parser/provider/action/安全/脱敏/verification 错误不能借升档重调。
+- 首轮和 child 的 route 在发送前落盘并绑定 Attempt。质量、升档和耗尽停止事件均为 metadata-only，可由 execution query 查看；审计或进度输出故障先收敛运行状态，不允许再次发送，也不补造未落盘 evidence。
+
+这是 transport 注入式库入口，不是 CLI 开关。普通配置 HTTP factory、foreground 和 bounded Markdown 装配遇到 `automatic_upgrade=true` 明确拒绝，不能静默降为固定档位。生产 runner/CLI 自动升档、统一 usage/latency/truncation/no-progress 采集、token/金额总预算、Anthropic native 效果适配和真实 provider 验收仍待完成。既有次数预算不等于计费预算。下方 2026-10-31/2026-10-20 记录为对应历史切片，不覆盖本节的新入口。
+
+验证入口：`tests/config_provider_binding.rs` 与 `tests/model_call_controller_audit.rs` 的 `resolved_effect_upgrade` 测试；本轮最终全量结果在验证计划同步，不把源码审核 PASS 当作测试 PASS。
 
 ## 2026-10-31 实现边界
 

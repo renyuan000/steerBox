@@ -116,6 +116,9 @@ impl QualityAssessment {
                 QualitySignal::LatencyBudgetExceeded,
             );
         }
+        if observation.low_quality {
+            return Self::new(QualityStatus::NeedsUpgrade, QualitySignal::LowQuality);
+        }
         if observation.no_progress {
             return Self::new(QualityStatus::NeedsUpgrade, QualitySignal::NoProgress);
         }
@@ -141,6 +144,8 @@ pub struct QualityObservation {
     pub output_truncated: bool,
     pub latency_budget_exceeded: bool,
     pub usage_budget_exceeded: bool,
+    #[serde(default)]
+    pub low_quality: bool,
     pub no_progress: bool,
     pub security_boundary: bool,
 }

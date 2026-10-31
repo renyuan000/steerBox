@@ -143,6 +143,78 @@ fn declared_sparse_effect_round_trips_and_builds_without_resolving_credentials()
 }
 
 #[test]
+fn automatic_effect_upgrade_is_explicit_bounded_and_defaults_off() {
+    let fixed_effect = serde_json::json!({
+        "selected_level": "fast",
+        "mapping": {"fast": "low", "balanced": "medium", "strong": "high"}
+    });
+    let fixed =
+        RuntimeConfig::from_json_str(&encoded_with_effect(fixed_effect.clone()).to_string())
+            .unwrap();
+    assert!(
+        !fixed.model_profiles[0]
+            .effect
+            .as_ref()
+            .unwrap()
+            .automatic_upgrade
+    );
+    assert_eq!(
+        serde_json::to_value(&fixed).unwrap()["model_profiles"][0]["effect"],
+        fixed_effect
+    );
+
+    let opted_in_effect = serde_json::json!({
+        "selected_level": "fast",
+        "maximum_level": "strong",
+        "automatic_upgrade": true,
+        "mapping": {"fast": "low", "balanced": "medium", "strong": "high"}
+    });
+    let opted_in =
+        RuntimeConfig::from_json_str(&encoded_with_effect(opted_in_effect.clone()).to_string())
+            .expect("bounded explicit upgrade parses");
+    assert_eq!(
+        serde_json::to_value(&opted_in).unwrap()["model_profiles"][0]["effect"],
+        opted_in_effect
+    );
+    assert!(matches!(
+        opted_in.build_http_provider_adapter("logical-model", NeverCalledResolver::default()),
+        Err(ConfigError::InvalidModelEffect { .. })
+    ));
+
+    for invalid in [
+        serde_json::json!({
+            "selected_level":"fast", "automatic_upgrade":true,
+            "mapping":{"fast":"low","balanced":"medium"}
+        }),
+        serde_json::json!({
+            "selected_level":"balanced", "maximum_level":"fast", "automatic_upgrade":true,
+            "mapping":{"fast":"low","balanced":"medium"}
+        }),
+        serde_json::json!({
+            "selected_level":"strong", "maximum_level":"x_high", "automatic_upgrade":true,
+            "mapping":{"strong":"high"}
+        }),
+        serde_json::json!({
+            "selected_level":"fast", "maximum_level":"strong", "automatic_upgrade":true,
+            "mapping":{"fast":"low","strong":"high"}
+        }),
+        serde_json::json!({
+            "selected_level":"strong", "maximum_level":"strong", "automatic_upgrade":true,
+            "mapping":{"strong":"high"}
+        }),
+        serde_json::json!({
+            "selected_level":"fast", "maximum_level":"strong", "automatic_upgrade":false,
+            "mapping":{"fast":"low","balanced":"medium","strong":"high"}
+        }),
+    ] {
+        assert!(matches!(
+            RuntimeConfig::from_json_str(&encoded_with_effect(invalid).to_string()),
+            Err(ConfigError::InvalidModelEffect { .. })
+        ));
+    }
+}
+
+#[test]
 fn invalid_effect_declarations_fail_closed_with_effect_errors() {
     for effect in [
         serde_json::json!({"selected_level":"fast", "mapping":{}}),

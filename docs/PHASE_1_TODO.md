@@ -15,6 +15,23 @@
 并用软件开发智能体垂直切片验证 goal、loop、event、checkpoint、policy、side-effect、trace 是否能协同工作。
 ```
 
+## 当前收口顺序（2026-10-31）
+
+Phase 1 尚未完成。以下按既有 Scope、TODO 和 Validation Plan 整理交付任务包，不是“仅剩六个功能”，也不以未勾选行数计算完成百分比；每包内部仍须按实现证据逐项验收。
+
+| 顺序 | 任务包 | 收口检查点 |
+|---|---|---|
+| 1 | 模型连接型开发与自适应审计 | 先完成显式 opt-in 单次相邻升档的真实 wire/Attempt/Route/Prompt/Call 链；安全拒绝不重调、预算不重置；随后补 token/成本约束与统一测量、生产入口和获准 live 验收 |
+| 2 | Task 命令与投影 | 合法迁移、版本冲突、幂等及 retry/resume/fork 父链；BoardProjection 可由事实事件重建 |
+| 3 | 最小恢复协调 | 独立进程恢复 TaskRun/Attempt/位置与累计预算；不重放已完成 mutation；未知副作用阻断，文件 restore 不代替任务恢复 |
+| 4 | 人类接管与 revision | takeover 后停止自动执行；用户纠偏使旧 plan 失效；暂停、恢复和新 revision 不补预算、不解除审批 |
+| 5 | 目标对齐、漂移与无进展 | 真实 step 关联决策/事件；重复动作、计划及失败不能借新 Attempt 绕过；每条路径有完成、失败或停止结果 |
+| 6 | 失败工具到 recipe candidate | 关联真实 tool call/source event，生成可审查但不自动生效的候选；完成 baseline recipe 与完整 summary/evidence 反查验收 |
+
+最终仍须整体复核 V0–V17 及已纳入的自适应门禁，不能把单包测试通过称为 Phase 1 完成。通用文件/Bash 能力仍按下方原待办推进，不用 bounded Markdown 冒充通用工具执行。
+
+后续新增的前台低价值上下文/compact 摘要投影清理，见 `MODEL_PROMPT_AND_CHECKPOINT_POLICY.md` §7.1；开发备份 provenance/审核后清理，见 `DEVELOPMENT_BACKUP_POLICY.md`。两者已记录但自动工具尚未实现，不替换当前主线，也不增加本阶段门槛。
+
 ## 任务分组
 
 ### P0. 开工前整理
@@ -271,7 +288,7 @@ Memory 最小实现：
 - [x] 定义 `EffectLevel`（fast/balanced/strong/x_high）、`QualityAssessment` 和 `AdaptationDecision` 的版本化契约（`src/adaptive_routing.rs`；focused contract tests）
 - [ ] 将结构化输出、verification、工具结果、超时、截断、usage、延迟和无进展计数接入质量评估（`QualityObservation` 与 fail-closed `QualityAssessment::from_observation()` 已完成；普通/resolved model step 已写入 metadata-only `model_quality_assessed`，usage/latency/truncation/no-progress 的统一运行时填充仍待完成）
 - [x] 将 profile 显式固定效果配置接入配置 HTTP factory、foreground 和 bounded Markdown 共用装配 helper（配置与公开变异重验；四档/no-effect 请求 body/hash、非法 Markdown 零执行、Anthropic 明确拒绝已有回归；仅在测试模块向生产共用 helper 注入 loopback transport 验证 HTTP 出站，生产 HTTPS 门禁不变，不代表 live 或自动升级）
-- [ ] 实现当前 TaskRun 内的单级效果升级，受总预算、最大 Attempt、最大重试和冷却窗口约束（`BoundedAdaptationController` 纯状态 assess/apply/cooldown 已实现，并在 apply 前复核边界；底层 OpenAI-compatible 参数绑定及 profile 固定效果三入口装配已实现。实际新 Attempt/RouteDecision、质量驱动重调与审计闭环未完成，故本项不关闭；结构化解析失败须先与动作安全/脱敏拒绝分类，安全阻断不得升级重调）
+- [ ] 实现当前 TaskRun 内的单级效果升级，受总预算、最大 Attempt、最大重试和冷却窗口约束（显式 opt-in 的 `run_resolved_upgrade_model_step()` 库入口已接入：宿主质量驱动单次相邻升档、真实新 Attempt/Route/PromptPack/Call、父证据保留、累计次数预算及 child 再验收；一次上限不允许反复升降，无额外循环。生产 runner/CLI、token/金额预算和统一测量仍未接线，故整项不关闭；安全/动作/脱敏及解析拒绝不升级重调）
 - [x] 实现 retryable provider failure 的新 Attempt／新 RouteDecision／失败证据保留；禁止静默覆盖原 Attempt（普通 routed 与 resolved routed controller 已接入 `plan_adaptation()` 门禁，并保留父 Attempt 失败 evidence；完整质量驱动 controller 仍待完成）
 - [x] 校验自适应决策不能改变 provider allowlist、endpoint、auth_ref、隐私等级、工具权限和安全底线（契约决策不携带这些字段；route planner 只返回已声明 fallback）
 - [ ] 对低质量、不可重试、安全阻断、预算耗尽分别生成可解释的 metadata-only 审计事件（当前 routed retryable fallback 已有 `model_route_fallback` 与 `model_adaptation_stopped`；NeedsUpgrade、Blocked、Failed 的统一自适应事件仍待完成）

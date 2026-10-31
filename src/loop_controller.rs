@@ -223,6 +223,7 @@ pub enum ResolvedModelLoopStopReason {
 struct ResolvedStepOutcome {
     decision: ModelDecision,
     action_execution: Option<ModelActionExecution>,
+    response: crate::model_adapter::ModelResponse,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1413,6 +1414,266 @@ impl ReadOnlyLoopController {
             .map(|outcome| outcome.decision)
     }
 
+    /// Opt-in, pure-model effect upgrade; the existing fallback path is unchanged.
+    pub fn run_resolved_upgrade_model_step<E, F>(
+        &mut self,
+        candidate: crate::runtime_config::EffectBoundResolvedCandidate,
+        step_id: impl Into<String>,
+        evaluate: E,
+        resolve_upgrade: F,
+    ) -> Result<ModelDecision, LoopControllerError>
+    where
+        E: FnMut(&crate::model_adapter::ModelResponse) -> QualityObservation,
+        F: FnOnce(
+            &RouteDecision,
+            EffectLevel,
+        ) -> Result<
+            crate::runtime_config::EffectBoundResolvedCandidate,
+            LoopControllerError,
+        >,
+    {
+        // Approval, pause and terminal rejections precede the fail-closed
+        // invocation boundary; they must not turn a waiting run into failure.
+        self.prepare_action()?;
+        let result = self.run_resolved_upgrade_model_step_inner(
+            candidate,
+            step_id.into(),
+            evaluate,
+            resolve_upgrade,
+        );
+        if result.is_err() {
+            // State closure precedes the loop_failed append, so an audit or
+            // progress failure cannot leave another invocation able to send.
+            self.close_failed_routed_run()?;
+        }
+        result
+    }
+
+    fn run_resolved_upgrade_model_step_inner<E, F>(
+        &mut self,
+        candidate: crate::runtime_config::EffectBoundResolvedCandidate,
+        step_id: String,
+        mut evaluate: E,
+        resolve_upgrade: F,
+    ) -> Result<ModelDecision, LoopControllerError>
+    where
+        E: FnMut(&crate::model_adapter::ModelResponse) -> QualityObservation,
+        F: FnOnce(
+            &RouteDecision,
+            EffectLevel,
+        ) -> Result<
+            crate::runtime_config::EffectBoundResolvedCandidate,
+            LoopControllerError,
+        >,
+    {
+        if candidate.route.task_id != self.task_run.task_id
+            || candidate.pack.metadata().task_id != self.task_run.task_id
+            || candidate.request.goal_id != self.goal.goal_id
+            || candidate.request.loop_run_id != self.loop_run.loop_run_id
+            || candidate.request.objective != self.goal.objective
+            || candidate.pack.objective() != self.goal.objective
+        {
+            return Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::ResolvedBindingMismatch {
+                    field: "upgrade_controller_identity",
+                },
+            ));
+        }
+        if !self.goal.allowed_models.is_empty()
+            && !self
+                .goal
+                .allowed_models
+                .contains(&candidate.request.model_id)
+        {
+            return Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::ResolvedBindingMismatch {
+                    field: "upgrade_model_not_allowed",
+                },
+            ));
+        }
+        if self
+            .task_run
+            .attempts
+            .iter()
+            .any(|attempt| attempt.reason == AttemptReason::Upgrade)
+        {
+            return Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::ResolvedBindingMismatch {
+                    field: "upgrade_already_used",
+                },
+            ));
+        }
+        if candidate.level != candidate.binding.selected_level {
+            return Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::ResolvedBindingMismatch {
+                    field: "initial_effect_level",
+                },
+            ));
+        }
+        self.record_effect_route(&candidate.route, &candidate.pack)?;
+        let first = self.run_resolved_model_step_controlled(
+            candidate.adapter.as_ref(),
+            candidate.request.clone(),
+            &candidate.pack,
+            &candidate.route,
+            step_id.clone(),
+            None,
+            true,
+            false,
+        )?;
+        if !candidate.automatic_upgrade || first.decision == ModelDecision::RequestHuman {
+            if first.decision == ModelDecision::CompleteLoop {
+                self.complete()?;
+            }
+            return Ok(first.decision);
+        }
+        let observation = evaluate(&first.response);
+        let assessment = self.assess_upgrade_host_quality(
+            &step_id,
+            &candidate.route.route_decision_id,
+            observation,
+        )?;
+        if matches!(
+            assessment.status,
+            QualityStatus::Verified | QualityStatus::Acceptable
+        ) {
+            if first.decision == ModelDecision::CompleteLoop {
+                self.complete()?;
+            }
+            return Ok(first.decision);
+        }
+        if assessment.status != QualityStatus::NeedsUpgrade
+            || !matches!(
+                assessment.signal,
+                QualitySignal::LowQuality | QualitySignal::NoProgress
+            )
+        {
+            return Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::ResolvedBindingMismatch {
+                    field: "upgrade_quality_not_accepted",
+                },
+            ));
+        }
+        for (used, maximum, kind) in [
+            (
+                self.budget.steps_used,
+                self.budget.max_steps,
+                BudgetKind::Steps,
+            ),
+            (
+                self.budget.model_calls_used,
+                self.budget.max_model_calls,
+                BudgetKind::ModelCalls,
+            ),
+            (
+                self.budget.attempts_used,
+                self.budget.max_attempts,
+                BudgetKind::Attempts,
+            ),
+        ] {
+            if used >= maximum {
+                return Err(LoopControllerError::BudgetExhausted(kind));
+            }
+        }
+        let target = candidate
+            .level
+            .next()
+            .filter(|target| *target <= candidate.binding.maximum_level)
+            .ok_or(LoopControllerError::ModelAdapter(
+                ModelAdapterError::ResolvedBindingMismatch {
+                    field: "upgrade_effect_limit",
+                },
+            ))?;
+        let mut child_route = candidate.route.clone();
+        child_route.route_decision_id = format!("{}:upgrade:1", candidate.route.route_decision_id);
+        let child = resolve_upgrade(&child_route, target).and_then(|child| {
+            validate_effect_upgrade_candidate(&candidate, &child, &child_route, target)?;
+            Ok(child)
+        });
+        let mut child = child?;
+        let parent_id = self
+            .task_run
+            .current_attempt_id
+            .clone()
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound("current_attempt_id".into()))?;
+        let parent = self
+            .task_run
+            .attempt(&parent_id)
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound(parent_id.clone()))?;
+        let parent_refs = parent.evidence_refs.clone();
+        let parent_artifacts = parent.artifact_refs.clone();
+        self.task_run.finish_attempt(
+            &parent_id,
+            AttemptStatus::Failed,
+            "host_quality_needs_upgrade",
+            parent_artifacts,
+            parent_refs.clone(),
+        )?;
+        let attempt = self.task_run.start_attempt(
+            format!("{}:attempt:upgrade:1", self.loop_run.loop_run_id),
+            AttemptReason::Upgrade,
+            Some(parent_id),
+        )?;
+        if let Some(child_attempt) = self
+            .task_run
+            .attempts
+            .iter_mut()
+            .find(|item| item.attempt_id == attempt.attempt_id)
+        {
+            child_attempt.evidence_refs = parent_refs;
+        }
+        self.budget = self.task_run.budget.clone();
+        self.record_effect_route(&child.route, &child.pack)?;
+        self.append_model_event(
+            "model_effect_upgraded",
+            &format!("{step_id}:upgrade:1"),
+            json!({"from_effect_level": candidate.level, "to_effect_level": target,
+                "from_route_decision_id": candidate.route.route_decision_id,
+                "to_route_decision_id": child.route.route_decision_id,
+                "attempt_no": attempt.attempt_no, "signal": assessment.signal}),
+        )?;
+        let child_step = format!("{step_id}:upgrade:1");
+        child.request.step_id = child_step.clone();
+        let outcome = self.run_resolved_model_step_controlled(
+            child.adapter.as_ref(),
+            child.request,
+            &child.pack,
+            &child.route,
+            child_step.clone(),
+            None,
+            false,
+            false,
+        )?;
+        if outcome.decision == ModelDecision::RequestHuman {
+            return Ok(outcome.decision);
+        }
+        let assessment = self.assess_upgrade_host_quality(
+            &child_step,
+            &child.route.route_decision_id,
+            evaluate(&outcome.response),
+        )?;
+        if !matches!(
+            assessment.status,
+            QualityStatus::Verified | QualityStatus::Acceptable
+        ) {
+            self.append_model_event(
+                "model_adaptation_stopped",
+                &format!("{child_step}:upgrade_exhausted"),
+                json!({"route_decision_id": child.route.route_decision_id,
+                    "action": "stop", "reason": "upgrade_exhausted", "signal": assessment.signal}),
+            )?;
+            return Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::ResolvedBindingMismatch {
+                    field: "upgrade_exhausted",
+                },
+            ));
+        }
+        if outcome.decision == ModelDecision::CompleteLoop {
+            self.complete()?;
+        }
+        Ok(outcome.decision)
+    }
+
     /// Run a resolved route with a bounded, sequential provider fallback.
     /// Each candidate is resolved independently, and fallback is entered only
     /// for retryable provider-invocation failures before any model action.
@@ -1843,6 +2104,30 @@ impl ReadOnlyLoopController {
         step_id: impl Into<String>,
         action_runtime: Option<ResolvedModelActionRuntime<'_>>,
         check_no_progress: bool,
+    ) -> Result<ResolvedStepOutcome, LoopControllerError> {
+        self.run_resolved_model_step_controlled(
+            adapter,
+            request,
+            pack,
+            route,
+            step_id,
+            action_runtime,
+            check_no_progress,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_resolved_model_step_controlled<A: ResolvedModelAdapter + ?Sized>(
+        &mut self,
+        adapter: &A,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+        route: &RouteDecision,
+        step_id: impl Into<String>,
+        action_runtime: Option<ResolvedModelActionRuntime<'_>>,
+        check_no_progress: bool,
+        complete_loop: bool,
     ) -> Result<ResolvedStepOutcome, LoopControllerError> {
         let store = self
             .model_call_store
@@ -2330,6 +2615,10 @@ impl ReadOnlyLoopController {
             Some(model_decision_progress_summary(decision)),
             None,
         )?;
+        let response = crate::model_adapter::ModelResponse {
+            decision,
+            summary: resolved.response.summary.clone(),
+        };
         step.complete(resolved.response.summary);
         append_step_event(
             &mut self.event_log,
@@ -2348,12 +2637,13 @@ impl ReadOnlyLoopController {
             Some("step completed"),
             None,
         )?;
-        if decision == ModelDecision::CompleteLoop {
+        if complete_loop && decision == ModelDecision::CompleteLoop {
             self.complete()?;
         }
         Ok(ResolvedStepOutcome {
             decision,
             action_execution,
+            response,
         })
     }
 
@@ -2919,7 +3209,7 @@ impl ReadOnlyLoopController {
                 &attempt_id,
                 AttemptStatus::Failed,
                 "model_step_failed",
-                Vec::new(),
+                attempt.artifact_refs.clone(),
                 attempt.evidence_refs.clone(),
             )?;
         }
@@ -3788,6 +4078,41 @@ impl ReadOnlyLoopController {
         Ok(())
     }
 
+    fn assess_upgrade_host_quality(
+        &mut self,
+        step_id: &str,
+        route_decision_id: &str,
+        observation: QualityObservation,
+    ) -> Result<QualityAssessment, LoopControllerError> {
+        let assessment = QualityAssessment::from_observation(observation);
+        self.append_quality_assessment(
+            &format!("{step_id}:host"),
+            Some(route_decision_id),
+            assessment.clone(),
+            "host_quality",
+        )?;
+        // Pure-model quality cannot grant tool, verification, provider or
+        // security failures authority to upgrade or accept a response.
+        if observation.security_boundary
+            || observation.provider_timeout
+            || observation.provider_unavailable
+            || observation.usage_budget_exceeded
+            || observation.structured_output_valid == Some(false)
+            || observation.verification_failed
+            || observation.verification_passed
+            || observation.tool_result_failed
+            || observation.output_truncated
+            || observation.latency_budget_exceeded
+        {
+            return Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::ResolvedBindingMismatch {
+                    field: "upgrade_observation",
+                },
+            ));
+        }
+        Ok(assessment)
+    }
+
     fn append_quality_assessment(
         &mut self,
         step_id: &str,
@@ -3843,6 +4168,8 @@ impl ReadOnlyLoopController {
                 | "model_call_failed"
                 | "model_call_completed"
                 | "model_quality_assessed"
+                | "model_effect_upgraded"
+                | "model_adaptation_stopped"
                 | "loop_budget_exhausted"
                 | "no_progress_detected"
                 | "loop_failed"
@@ -3898,6 +4225,30 @@ impl ReadOnlyLoopController {
         self.task_run.budget = self.budget.clone();
         self.task_run.heartbeat_at = Some(chrono::Utc::now().to_rfc3339());
         self.task_run.object_version += 1;
+    }
+
+    fn record_effect_route(
+        &mut self,
+        route: &RouteDecision,
+        pack: &ResolvedPromptPack,
+    ) -> Result<(), LoopControllerError> {
+        let payload = serde_json::to_value(route)
+            .map_err(|error| LoopControllerError::RouteDecisionSerialization(error.to_string()))?;
+        self.bind_current_attempt_route(route)?;
+        let attempt_id = self
+            .task_run
+            .current_attempt_id
+            .as_deref()
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound("current_attempt_id".into()))?;
+        let attempt = self
+            .task_run
+            .attempts
+            .iter_mut()
+            .find(|attempt| attempt.attempt_id == attempt_id)
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound(attempt_id.into()))?;
+        attempt.resolved_prompt_pack_id = Some(pack.metadata().prompt_pack_id.clone());
+        self.append_model_event("model_route_decided", &route.route_decision_id, payload)?;
+        Ok(())
     }
 
     fn bind_current_attempt_route(
@@ -4245,6 +4596,48 @@ fn retryable_model_error_class(error: &LoopControllerError) -> &'static str {
         },
         _ => "non_retryable",
     }
+}
+
+fn validate_effect_upgrade_candidate(
+    parent: &crate::runtime_config::EffectBoundResolvedCandidate,
+    child: &crate::runtime_config::EffectBoundResolvedCandidate,
+    expected_route: &RouteDecision,
+    target: EffectLevel,
+) -> Result<(), LoopControllerError> {
+    let mismatch = || {
+        LoopControllerError::ModelAdapter(ModelAdapterError::ResolvedBindingMismatch {
+            field: "upgrade_boundary",
+        })
+    };
+    // These bindings are minted by the profile factory and include auth_ref
+    // only for in-memory equality. They must never enter logs or fingerprints.
+    if child.binding != parent.binding
+        || !child.automatic_upgrade
+        || child.level != target
+        || &child.route != expected_route
+        || child.request.model_id != parent.request.model_id
+        || child.request.goal_id != parent.request.goal_id
+        || child.request.loop_run_id != parent.request.loop_run_id
+        || child.request.objective != parent.request.objective
+        || child.request.observation != parent.request.observation
+        || child.pack.endpoint_base_url() != parent.pack.endpoint_base_url()
+        || child.pack.model_name() != parent.pack.model_name()
+        || child.pack.metadata().prompt_pack_id == parent.pack.metadata().prompt_pack_id
+    {
+        return Err(mismatch());
+    }
+    let mut child_metadata = child.pack.metadata().clone();
+    let parent_metadata = parent.pack.metadata();
+    child_metadata.prompt_pack_id = parent_metadata.prompt_pack_id.clone();
+    child_metadata.route_decision_id = parent_metadata.route_decision_id.clone();
+    child_metadata.created_at = parent_metadata.created_at.clone();
+    child_metadata.resolution_reason = parent_metadata.resolution_reason.clone();
+    // Includes policy/tool/context hashes, every prompt/skill version, output
+    // contract, rendered message hash, provider/model/endpoint/protocol and role.
+    if &child_metadata != parent_metadata {
+        return Err(mismatch());
+    }
+    Ok(())
 }
 
 fn validate_resolved_candidate(

@@ -1,3 +1,4 @@
+use crate::adaptive_routing::EffectLevel;
 use crate::model_adapter::{
     DecisionOutputRejection, ModelAdapter, ModelAdapterError, ModelDecision, ModelRequest,
     ModelResponse, ModelResponseWithAction, DECISION_SYSTEM_PROMPT,
@@ -5,7 +6,7 @@ use crate::model_adapter::{
 use crate::model_contracts::ModelActionEnvelope;
 use crate::provider_adapter::{
     OpenAiCompatibleAdapter, ProviderMessage, ProviderRequest, ProviderResponse,
-    ProviderStreamEvent, ProviderTransport,
+    ProviderStreamEvent, ProviderTransport, ReasoningEffort,
 };
 use crate::redaction::Redactor;
 use crate::resolved_prompt::ResolvedPromptPack;
@@ -140,6 +141,49 @@ pub trait ResolvedModelAdapter {
         request: ModelRequest,
         pack: &ResolvedPromptPack,
     ) -> Result<ResolvedModelResponseWithAction, ResolvedCallFailure>;
+}
+
+/// Opaque binding minted only by the runtime profile factory after it applies
+/// the declared effect policy to the concrete OpenAI-compatible adapter.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct EffectProfileBinding {
+    pub(crate) provider_id: String,
+    pub(crate) endpoint: String,
+    pub(crate) model_id: String,
+    pub(crate) auth_ref: Option<String>,
+    pub(crate) selected_level: EffectLevel,
+    pub(crate) maximum_level: EffectLevel,
+    pub(crate) mapping: std::collections::BTreeMap<EffectLevel, ReasoningEffort>,
+}
+
+/// A profile-factory-created adapter whose private binding cannot be supplied
+/// or altered by a resolver closure.
+pub struct EffectBoundResolvedAdapter<T: ProviderTransport> {
+    inner: ProviderModelAdapter<T>,
+    binding: EffectProfileBinding,
+}
+
+impl<T: ProviderTransport> EffectBoundResolvedAdapter<T> {
+    pub(crate) fn from_profile(
+        inner: ProviderModelAdapter<T>,
+        binding: EffectProfileBinding,
+    ) -> Self {
+        Self { inner, binding }
+    }
+
+    pub(crate) fn binding(&self) -> &EffectProfileBinding {
+        &self.binding
+    }
+}
+
+impl<T: ProviderTransport> ResolvedModelAdapter for EffectBoundResolvedAdapter<T> {
+    fn complete_resolved_with_action(
+        &self,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+    ) -> Result<ResolvedModelResponseWithAction, ResolvedCallFailure> {
+        self.inner.complete_resolved_with_action(request, pack)
+    }
 }
 
 impl fmt::Debug for ResolvedModelResponse {

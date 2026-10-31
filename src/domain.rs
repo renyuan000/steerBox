@@ -639,6 +639,7 @@ pub enum AttemptReason {
     Initial,
     Retry,
     Fallback,
+    Upgrade,
     Resume,
     Fork,
 }

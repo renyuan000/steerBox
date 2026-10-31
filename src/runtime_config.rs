@@ -1,11 +1,16 @@
 use crate::adaptive_routing::EffectLevel;
 use crate::anthropic_adapter::{AnthropicAdapter, AnthropicTransport};
 use crate::http_transport::{CredentialResolver, HttpAnthropicTransport, HttpProviderTransport};
+use crate::model_adapter::ModelRequest;
+use crate::model_contracts::RouteDecision;
 use crate::model_registry::{contains_url_authentication_material, is_opaque_auth_ref};
 use crate::provider_adapter::{
     ModelEffectPolicy, OpenAiCompatibleAdapter, ProviderTransport, ReasoningEffort,
 };
-use crate::provider_model_adapter::ProviderModelAdapter;
+use crate::provider_model_adapter::{
+    EffectBoundResolvedAdapter, EffectProfileBinding, ProviderModelAdapter, ResolvedModelAdapter,
+};
+use crate::resolved_prompt::ResolvedPromptPack;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -81,13 +86,34 @@ pub struct ModelProfileConfig {
     pub effect: Option<ModelEffectConfig>,
 }
 
-/// Fixed effect selection only; it does not enable automatic adaptation.
+/// Effect selection and the optional, explicitly enabled task-local upgrade bound.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelEffectConfig {
     pub selected_level: EffectLevel,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub automatic_upgrade: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum_level: Option<EffectLevel>,
     #[serde(deserialize_with = "deserialize_effect_mapping")]
     pub mapping: BTreeMap<EffectLevel, ReasoningEffort>,
+}
+
+/// Can only be built by RuntimeConfig after validating the profile and binding
+/// the requested effect to the actual provider adapter. No mutable/public
+/// fields or deserialization path can replace its authorization boundary.
+pub struct EffectBoundResolvedCandidate {
+    pub(crate) adapter: Box<dyn ResolvedModelAdapter>,
+    pub(crate) request: ModelRequest,
+    pub(crate) pack: ResolvedPromptPack,
+    pub(crate) route: RouteDecision,
+    pub(crate) binding: EffectProfileBinding,
+    pub(crate) automatic_upgrade: bool,
+    pub(crate) level: EffectLevel,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn deserialize_effect_mapping<'de, D>(
@@ -188,6 +214,36 @@ impl ModelProfileConfig {
                 reason: "selected effect level is not declared",
             });
         }
+        if effect.automatic_upgrade != effect.maximum_level.is_some() {
+            return Err(ConfigError::InvalidModelEffect {
+                reason: "automatic upgrade requires an explicit maximum effect level",
+            });
+        }
+        let maximum_level = effect.maximum_level.unwrap_or(effect.selected_level);
+        if maximum_level < effect.selected_level {
+            return Err(ConfigError::InvalidModelEffect {
+                reason: "maximum effect level must not be below selected level",
+            });
+        }
+        if effect.automatic_upgrade {
+            if maximum_level == effect.selected_level {
+                return Err(ConfigError::InvalidModelEffect {
+                    reason: "automatic upgrade maximum must allow at least one adjacent level",
+                });
+            }
+            let mut level = effect.selected_level;
+            while let Some(next) = level.next() {
+                if next > maximum_level {
+                    break;
+                }
+                if !effect.mapping.contains_key(&next) {
+                    return Err(ConfigError::InvalidModelEffect {
+                        reason: "automatic upgrade requires every adjacent declared level",
+                    });
+                }
+                level = next;
+            }
+        }
         Ok(Some((policy, effect.selected_level)))
     }
 
@@ -199,6 +255,15 @@ impl ModelProfileConfig {
         &self,
         transport: T,
     ) -> Result<ProviderModelAdapter<T>, ConfigError> {
+        if self
+            .effect
+            .as_ref()
+            .is_some_and(|effect| effect.automatic_upgrade)
+        {
+            return Err(ConfigError::InvalidModelEffect {
+                reason: "automatic upgrade requires the explicit resolved upgrade API",
+            });
+        }
         let policy = self.effect_policy()?;
         let mut provider = OpenAiCompatibleAdapter::new(&self.provider, &self.endpoint, transport);
         if let Some((policy, selected_level)) = policy {
@@ -216,6 +281,98 @@ impl ModelProfileConfig {
 }
 
 impl RuntimeConfig {
+    /// Explicit, transport-injected seam for pure-model automatic upgrade.
+    /// No credentials are loaded here. The target must be the selected level
+    /// or its single declared successor, and successors require profile opt-in.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_effect_bound_candidate<T: ProviderTransport + 'static>(
+        &self,
+        model_id: &str,
+        level: EffectLevel,
+        transport: T,
+        request: ModelRequest,
+        pack: ResolvedPromptPack,
+        route: RouteDecision,
+    ) -> Result<EffectBoundResolvedCandidate, ConfigError> {
+        self.validate()?;
+        let profile = self
+            .model_profiles
+            .iter()
+            .find(|profile| profile.model_id == model_id)
+            .ok_or_else(|| ConfigError::ModelProfileNotFound {
+                model_id: model_id.into(),
+            })?;
+        let effect = profile
+            .effect
+            .as_ref()
+            .ok_or(ConfigError::InvalidModelEffect {
+                reason: "effect-bound candidate requires a declared effect",
+            })?;
+        let (policy, _) = profile
+            .effect_policy()?
+            .ok_or(ConfigError::InvalidModelEffect {
+                reason: "effect-bound candidate requires a declared effect",
+            })?;
+        let maximum_level = effect.maximum_level.unwrap_or(effect.selected_level);
+        if level != effect.selected_level
+            && (!effect.automatic_upgrade
+                || effect.selected_level.next() != Some(level)
+                || level > maximum_level)
+        {
+            return Err(ConfigError::InvalidModelEffect {
+                reason: "effect target is not the permitted adjacent level",
+            });
+        }
+        if profile.provider != pack.provider_id()
+            || profile.endpoint != pack.endpoint_base_url()
+            || profile.model_id != pack.model_name()
+            || profile.model_id != pack.model_id()
+            || request.model_id != profile.model_id
+            || route.selected_model != profile.model_id
+            || route.selected_provider != profile.provider
+            || route.selected_endpoint != pack.endpoint_id()
+            || route.route_decision_id != pack.metadata().route_decision_id
+            || route.task_id != pack.metadata().task_id
+            || request.objective != pack.objective()
+            || request.observation != pack.observation()
+            || route.approval_required
+            || !matches!(pack.endpoint_protocol(), "openai" | "openai-compatible")
+            || route.validate().is_err()
+        {
+            return Err(ConfigError::InvalidModelEffect {
+                reason: "effect candidate profile or prompt binding mismatch",
+            });
+        }
+        let binding = EffectProfileBinding {
+            provider_id: profile.provider.clone(),
+            endpoint: profile.endpoint.clone(),
+            model_id: profile.model_id.clone(),
+            auth_ref: profile.auth_ref.clone(),
+            selected_level: effect.selected_level,
+            maximum_level,
+            mapping: effect.mapping.clone(),
+        };
+        let provider =
+            OpenAiCompatibleAdapter::new(&profile.provider, &profile.endpoint, transport)
+                .with_effect_policy(policy, level)
+                .map_err(|_| ConfigError::InvalidModelEffect {
+                    reason: "effect candidate target is not declared",
+                })?;
+        let inner = ProviderModelAdapter::new(provider, profile.auth_ref.clone())
+            .with_model_id(&profile.model_id);
+        let adapter = EffectBoundResolvedAdapter::from_profile(inner, binding.clone());
+        debug_assert!(adapter.binding() == &binding);
+        Ok(EffectBoundResolvedCandidate {
+            adapter: Box::new(adapter),
+            request,
+            pack,
+            route,
+            binding,
+            automatic_upgrade: effect.automatic_upgrade,
+            level,
+        })
+    }
+
     pub fn default_for_project(project_ref: impl Into<String>) -> Result<Self, ConfigError> {
         let project_ref = project_ref.into();
         let data_root = PathBuf::from(DATA_ROOT_PREFIX).join(&project_ref);
