@@ -2,6 +2,10 @@
 
 ## 定位与证据边界
 
+2026-10-31 增量：已实现 `BoundedAdaptationController` 纯状态切片的执行前复核和无 panic 错误处理，以及 `OpenAiCompatibleAdapter` 按精确 wire model 显式 opt-in 的效果参数绑定。默认请求不新增字段，普通/resolved/stream 共用绑定校验，实际请求哈希含 native 参数，prepared 不能绕过当前策略。纯状态机不证明决定来源，也不创建真实 Attempt；同级 fallback 防重放、CLI/profile 装配、NeedsUpgrade 自动新 Attempt/RouteDecision 与重新调用、统一质量采集和 live 验证仍未完成。以下旧记录按原日期解释，不能将底层绑定等同完整自适应 runtime。
+
+本增量由 master 在 `3865e52` 基线的隔离工作树重新验收：`CARGO_TARGET_DIR=/tmp/steerbox-adaptive-target CARGO_BUILD_JOBS=2 cargo test --locked --offline --tests --quiet` 全部通过（其中 `adaptive_routing` 22 项、`provider_effect_binding` 8 项、`resolved_provider_model_adapter` 13 项）；相同 target/jobs 下严格 `cargo clippy --locked --offline --lib --bins --tests -- -D warnings` 和 `cargo build --locked --offline --lib --bins` 均退出 0；`cargo fmt --all -- --check`、`git diff --check` 通过。已复核独立需求/质量审核及主审 diff；不使用主目录既有未提交代码，构建产物不写入项目目录。以上仅为 fixture/local 回归，不包含真实帐号、live provider 或完整 Phase 1 验收。
+
 本次增量核对日期：2026-10-19。以下 provider runner 接线与回归结果已在本轮重新执行；此前历史验证仍按原日期和证据边界解释。
 
 状态核对日期：2026-10-18。`5a51851` 为本次 snapshot 实施基线；当前现场另有已提交的 `8cecdef` restore 审计收口，以及已提交的 ToolCallRecord store/runtime 与安全加固切片（`6b2b0fa`、`106afa6`、`a0f3c05`、`c93deed`）；本批快照与共享 editor 改动验收见文末，提交状态以 Git 记录为准，不把旧全量结果覆盖到新代码。未跟踪的历史审核、参考资料与 benchmark 目录不计入交付。`202cec6` 已加入独立 `ModelCallFailureRecord`、failure JSONL 和 `MemoryStore::read_catalog`，`e754d07` 已加入 controller scoped memory retrieval，`5a51851` 已收紧 controller mutation 前审计门禁；`564db6d` 又加入了 resolved-provider local contract fallback 与显式 endpoint protocol；`d140846` 至 `6f45e11` 收口了 controller restore 的 PolicyGate、ApprovalStore、SideEffectLedger 授权路径及旧兼容入口移除；`8cecdef` 补充了未消费 Once approval 的 blocked/uncertain metadata-only 审计，二者均不继续物理 restore；本轮 provider runner 不属于此前历史验证基线，必须以本轮新增的 focused/full regression 证据核验；验证范围仍以实际执行证据为准，不因文件出现或 subagent 报告自动计入完整交付。

@@ -1,7 +1,17 @@
 # 受约束的主动自适应模型路由与质量策略
 
 **日期**：2026-10-20
-**状态**：Phase 1 设计增量；尚未实现
+**状态**：Phase 1 设计增量；纯状态契约及 opt-in OpenAI-compatible 参数绑定已实现，完整自动运行链未完成
+
+## 2026-10-31 实现边界
+
+- `BoundedAdaptationController` 是任务本地纯状态机，不执行网络、工具或真实 Attempt 创建。`assess` 返回可处理的错误；`apply` 在变更前重新验证 schema、来源级别、单级目标、最大级别、剩余尝试及升级预算/冷却。失败不改状态，不用饱和减法掩盖耗尽。Upgrade 和 Fallback 都要求新 Attempt 标记。
+- `apply` 不证明决定的来源，不提供 nonce 或跨任务防重放；同级 fallback 在仍有额度时的重复调用仍须由 runtime 的调用身份与 Attempt 审计约束。升级预算/冷却仅控制升级，Fallback 消费剩余尝试额度。
+- `OpenAiCompatibleAdapter::with_effect_policy()` 接受宿主显式声明的 `ModelEffectPolicy` 和选定 `EffectLevel`，不改 `ProviderRequest`，不从模型名或自由 capability 字符串猜支持。策略绑定精确 wire model name；缺失档位、错模型、空策略或不递增映射都拒绝。声明是宿主配置，不等于已验证服务端能力。
+- 默认不注入推理参数；显式绑定后普通、resolved 与 stream 请求共用准备入口，生成 native `reasoning_effort`。最终发送 body 的 SHA256 包含参数，prepared 请求发送前按当前策略重新验证，不能跨策略绕过。endpoint、认证、工具权限及 timeout 不受效果选择改变。
+- 本切片不配置 CLI/profile 自动装配，不实现 NeedsUpgrade 后自动创建真实新 Attempt/RouteDecision 和重新调用；usage/latency/truncation/no-progress 的统一采集、Anthropic native 参数适配及 live provider 验收仍待完成。
+
+协议参考：OpenAI 官方 [Create chat completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) 说明 `reasoning_effort` 支持值因模型而异。本切片仅提供 low/medium/high/xhigh 的显式 typed 声明，不向未声明模型发送该字段。
 
 ## 目标
 

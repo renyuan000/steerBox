@@ -1,6 +1,8 @@
+use crate::adaptive_routing::EffectLevel;
 use crate::redaction::Redactor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 use thiserror::Error;
@@ -257,11 +259,67 @@ impl ProviderAdapterError {
     }
 }
 
+/// Native wire values, not a claim that any particular model supports them.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+}
+
+/// Trusted host declaration for one exact wire model name. No implicit mapping
+/// or model-name inference is performed; sparse declarations are permitted.
+#[derive(Debug, Clone)]
+pub struct ModelEffectPolicy {
+    model_name: String,
+    mapping: BTreeMap<EffectLevel, ReasoningEffort>,
+}
+
+impl ModelEffectPolicy {
+    pub fn new(
+        model_name: impl Into<String>,
+        mapping: BTreeMap<EffectLevel, ReasoningEffort>,
+    ) -> Result<Self, ProviderAdapterError> {
+        let model_name = model_name.into();
+        if model_name.trim().is_empty() || mapping.is_empty() {
+            return Err(ProviderAdapterError::InvalidRequest {
+                reason: "effect policy needs a model and declared levels",
+            });
+        }
+        let mut previous = None;
+        for effort in mapping.values() {
+            if previous.is_some_and(|previous| previous >= *effort) {
+                return Err(ProviderAdapterError::InvalidRequest {
+                    reason: "declared effect levels must increase native effort",
+                });
+            }
+            previous = Some(*effort);
+        }
+        Ok(Self {
+            model_name,
+            mapping,
+        })
+    }
+
+    fn resolve(&self, level: EffectLevel) -> Result<ReasoningEffort, ProviderAdapterError> {
+        self.mapping
+            .get(&level)
+            .copied()
+            .ok_or(ProviderAdapterError::InvalidRequest {
+                reason: "effect level is not declared for this model",
+            })
+    }
+}
+
 #[derive(Debug)]
 pub struct OpenAiCompatibleAdapter<T: ProviderTransport> {
     provider_id: String,
     base_url: String,
     transport: T,
+    effect_policy: Option<(ModelEffectPolicy, EffectLevel)>,
 }
 
 impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
@@ -270,7 +328,20 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
             provider_id: provider_id.into(),
             base_url: base_url.into(),
             transport,
+            effect_policy: None,
         }
+    }
+
+    /// Select a host-governed effect for subsequent requests. This does not
+    /// grant model access to policy mutation or change endpoint/credentials.
+    pub fn with_effect_policy(
+        mut self,
+        policy: ModelEffectPolicy,
+        selected_level: EffectLevel,
+    ) -> Result<Self, ProviderAdapterError> {
+        policy.resolve(selected_level)?;
+        self.effect_policy = Some((policy, selected_level));
+        Ok(self)
     }
 
     pub fn provider_id(&self) -> &str {
@@ -317,6 +388,13 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
                 reason: "prepared request belongs to a different provider or endpoint",
             });
         }
+        // A frozen request must not bypass the receiving adapter's current
+        // model/effort policy even if its provider and endpoint still match.
+        if self.prepare_request(&prepared.request, false)? != prepared.body {
+            return Err(ProviderAdapterError::InvalidRequest {
+                reason: "prepared request differs from the current effect policy",
+            });
+        }
         let response = self.send(&prepared.request, &prepared.body, false)?;
         parse_completion_response(&response.body)
     }
@@ -349,6 +427,17 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
         stream: bool,
     ) -> Result<String, ProviderAdapterError> {
         validate_request(request)?;
+        let reasoning_effort = match &self.effect_policy {
+            None => None,
+            Some((policy, level)) => {
+                if policy.model_name != request.model {
+                    return Err(ProviderAdapterError::InvalidRequest {
+                        reason: "effect policy belongs to a different model",
+                    });
+                }
+                Some(policy.resolve(*level)?)
+            }
+        };
         let messages = request
             .messages
             .iter()
@@ -367,6 +456,7 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
             model: &request.model,
             messages: &messages,
             stream,
+            reasoning_effort,
         };
         serde_json::to_string(&wire_request).map_err(|_| ProviderAdapterError::ResponseParse)
     }
@@ -422,6 +512,8 @@ struct WireRequest<'a> {
     model: &'a str,
     messages: &'a [ProviderMessage],
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Deserialize)]

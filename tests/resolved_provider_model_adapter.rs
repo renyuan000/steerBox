@@ -1,14 +1,17 @@
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use steerbox::adaptive_routing::EffectLevel;
 use steerbox::model_adapter::{ModelAdapterError, ModelDecision, ModelRequest};
 use steerbox::model_contracts::RouteDecision;
 use steerbox::model_registry::{EndpointProfile, ModelProfile, ModelRegistry, ProviderProfile};
 use steerbox::prompt_registry::{PromptProfile, PromptRegistry};
 use steerbox::provider_adapter::{
-    OpenAiCompatibleAdapter, ProviderTransport, TransportError, TransportResponse,
+    ModelEffectPolicy, OpenAiCompatibleAdapter, ProviderTransport, ReasoningEffort, TransportError,
+    TransportResponse,
 };
 use steerbox::provider_model_adapter::ProviderModelAdapter;
 use steerbox::resolved_prompt::{
@@ -250,6 +253,55 @@ fn resolved_bridge_sends_wire_name_and_exact_resolved_messages() {
     assert_eq!(body["stream"], false);
     assert_eq!(sends[0].endpoint, format!("{BASE_URL}/chat/completions"));
     assert!(!sends[0].streaming);
+}
+
+#[test]
+fn resolved_effect_binds_wire_model_and_hash_not_registry_identifier() {
+    let pack = resolved_pack();
+    let transport = FakeTransport::valid();
+    let sends = Arc::clone(&transport.sends);
+    let provider = OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport)
+        .with_effect_policy(
+            ModelEffectPolicy::new(
+                "wire-model",
+                BTreeMap::from([(EffectLevel::Strong, ReasoningEffort::High)]),
+            )
+            .unwrap(),
+            EffectLevel::Strong,
+        )
+        .unwrap();
+    let result = ProviderModelAdapter::new(provider, None)
+        .complete_resolved(request_for(&pack), &pack)
+        .unwrap();
+    let sends = sends.lock().unwrap();
+    let body: Value = serde_json::from_str(&sends[0].body).unwrap();
+    assert_eq!(body["model"], "wire-model");
+    assert_eq!(body["reasoning_effort"], "high");
+    assert_eq!(
+        result.input_context_hash,
+        format!("sha256:{:x}", Sha256::digest(sends[0].body.as_bytes()))
+    );
+}
+
+#[test]
+fn resolved_effect_cannot_use_logical_identifier_as_wire_binding() {
+    let pack = resolved_pack();
+    let transport = FakeTransport::valid();
+    let sends = Arc::clone(&transport.sends);
+    let provider = OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport)
+        .with_effect_policy(
+            ModelEffectPolicy::new(
+                "logical-model",
+                BTreeMap::from([(EffectLevel::Strong, ReasoningEffort::High)]),
+            )
+            .unwrap(),
+            EffectLevel::Strong,
+        )
+        .unwrap();
+    assert!(ProviderModelAdapter::new(provider, None)
+        .complete_resolved(request_for(&pack), &pack)
+        .is_err());
+    assert!(sends.lock().unwrap().is_empty());
 }
 
 #[test]

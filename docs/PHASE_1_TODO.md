@@ -270,7 +270,7 @@ Memory 最小实现：
 
 - [x] 定义 `EffectLevel`（fast/balanced/strong/xhigh）、`QualityAssessment` 和 `AdaptationDecision` 的版本化契约（`src/adaptive_routing.rs`；focused contract tests）
 - [ ] 将结构化输出、verification、工具结果、超时、截断、usage、延迟和无进展计数接入质量评估（`QualityObservation` 与 fail-closed `QualityAssessment::from_observation()` 已完成；普通/resolved model step 已写入 metadata-only `model_quality_assessed`，usage/latency/truncation/no-progress 的统一运行时填充仍待完成）
-- [ ] 实现当前 TaskRun 内的单级效果升级，受总预算、最大 Attempt、最大重试和冷却窗口约束
+- [ ] 实现当前 TaskRun 内的单级效果升级，受总预算、最大 Attempt、最大重试和冷却窗口约束（`BoundedAdaptationController` 纯状态 assess/apply/cooldown 已实现，并在 apply 前复核边界；底层 OpenAI-compatible 显式效果参数绑定已实现。CLI/profile 装配、实际新 Attempt/RouteDecision、质量驱动重调与审计闭环未完成，故本项不关闭）
 - [x] 实现 retryable provider failure 的新 Attempt／新 RouteDecision／失败证据保留；禁止静默覆盖原 Attempt（普通 routed 与 resolved routed controller 已接入 `plan_adaptation()` 门禁，并保留父 Attempt 失败 evidence；完整质量驱动 controller 仍待完成）
 - [x] 校验自适应决策不能改变 provider allowlist、endpoint、auth_ref、隐私等级、工具权限和安全底线（契约决策不携带这些字段；route planner 只返回已声明 fallback）
 - [ ] 对低质量、不可重试、安全阻断、预算耗尽分别生成可解释的 metadata-only 审计事件（当前 routed retryable fallback 已有 `model_route_fallback` 与 `model_adaptation_stopped`；NeedsUpgrade、Blocked、Failed 的统一自适应事件仍待完成）
