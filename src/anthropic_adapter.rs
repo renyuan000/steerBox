@@ -7,7 +7,9 @@ use crate::provider_adapter::{
     ProviderMessage, ProviderRequest, ProviderResponse, ProviderUsage, TransportResponse,
     MAX_TIMEOUT_MS,
 };
-use crate::provider_model_adapter::{ResolvedModelAdapter, ResolvedModelResponseWithAction};
+use crate::provider_model_adapter::{
+    ResolvedCallFailure, ResolvedModelAdapter, ResolvedModelResponseWithAction,
+};
 use crate::redaction::Redactor;
 use crate::resolved_prompt::ResolvedPromptPack;
 use serde::{Deserialize, Serialize};
@@ -199,9 +201,12 @@ impl<T: AnthropicTransport> AnthropicAdapter<T> {
             return Err(AnthropicAdapterError::ResponseParse);
         }
         let usage = parsed.usage.map(|usage| ProviderUsage {
-            prompt_tokens: Some(usage.input_tokens),
-            completion_tokens: Some(usage.output_tokens),
-            total_tokens: usage.input_tokens.checked_add(usage.output_tokens),
+            prompt_tokens: usage.input_tokens,
+            completion_tokens: usage.output_tokens,
+            total_tokens: usage
+                .input_tokens
+                .zip(usage.output_tokens)
+                .and_then(|(input, output)| input.checked_add(output)),
         });
         Ok(ProviderResponse {
             request_id: parsed.id,
@@ -303,11 +308,13 @@ impl<T: AnthropicTransport> ResolvedModelAdapter for AnthropicAdapter<T> {
         &self,
         request: ModelRequest,
         pack: &ResolvedPromptPack,
-    ) -> Result<ResolvedModelResponseWithAction, ModelAdapterError> {
+    ) -> Result<ResolvedModelResponseWithAction, ResolvedCallFailure> {
         if pack.endpoint_protocol() != "anthropic" {
-            return Err(ModelAdapterError::ResolvedBindingMismatch {
-                field: "endpoint_protocol",
-            });
+            return Err(ResolvedCallFailure::new(
+                ModelAdapterError::ResolvedBindingMismatch {
+                    field: "endpoint_protocol",
+                },
+            ));
         }
         for (actual, expected, field) in [
             (self.provider_id.as_str(), pack.provider_id(), "provider_id"),
@@ -325,7 +332,9 @@ impl<T: AnthropicTransport> ResolvedModelAdapter for AnthropicAdapter<T> {
             ),
         ] {
             if actual != expected {
-                return Err(ModelAdapterError::ResolvedBindingMismatch { field });
+                return Err(ResolvedCallFailure::new(
+                    ModelAdapterError::ResolvedBindingMismatch { field },
+                ));
             }
         }
         let provider_request = ProviderRequest {
@@ -335,17 +344,19 @@ impl<T: AnthropicTransport> ResolvedModelAdapter for AnthropicAdapter<T> {
             timeout_ms: self.timeout_ms,
             stream: false,
         };
-        let input_context_hash =
-            self.input_hash(&provider_request)
-                .map_err(|error| ModelAdapterError::Provider {
-                    class: error.class(),
-                })?;
-        let provider_response =
-            self.complete(provider_request)
-                .map_err(|error| ModelAdapterError::Provider {
-                    class: error.class(),
-                })?;
-        let response = parse_decision_with_action(&provider_response.text)?;
+        let input_context_hash = self.input_hash(&provider_request).map_err(|error| {
+            ResolvedCallFailure::new(ModelAdapterError::Provider {
+                class: error.class(),
+            })
+        })?;
+        let provider_response = self.complete(provider_request).map_err(|error| {
+            ResolvedCallFailure::new(ModelAdapterError::Provider {
+                class: error.class(),
+            })
+        })?;
+        let response = parse_decision_with_action(&provider_response.text).map_err(|cause| {
+            ResolvedCallFailure::after_response(cause, &input_context_hash, &provider_response)
+        })?;
         Ok(ResolvedModelResponseWithAction {
             response,
             provider_response,
@@ -467,8 +478,8 @@ struct AnthropicResponseBlock {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AnthropicUsage {
-    input_tokens: u64,
-    output_tokens: u64,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

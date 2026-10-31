@@ -11,6 +11,7 @@ use crate::redaction::Redactor;
 use crate::resolved_prompt::ResolvedPromptPack;
 use serde::Deserialize;
 use std::fmt;
+use thiserror::Error;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 #[derive(Debug, Deserialize)]
@@ -36,6 +37,101 @@ pub struct ResolvedModelResponseWithAction {
     pub input_context_hash: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCallEvidence {
+    input_context_hash: String,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    finish_reason: Option<&'static str>,
+}
+
+impl ResolvedCallEvidence {
+    fn from_response(input_context_hash: &str, response: &ProviderResponse) -> Option<Self> {
+        let digest = input_context_hash.strip_prefix("sha256:")?;
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return None;
+        }
+        Some(Self {
+            input_context_hash: input_context_hash.to_owned(),
+            input_tokens: response
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.prompt_tokens),
+            output_tokens: response
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.completion_tokens),
+            finish_reason: match response.finish_reason.as_deref() {
+                Some("stop") => Some("stop"),
+                Some("length") => Some("length"),
+                Some("end_turn") => Some("end_turn"),
+                Some("max_tokens") => Some("max_tokens"),
+                _ => None,
+            },
+        })
+    }
+
+    pub fn input_context_hash(&self) -> &str {
+        &self.input_context_hash
+    }
+
+    pub fn input_tokens(&self) -> Option<u64> {
+        self.input_tokens
+    }
+
+    pub fn output_tokens(&self) -> Option<u64> {
+        self.output_tokens
+    }
+
+    pub fn finish_reason(&self) -> Option<&str> {
+        self.finish_reason
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("{cause}")]
+pub struct ResolvedCallFailure {
+    #[source]
+    cause: ModelAdapterError,
+    evidence: Option<ResolvedCallEvidence>,
+}
+
+impl ResolvedCallFailure {
+    pub fn new(cause: ModelAdapterError) -> Self {
+        Self {
+            cause,
+            evidence: None,
+        }
+    }
+
+    pub(crate) fn after_response(
+        cause: ModelAdapterError,
+        input_context_hash: &str,
+        response: &ProviderResponse,
+    ) -> Self {
+        Self {
+            cause,
+            evidence: ResolvedCallEvidence::from_response(input_context_hash, response),
+        }
+    }
+
+    pub fn cause(&self) -> &ModelAdapterError {
+        &self.cause
+    }
+
+    pub fn evidence(&self) -> Option<&ResolvedCallEvidence> {
+        self.evidence.as_ref()
+    }
+
+    pub fn into_parts(self) -> (ModelAdapterError, Option<ResolvedCallEvidence>) {
+        (self.cause, self.evidence)
+    }
+}
+
 /// Common resolved-call seam used by the controller for provider protocols
 /// that have different wire formats but the same audit/decision contract.
 pub trait ResolvedModelAdapter {
@@ -43,7 +139,7 @@ pub trait ResolvedModelAdapter {
         &self,
         request: ModelRequest,
         pack: &ResolvedPromptPack,
-    ) -> Result<ResolvedModelResponseWithAction, ModelAdapterError>;
+    ) -> Result<ResolvedModelResponseWithAction, ResolvedCallFailure>;
 }
 
 impl fmt::Debug for ResolvedModelResponse {
@@ -102,10 +198,14 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
         &self,
         request: ModelRequest,
         pack: &ResolvedPromptPack,
-    ) -> Result<ResolvedModelResponse, ModelAdapterError> {
+    ) -> Result<ResolvedModelResponse, ResolvedCallFailure> {
         let resolved = self.complete_resolved_with_action(request, pack)?;
         if resolved.response.action.is_some() {
-            return Err(ModelAdapterError::ProviderTextUnmappable);
+            return Err(ResolvedCallFailure::after_response(
+                ModelAdapterError::ProviderTextUnmappable,
+                &resolved.input_context_hash,
+                &resolved.provider_response,
+            ));
         }
         Ok(ResolvedModelResponse {
             response: resolved.response.into_legacy(),
@@ -118,11 +218,13 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
         &self,
         request: ModelRequest,
         pack: &ResolvedPromptPack,
-    ) -> Result<ResolvedModelResponseWithAction, ModelAdapterError> {
+    ) -> Result<ResolvedModelResponseWithAction, ResolvedCallFailure> {
         if !matches!(pack.endpoint_protocol(), "openai" | "openai-compatible") {
-            return Err(ModelAdapterError::ResolvedBindingMismatch {
-                field: "endpoint_protocol",
-            });
+            return Err(ResolvedCallFailure::new(
+                ModelAdapterError::ResolvedBindingMismatch {
+                    field: "endpoint_protocol",
+                },
+            ));
         }
         for (actual, expected, field) in [
             (
@@ -144,7 +246,9 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
             ),
         ] {
             if actual != expected {
-                return Err(ModelAdapterError::ResolvedBindingMismatch { field });
+                return Err(ResolvedCallFailure::new(
+                    ModelAdapterError::ResolvedBindingMismatch { field },
+                ));
             }
         }
         let prepared = self
@@ -156,17 +260,23 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
                 timeout_ms: self.timeout_ms,
                 stream: false,
             })
-            .map_err(|error| ModelAdapterError::Provider {
-                class: error.class(),
+            .map_err(|error| {
+                ResolvedCallFailure::new(ModelAdapterError::Provider {
+                    class: error.class(),
+                })
             })?;
         let input_context_hash = prepared.input_hash().to_owned();
         let provider_response = self
             .provider
             .complete_prepared(&prepared)
-            .map_err(|error| ModelAdapterError::Provider {
-                class: error.class(),
+            .map_err(|error| {
+                ResolvedCallFailure::new(ModelAdapterError::Provider {
+                    class: error.class(),
+                })
             })?;
-        let response = parse_decision_with_action(&provider_response.text)?;
+        let response = parse_decision_with_action(&provider_response.text).map_err(|cause| {
+            ResolvedCallFailure::after_response(cause, &input_context_hash, &provider_response)
+        })?;
         Ok(ResolvedModelResponseWithAction {
             response,
             provider_response,
@@ -340,7 +450,36 @@ impl<T: ProviderTransport> ResolvedModelAdapter for ProviderModelAdapter<T> {
         &self,
         request: ModelRequest,
         pack: &ResolvedPromptPack,
-    ) -> Result<ResolvedModelResponseWithAction, ModelAdapterError> {
+    ) -> Result<ResolvedModelResponseWithAction, ResolvedCallFailure> {
         ProviderModelAdapter::complete_resolved_with_action(self, request, pack)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_evidence_rejects_non_digest_hashes_without_retaining_them() {
+        for hash in [
+            "fixture-private-hash".to_owned(),
+            format!("sha256:{}", "A".repeat(64)),
+            format!("sha256:{}", "g".repeat(64)),
+            format!("sha256:{}", "0".repeat(63)),
+            format!("sha256:{}", "0".repeat(65)),
+        ] {
+            let response = ProviderResponse::text(
+                "fixture-private-id",
+                "fixture-private-model",
+                "fixture-private-body",
+            );
+            let failure = ResolvedCallFailure::after_response(
+                ModelAdapterError::ProviderTextUnmappable,
+                &hash,
+                &response,
+            );
+            assert!(failure.evidence().is_none());
+            assert!(!format!("{failure}\n{failure:?}").contains("fixture-private"));
+        }
     }
 }

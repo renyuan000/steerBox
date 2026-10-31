@@ -16,7 +16,9 @@ use crate::model_registry::{EndpointProfile, ModelProfile, ModelRegistry, Provid
 use crate::policy_gate::PolicyGate;
 use crate::prompt_registry::{PromptProfile, PromptRegistry};
 use crate::provider_adapter::ProviderTransport;
-use crate::provider_model_adapter::{ResolvedModelAdapter, ResolvedModelResponseWithAction};
+use crate::provider_model_adapter::{
+    ResolvedCallFailure, ResolvedModelAdapter, ResolvedModelResponseWithAction,
+};
 use crate::resolved_prompt::{
     resolve_prompt, AgentRolePrompt, ModelPromptFragment, ProviderPromptFragment,
     ResolvePromptInput, ResolvedPromptPack, TaskPromptPack, VersionedPromptFragment,
@@ -496,16 +498,22 @@ impl<A: ResolvedModelAdapter> ResolvedModelAdapter for MarkdownBoundAdapter<'_, 
         &self,
         request: ModelRequest,
         pack: &ResolvedPromptPack,
-    ) -> Result<ResolvedModelResponseWithAction, ModelAdapterError> {
+    ) -> Result<ResolvedModelResponseWithAction, ResolvedCallFailure> {
         let response = self.inner.complete_resolved_with_action(request, pack)?;
         if response.response.decision != ModelDecision::CompleteLoop {
-            return Err(ModelAdapterError::ProviderTextUnmappable);
+            return Err(ResolvedCallFailure::after_response(
+                ModelAdapterError::ProviderTextUnmappable,
+                &response.input_context_hash,
+                &response.provider_response,
+            ));
         }
-        let action = response
-            .response
-            .action
-            .as_ref()
-            .ok_or(ModelAdapterError::ProviderTextUnmappable)?;
+        let action = response.response.action.as_ref().ok_or_else(|| {
+            ResolvedCallFailure::after_response(
+                ModelAdapterError::ProviderTextUnmappable,
+                &response.input_context_hash,
+                &response.provider_response,
+            )
+        })?;
         let path = action
             .parameters
             .get("path")
@@ -526,7 +534,11 @@ impl<A: ResolvedModelAdapter> ResolvedModelAdapter for MarkdownBoundAdapter<'_, 
             })
             || action.verification.parameters != serde_json::json!({"path":path})
         {
-            return Err(ModelAdapterError::ProviderTextUnmappable);
+            return Err(ResolvedCallFailure::after_response(
+                ModelAdapterError::ProviderTextUnmappable,
+                &response.input_context_hash,
+                &response.provider_response,
+            ));
         }
         Ok(response)
     }

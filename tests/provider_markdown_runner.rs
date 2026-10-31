@@ -225,7 +225,8 @@ impl ProviderTransport for &FakeTransport<'_> {
                     "parameters":{"path":self.action_path,"expected":"before\n","replacement":self.replacement},
                     "path_scope":{"root":self.workspace,"allowed_paths":[self.action_path]},
                     "verification":{"verifier_tool_id":"markdown_link_check","parameters":{"path":self.action_path}}}
-            }).to_string()},"finish_reason":"stop"}]
+            }).to_string()},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":0,"completion_tokens":2}
         });
         if self.action_path.is_empty() {
             envelope["choices"][0]["message"]["content"] = json!({
@@ -305,12 +306,15 @@ fn run_with_decision(
         approved,
         human_steering_mode: HumanSteeringMode::HumanSteerableLoop,
     };
-    let transport = FakeTransport {
-        workspace: root,
-        replacement,
-        action_path,
-        decision,
-        calls: Cell::new(0),
+    let transport = EffectCaptureTransport {
+        inner: FakeTransport {
+            workspace: root,
+            replacement,
+            action_path,
+            decision,
+            calls: Cell::new(0),
+        },
+        body: RefCell::new(String::new()),
     };
     let calls = ModelCallStore::open(root.join("calls.jsonl")).unwrap();
     let result = ForegroundProviderRun::prepare_markdown(&config, request, run)
@@ -321,7 +325,21 @@ fn run_with_decision(
             calls.clone(),
             StreamReporter::new(Vec::new()),
         );
-    assert_eq!(transport.calls.get(), 1);
+    assert_eq!(transport.inner.calls.get(), 1);
+    for failure in calls.read_failures().unwrap() {
+        assert_eq!(
+            failure.input_context_hash,
+            Some(format!(
+                "sha256:{:x}",
+                Sha256::digest(transport.body.borrow().as_bytes())
+            ))
+        );
+        assert_eq!(failure.input_tokens, Some(0));
+        assert_eq!(failure.output_tokens, Some(2));
+        assert_eq!(failure.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(failure.output_artifact_ref, None);
+        assert_eq!(failure.estimated_cost, None);
+    }
     (result, calls)
 }
 
@@ -480,12 +498,13 @@ fn model_scope_does_not_grant_access_to_another_markdown_file() {
     );
     assert_eq!(calls.read_failures().unwrap().len(), 1);
     assert!(calls.read_all().unwrap().is_empty());
+    assert!(tool_call_records(directory.path()).is_empty());
 }
 
 #[test]
 fn one_shot_markdown_runner_closes_continue_decision_as_failed() {
     let directory = tempfile::tempdir().unwrap();
-    let (result, _) = run_with_decision(
+    let (result, calls) = run_with_decision(
         directory.path(),
         "after\n",
         true,
@@ -500,17 +519,21 @@ fn one_shot_markdown_runner_closes_continue_decision_as_failed() {
     let events = fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
     assert!(events.contains("loop_failed"));
     assert!(!events.contains("\"event_type\":\"loop_completed\""));
+    assert_eq!(calls.read_failures().unwrap().len(), 1);
+    assert!(tool_call_records(directory.path()).is_empty());
 }
 
 #[test]
 fn no_action_response_is_rejected_without_workspace_mutation() {
     let directory = tempfile::tempdir().unwrap();
-    let (result, _) = run_with_decision(directory.path(), "after\n", true, "", "complete_loop");
+    let (result, calls) = run_with_decision(directory.path(), "after\n", true, "", "complete_loop");
     assert!(result.is_err());
     assert_eq!(
         fs::read_to_string(directory.path().join("README.md")).unwrap(),
         "before\n"
     );
+    assert_eq!(calls.read_failures().unwrap().len(), 1);
+    assert!(tool_call_records(directory.path()).is_empty());
 }
 
 #[test]

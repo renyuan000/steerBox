@@ -5,6 +5,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use steerbox::anthropic_adapter::{
+    AnthropicAdapter, AnthropicHeaders, AnthropicTransport, AnthropicTransportError,
+};
 use steerbox::domain::{BudgetKind, GoalContract, HumanSteeringMode, LoopBudget};
 use steerbox::event_log::EventLog;
 use steerbox::loop_controller::{
@@ -101,6 +104,22 @@ impl ProviderTransport for FakeTransport {
     }
 }
 
+impl AnthropicTransport for FakeTransport {
+    fn send(
+        &self,
+        _endpoint: &str,
+        _headers: &AnthropicHeaders,
+        request_body: &str,
+        _timeout: Duration,
+        _streaming: bool,
+    ) -> Result<TransportResponse, AnthropicTransportError> {
+        self.sends.lock().unwrap().push(request_body.into());
+        self.result
+            .clone()
+            .map_err(|_| AnthropicTransportError::Network)
+    }
+}
+
 #[derive(Clone)]
 struct SequenceTransport {
     responses: Arc<Mutex<VecDeque<String>>>,
@@ -167,13 +186,22 @@ fn resolved_fixture_for(
     route_decision_id: &str,
     fallback_chain: Vec<String>,
 ) -> (ResolvedPromptPack, RouteDecision) {
+    resolved_fixture_for_protocol(model_id, route_decision_id, fallback_chain, "openai")
+}
+
+fn resolved_fixture_for_protocol(
+    model_id: &str,
+    route_decision_id: &str,
+    fallback_chain: Vec<String>,
+    protocol: &str,
+) -> (ResolvedPromptPack, RouteDecision) {
     let mut models = ModelRegistry::default();
     models
         .register_provider(ProviderProfile::new("fixture-provider", "Fixture", None).unwrap())
         .unwrap();
     models
         .register_endpoint(
-            EndpointProfile::new("fixture-endpoint", "fixture-provider", BASE_URL, "openai")
+            EndpointProfile::new("fixture-endpoint", "fixture-provider", BASE_URL, protocol)
                 .unwrap(),
         )
         .unwrap();
@@ -1122,6 +1150,219 @@ fn provider_failure_persists_only_failure_contract_and_keeps_success_log_empty()
         .expect("failure JSONL reads");
     assert!(!failure_json.contains("network"));
     assert!(!failure_json.contains("error"));
+}
+
+#[test]
+fn parsed_wire_failure_keeps_exact_input_hash_and_known_usage() {
+    use sha2::{Digest, Sha256};
+
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport {
+        result: Ok(TransportResponse::body(200, json!({
+            "id": "fixture-response-body-id",
+            "model": "fixture-response-body-model",
+            "choices": [{"message": {"content": "fixture-response-body-not-json"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 17, "completion_tokens": 0, "total_tokens": 17},
+        }).to_string())),
+        sends: Arc::new(Mutex::new(Vec::new())),
+    };
+    let sends = Arc::clone(&transport.sends);
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller(&directory)
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    let result = controller.run_resolved_model_step(
+        &adapter,
+        ModelRequest {
+            model_id: pack.model_id().into(),
+            goal_id: "goal-model-audit".into(),
+            loop_run_id: "loop-model-audit".into(),
+            step_id: "step-wire-failure".into(),
+            objective: pack.objective().into(),
+            observation: pack.observation().into(),
+        },
+        &pack,
+        &route,
+        "step-wire-failure",
+    );
+    assert!(result.is_err());
+    let bodies = sends.lock().unwrap();
+    assert_eq!(bodies.len(), 1);
+    let exact_hash = format!("sha256:{:x}", Sha256::digest(bodies[0].as_bytes()));
+    let store = ModelCallStore::open(directory.model_calls()).unwrap();
+    let failures = store.read_failures().unwrap();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(
+        failures[0].input_context_hash.as_deref(),
+        Some(exact_hash.as_str())
+    );
+    assert_eq!(failures[0].input_tokens, Some(17));
+    assert_eq!(failures[0].output_tokens, Some(0));
+    assert_eq!(failures[0].finish_reason.as_deref(), Some("stop"));
+    assert!(failures[0].estimated_cost.is_none());
+    assert!(failures[0].output_artifact_ref.is_none());
+    assert!(store.read_all().unwrap().is_empty());
+    assert_eq!(controller.budget().model_calls_used, 1);
+    assert_eq!(controller.budget().steps_used, 1);
+    let events = EventLog::open(directory.events())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    assert!(!format!("{result:?}").contains("fixture-response-body"));
+    assert!(!serde_json::to_string(&failures)
+        .unwrap()
+        .contains("fixture-response-body"));
+    assert!(!serde_json::to_string(&events)
+        .unwrap()
+        .contains("fixture-response-body"));
+}
+
+#[test]
+fn anthropic_parse_failure_preserves_partial_usage_and_filters_finish_before_audit() {
+    use sha2::{Digest, Sha256};
+
+    let private_finish =
+        "https://fixture-private.invalid/finish\n\u{1b}[31mfixture-synthetic-secret-marker";
+    for finish in ["max_tokens", private_finish] {
+        let directory = TestDirectory::new();
+        let (pack, route) =
+            resolved_fixture_for_protocol("logical-model", "route-fixture", vec![], "anthropic");
+        let transport = FakeTransport {
+            result: Ok(TransportResponse::body(
+                200,
+                json!({
+                    "type": "message", "role": "assistant",
+                    "id": "fixture-response-private-id", "model": "fixture-response-private-model",
+                    "content": [{"type": "text", "text": "fixture-response-private-body"}],
+                    "stop_reason": finish, "usage": {"input_tokens": 0},
+                })
+                .to_string(),
+            )),
+            sends: Arc::new(Mutex::new(Vec::new())),
+        };
+        let sends = Arc::clone(&transport.sends);
+        let adapter = AnthropicAdapter::new("fixture-provider", BASE_URL, transport, None);
+        let mut controller = controller(&directory)
+            .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        let result = controller.run_resolved_model_step(
+            &adapter,
+            ModelRequest {
+                model_id: pack.model_id().into(),
+                goal_id: "goal-model-audit".into(),
+                loop_run_id: "loop-model-audit".into(),
+                step_id: "step-anthropic-failure".into(),
+                objective: pack.objective().into(),
+                observation: pack.observation().into(),
+            },
+            &pack,
+            &route,
+            "step-anthropic-failure",
+        );
+        assert!(matches!(
+            result,
+            Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::DecisionOutputRejected { .. }
+            ))
+        ));
+        let bodies = sends.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(controller.budget().model_calls_used, 1);
+        assert_eq!(controller.budget().steps_used, 1);
+        let failures = ModelCallStore::open(directory.model_calls())
+            .unwrap()
+            .read_failures()
+            .unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(
+            failures[0].input_context_hash,
+            Some(format!("sha256:{:x}", Sha256::digest(bodies[0].as_bytes())))
+        );
+        assert_eq!(failures[0].input_tokens, Some(0));
+        assert_eq!(failures[0].output_tokens, None);
+        assert_eq!(
+            failures[0].finish_reason.as_deref(),
+            (finish == "max_tokens").then_some("max_tokens")
+        );
+        let events = EventLog::open(directory.events())
+            .unwrap()
+            .read_all()
+            .unwrap();
+        let error = result.as_ref().unwrap_err();
+        for diagnostic in [
+            format!("{error}\n{error:?}"),
+            serde_json::to_string(&failures).unwrap(),
+            serde_json::to_string(&events).unwrap(),
+        ] {
+            for marker in [
+                "fixture-response-private",
+                "https://fixture-private.invalid",
+                "fixture-synthetic-secret-marker",
+            ] {
+                assert!(!diagnostic.contains(marker));
+            }
+        }
+    }
+}
+
+#[test]
+fn parsed_wire_failure_audit_write_error_cannot_trigger_a_second_call() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture_for(
+        "logical-model",
+        "route-fixture",
+        vec!["backup-model".into()],
+    );
+    let store = ModelCallStore::open(directory.model_calls()).unwrap();
+    fs::create_dir(directory.model_calls().with_extension("failures.jsonl")).unwrap();
+    let transport = FakeTransport::with_decision_content("fixture-private-body-not-json".into());
+    let sends = Arc::clone(&transport.sends);
+    let mut controller = controller(&directory).with_model_call_store(store);
+    let result = controller.run_resolved_routed_model_step(
+        &route,
+        "step-audit-failure",
+        |candidate_route, model_id| {
+            assert_eq!(model_id, "logical-model");
+            Ok(steerbox::loop_controller::ResolvedProviderCandidate {
+                adapter: Box::new(ProviderModelAdapter::new(
+                    OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport.clone()),
+                    None,
+                )),
+                request: ModelRequest {
+                    model_id: pack.model_id().into(),
+                    goal_id: "goal-model-audit".into(),
+                    loop_run_id: "loop-model-audit".into(),
+                    step_id: "step-audit-failure".into(),
+                    objective: pack.objective().into(),
+                    observation: pack.observation().into(),
+                },
+                pack: pack.clone(),
+                route: candidate_route.clone(),
+            })
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(LoopControllerError::ModelCallStore(_))
+    ));
+    assert_eq!(sends.lock().unwrap().len(), 1);
+    assert_eq!(controller.task_run().attempts.len(), 1);
+    assert_eq!(controller.budget().model_calls_used, 1);
+    assert_eq!(controller.budget().steps_used, 1);
+    let events = EventLog::open(directory.events())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "model_call_failed"
+            && event.payload["audit_failure"] == true));
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "model_route_fallback"
+            || event.event_type == "model_call_completed"));
 }
 
 #[test]

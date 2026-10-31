@@ -1,7 +1,7 @@
 # 受约束的主动自适应模型路由与质量策略
 
 **日期**：2026-10-20
-**状态**：Phase 1 设计增量；纯状态契约、opt-in OpenAI-compatible 参数绑定及 profile 固定效果装配已实现，完整自动运行链未完成
+**状态**：Phase 1 设计增量；纯状态契约、opt-in OpenAI-compatible 参数绑定、profile 固定效果装配及 resolved 失败安全证据投影已验证，完整自动运行链未完成
 
 ## 2026-10-31 实现边界
 
@@ -166,7 +166,17 @@ OpenAI-compatible 与 Anthropic 的决策解析使用 metadata-only `DecisionOut
 
 这是明确的 Rust 公开错误契约变化：决策 parser 改为 `ModelAdapterError::DecisionOutputRejected { reason }`，调用方穷尽匹配须更新；静态 Display/Debug 不包含响应正文。OpenAI 既有显式 actionless 门禁、Markdown 调用方权限拒绝及缺 action runtime 仍使用原 `ProviderTextUnmappable`；Anthropic actionless 入口通过 `deny_unknown_fields` 拒绝 action，属于本次结构解析错误分类，不增加旧错误兼容层。持久化失败分类仍为 `provider_response/response_unmappable`，失败审计顺序及既有预算不变。
 
-本切片不保留解析失败后已取得的 usage/hash/finish reason，也不实现 token/成本累计预算或自动升级。后续须先把安全投影后的失败测量证据保留下来，未知 usage 不可视为零；当前 `LoopBudget` 八维为次数限制，不是金额计费上限。
+上述分类切片交付时尚未保留解析失败后已取得的 usage/hash/finish reason；后续证据传递契约如下。当前 `LoopBudget` 八维仍为次数限制，不是金额计费上限。
+
+## 2026-10-31 resolved 失败调用证据契约
+
+resolved 调用直接返回 `ResolvedCallFailure`，由静态 `ModelAdapterError` cause 和可选 `ResolvedCallEvidence` 组成；这属于公开 Rust 错误契约变更，无旧签名兼容层。普通 `ModelAdapter` 和决策 parser 继续返回 `ModelAdapterError`。调用方必须显式处理 cause/evidence，不通过隐式转换丢失测量信息。
+
+wire 已成功解析、但决策解析、OpenAI actionless 门禁或 bounded Markdown 后置门禁拒绝时，证据仅投影本地精确请求 body 的 `sha256:` hash、provider 报告的输入/输出 token 数及封闭允许集合中的 finish reason。字段保持私有，通过受限构造和只读访问器暴露；不携带 `ProviderResponse`、响应正文、wire id/model、endpoint 或 auth_ref。未知 finish reason 不回显；缺失/部分 usage 逐字段保留 `None`，实际零保留 `Some(0)`，不由 total 倒算，也不推算账单。
+
+预检、binding、transport 或 wire 解析失败没有可信完成证据，evidence 为 `None`。controller 仅填充既有 failure JSONL 的可选字段，output artifact 和 estimated cost 仍未知；身份继续来自已校验的 route/pack/controller，不取 wire identity。失败审计写入失败仍 fail-closed，次序保持 failure append → failed event → quality → step_failed。
+
+证据保留不发起额外请求，不改变错误分类、保守质量判断、retry 白名单、既有 step/model 次数消耗或 foreground one-shot 限制；不授权自动升级，不自动重试写入。token/金额累计预算、统一质量测量、自动升级闭环及 live provider 验收仍待完成。本轮测试与审核结果在切片冻结后另记，以上契约不替代交付验证证据。
 
 ## 当前状态
 

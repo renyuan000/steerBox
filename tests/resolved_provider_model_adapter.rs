@@ -5,6 +5,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use steerbox::adaptive_routing::EffectLevel;
+use steerbox::anthropic_adapter::{
+    AnthropicAdapter, AnthropicHeaders, AnthropicTransport, AnthropicTransportError,
+};
 use steerbox::model_adapter::{
     DecisionOutputRejection, ModelAdapterError, ModelDecision, ModelRequest,
 };
@@ -15,7 +18,7 @@ use steerbox::provider_adapter::{
     ModelEffectPolicy, OpenAiCompatibleAdapter, ProviderTransport, ReasoningEffort, TransportError,
     TransportResponse,
 };
-use steerbox::provider_model_adapter::ProviderModelAdapter;
+use steerbox::provider_model_adapter::{ProviderModelAdapter, ResolvedModelAdapter};
 use steerbox::resolved_prompt::{
     resolve_prompt, AgentRolePrompt, ModelPromptFragment, ProviderPromptFragment,
     ResolvePromptInput, ResolvedPromptPack, TaskPromptPack, VersionedPromptFragment,
@@ -74,6 +77,24 @@ impl ProviderTransport for FakeTransport {
         streaming: bool,
     ) -> Result<TransportResponse, TransportError> {
         self.sends.lock().expect("capture lock").push(CapturedSend {
+            endpoint: endpoint.into(),
+            body: request_body.into(),
+            streaming,
+        });
+        Ok(self.response.clone())
+    }
+}
+
+impl AnthropicTransport for FakeTransport {
+    fn send(
+        &self,
+        endpoint: &str,
+        _headers: &AnthropicHeaders,
+        request_body: &str,
+        _timeout: Duration,
+        streaming: bool,
+    ) -> Result<TransportResponse, AnthropicTransportError> {
+        self.sends.lock().unwrap().push(CapturedSend {
             endpoint: endpoint.into(),
             body: request_body.into(),
             streaming,
@@ -326,14 +347,28 @@ fn resolved_action_bridge_retains_validated_action() {
 #[test]
 fn legacy_resolved_bridge_rejects_action_instead_of_dropping_it() {
     let pack = resolved_pack();
-    let error = adapter(FakeTransport::response(
+    let transport = FakeTransport::response(
         &valid_action_response(),
-        None,
+        Some(json!({"prompt_tokens": 0, "completion_tokens": 3})),
         Some("stop"),
-    ))
-    .complete_resolved(request_for(&pack), &pack)
-    .expect_err("legacy resolved bridge must fail closed on action");
-    assert_eq!(error, ModelAdapterError::ProviderTextUnmappable);
+    );
+    let sends = Arc::clone(&transport.sends);
+    let error = adapter(transport)
+        .complete_resolved(request_for(&pack), &pack)
+        .expect_err("legacy resolved bridge must fail closed on action");
+    assert_eq!(error.cause(), &ModelAdapterError::ProviderTextUnmappable);
+    let evidence = error
+        .evidence()
+        .expect("actionless rejection retains evidence");
+    assert_eq!(evidence.finish_reason(), Some("stop"));
+    assert_eq!(evidence.input_tokens(), Some(0));
+    assert_eq!(evidence.output_tokens(), Some(3));
+    let bodies = sends.lock().unwrap();
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(
+        evidence.input_context_hash(),
+        format!("sha256:{:x}", Sha256::digest(bodies[0].body.as_bytes()))
+    );
 }
 
 #[test]
@@ -391,9 +426,10 @@ fn resolved_bridge_rejects_other_protocols_before_send() {
         let pack = resolved_pack_for_protocol(protocol);
         let transport = FakeTransport::valid();
         let sends = Arc::clone(&transport.sends);
-        assert!(adapter(transport)
+        let failure = adapter(transport)
             .complete_resolved(request_for(&pack), &pack)
-            .is_err());
+            .unwrap_err();
+        assert!(failure.evidence().is_none());
         assert!(sends.lock().expect("capture lock").is_empty());
     }
 }
@@ -469,6 +505,275 @@ fn resolved_bridge_does_not_invent_missing_usage_or_finish_reason() {
 }
 
 #[test]
+fn resolved_wire_failures_have_no_response_evidence_for_both_protocols() {
+    for protocol in ["openai", "anthropic"] {
+        let pack = resolved_pack_for_protocol(protocol);
+        for (status, body) in [
+            (500, "fixture-private-upstream-body"),
+            (200, "fixture-private-malformed-wire"),
+        ] {
+            let transport = FakeTransport {
+                response: TransportResponse::body(status, body),
+                sends: Arc::new(Mutex::new(Vec::new())),
+            };
+            let sends = Arc::clone(&transport.sends);
+            let adapter: Box<dyn ResolvedModelAdapter> = if protocol == "openai" {
+                Box::new(adapter(transport))
+            } else {
+                Box::new(AnthropicAdapter::new(
+                    "fixture-provider",
+                    BASE_URL,
+                    transport,
+                    None,
+                ))
+            };
+            let failure = adapter
+                .complete_resolved_with_action(request_for(&pack), &pack)
+                .err()
+                .unwrap();
+            assert!(failure.evidence().is_none());
+            assert_eq!(sends.lock().unwrap().len(), 1);
+            assert!(!format!("{failure}\n{failure:?}").contains("fixture-private"));
+        }
+    }
+}
+
+#[test]
+fn resolved_parse_failures_preserve_only_known_safe_evidence_for_both_protocols() {
+    let private_finish =
+        "https://fixture-private.invalid/finish\n\u{1b}[31mfixture-synthetic-secret-marker";
+    for (protocol, input_field, output_field, known_finish) in [
+        ("openai", "prompt_tokens", "completion_tokens", "length"),
+        ("anthropic", "input_tokens", "output_tokens", "max_tokens"),
+    ] {
+        let pack = resolved_pack_for_protocol(protocol);
+        for (usage_present, input_tokens, output_tokens, finish, expected_finish) in [
+            (false, None, None, None, None),
+            (true, None, None, Some(private_finish), None),
+            (true, Some(0), None, Some(known_finish), Some(known_finish)),
+            (true, None, Some(7), Some(known_finish), Some(known_finish)),
+            (
+                true,
+                Some(0),
+                Some(0),
+                Some(known_finish),
+                Some(known_finish),
+            ),
+            (
+                true,
+                Some(17),
+                Some(5),
+                Some(known_finish),
+                Some(known_finish),
+            ),
+        ] {
+            let mut usage = json!({});
+            if let Some(tokens) = input_tokens {
+                usage[input_field] = json!(tokens);
+            }
+            if let Some(tokens) = output_tokens {
+                usage[output_field] = json!(tokens);
+            }
+            if protocol == "openai" {
+                usage["total_tokens"] = json!(999);
+            }
+            let mut body = if protocol == "openai" {
+                json!({
+                    "id": "fixture-response-private-id",
+                    "model": "fixture-response-private-model",
+                    "choices": [{"message": {"content": "fixture-response-private-body"}, "finish_reason": finish}],
+                })
+            } else {
+                json!({
+                    "id": "fixture-response-private-id",
+                    "model": "fixture-response-private-model",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "fixture-response-private-body"}],
+                    "stop_reason": finish,
+                })
+            };
+            if usage_present {
+                body["usage"] = usage;
+            }
+            let transport = FakeTransport {
+                response: TransportResponse::body(200, body.to_string()),
+                sends: Arc::new(Mutex::new(Vec::new())),
+            };
+            let sends = Arc::clone(&transport.sends);
+            let adapter: Box<dyn ResolvedModelAdapter> = if protocol == "openai" {
+                Box::new(adapter(transport))
+            } else {
+                Box::new(AnthropicAdapter::new(
+                    "fixture-provider",
+                    BASE_URL,
+                    transport,
+                    None,
+                ))
+            };
+            let failure = adapter
+                .complete_resolved_with_action(request_for(&pack), &pack)
+                .err()
+                .expect("invalid decision text fails after one wire response");
+            assert_eq!(
+                failure.cause(),
+                &ModelAdapterError::DecisionOutputRejected {
+                    reason: DecisionOutputRejection::JsonSyntaxInvalid,
+                }
+            );
+            let evidence = failure.evidence().expect("safe evidence retained");
+            let bodies = sends.lock().unwrap();
+            assert_eq!(bodies.len(), 1);
+            assert_eq!(
+                evidence.input_context_hash(),
+                format!("sha256:{:x}", Sha256::digest(bodies[0].body.as_bytes()))
+            );
+            assert_eq!(evidence.input_tokens(), input_tokens);
+            assert_eq!(evidence.output_tokens(), output_tokens);
+            assert_eq!(evidence.finish_reason(), expected_finish);
+            let diagnostic = format!("{failure}\n{failure:?}");
+            for marker in [
+                "fixture-response-private",
+                "https://fixture-private.invalid",
+                "fixture-synthetic-secret-marker",
+            ] {
+                assert!(!diagnostic.contains(marker));
+            }
+        }
+    }
+}
+
+#[test]
+fn all_decision_rejection_classes_preserve_safe_evidence_for_both_protocols() {
+    let cases = [
+        (
+            "fixture-response-private-body".to_owned(),
+            DecisionOutputRejection::JsonSyntaxInvalid,
+        ),
+        (
+            r#"{"decision":"fixture-response-private-body","summary":"done"}"#.to_owned(),
+            DecisionOutputRejection::EnvelopeInvalid,
+        ),
+        (
+            r#"{"decision":"complete_loop","summary":" "}"#.to_owned(),
+            DecisionOutputRejection::EmptySummary,
+        ),
+        (
+            r#"{"decision":"continue_observation","summary":"fixture","action":{"schema_version":1,"action_id":"action-1","tool_id":"git_status","parameters":{"shell":"fixture-response-private-body"},"path_scope":{"root":"/workspace","allowed_paths":["README.md"]},"verification":{"verifier_tool_id":"verify","parameters":{"path":"README.md"}}}}"#.to_owned(),
+            DecisionOutputRejection::ActionRejected,
+        ),
+        (
+            json!({
+                "decision": "complete_loop",
+                "summary": format!("fixture-response-private-body{}", "x".repeat(steerbox::redaction::DEFAULT_MAX_INPUT_BYTES)),
+            })
+            .to_string(),
+            DecisionOutputRejection::SummaryRedactionRejected,
+        ),
+    ];
+    for protocol in ["openai", "anthropic"] {
+        let pack = resolved_pack_for_protocol(protocol);
+        for (text, reason) in &cases {
+            let body = if protocol == "openai" {
+                json!({
+                    "id": "fixture-response-private-id", "model": "fixture-response-private-model",
+                    "choices": [{"message": {"content": text}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 17, "completion_tokens": 5},
+                })
+            } else {
+                json!({
+                    "id": "fixture-response-private-id", "model": "fixture-response-private-model",
+                    "type": "message", "role": "assistant",
+                    "content": [{"type": "text", "text": text}],
+                    "stop_reason": "end_turn", "usage": {"input_tokens": 17, "output_tokens": 5},
+                })
+            };
+            let transport = FakeTransport {
+                response: TransportResponse::body(200, body.to_string()),
+                sends: Arc::new(Mutex::new(Vec::new())),
+            };
+            let sends = Arc::clone(&transport.sends);
+            let adapter: Box<dyn ResolvedModelAdapter> = if protocol == "openai" {
+                Box::new(adapter(transport))
+            } else {
+                Box::new(AnthropicAdapter::new(
+                    "fixture-provider",
+                    BASE_URL,
+                    transport,
+                    None,
+                ))
+            };
+            let failure = adapter
+                .complete_resolved_with_action(request_for(&pack), &pack)
+                .err()
+                .expect("decision output must be rejected");
+            assert_eq!(
+                failure.cause(),
+                &ModelAdapterError::DecisionOutputRejected { reason: *reason }
+            );
+            let evidence = failure.evidence().expect("safe response evidence retained");
+            let bodies = sends.lock().unwrap();
+            assert_eq!(bodies.len(), 1);
+            assert_eq!(
+                evidence.input_context_hash(),
+                format!("sha256:{:x}", Sha256::digest(bodies[0].body.as_bytes()))
+            );
+            assert_eq!(evidence.input_tokens(), Some(17));
+            assert_eq!(evidence.output_tokens(), Some(5));
+            assert_eq!(
+                evidence.finish_reason(),
+                Some(if protocol == "openai" {
+                    "stop"
+                } else {
+                    "end_turn"
+                })
+            );
+            assert!(!format!("{failure}\n{failure:?}").contains("fixture-response-private-body"));
+        }
+    }
+}
+
+#[test]
+fn resolved_parse_failure_hash_tracks_effect_and_default_wire_bytes() {
+    let pack = resolved_pack();
+    let mut hashes = Vec::new();
+    for configured in [false, true] {
+        let transport = FakeTransport::response("fixture-invalid-decision", None, Some("stop"));
+        let sends = Arc::clone(&transport.sends);
+        let mut provider = OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport);
+        if configured {
+            provider = provider
+                .with_effect_policy(
+                    ModelEffectPolicy::new(
+                        "wire-model",
+                        BTreeMap::from([(EffectLevel::Strong, ReasoningEffort::High)]),
+                    )
+                    .unwrap(),
+                    EffectLevel::Strong,
+                )
+                .unwrap();
+        }
+        let failure = ProviderModelAdapter::new(provider, None)
+            .complete_resolved(request_for(&pack), &pack)
+            .unwrap_err();
+        let bodies = sends.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        let wire: Value = serde_json::from_str(&bodies[0].body).unwrap();
+        assert_eq!(
+            wire.get("reasoning_effort").and_then(Value::as_str),
+            configured.then_some("high")
+        );
+        let hash = failure.evidence().unwrap().input_context_hash();
+        assert_eq!(
+            hash,
+            format!("sha256:{:x}", Sha256::digest(bodies[0].body.as_bytes()))
+        );
+        hashes.push(hash.to_owned());
+    }
+    assert_ne!(hashes[0], hashes[1]);
+}
+
+#[test]
 fn resolved_bridge_rejects_invalid_decision_without_guessing() {
     let pack = resolved_pack();
     let cases = [
@@ -494,7 +799,10 @@ fn resolved_bridge_rejects_invalid_decision_without_guessing() {
         let error = adapter(transport)
             .complete_resolved(request_for(&pack), &pack)
             .expect_err("invalid decision must be rejected");
-        assert_eq!(error, ModelAdapterError::DecisionOutputRejected { reason });
+        assert_eq!(
+            error.cause(),
+            &ModelAdapterError::DecisionOutputRejected { reason }
+        );
         assert!(!format!("{error}\n{error:?}").contains("fixture-response-body"));
         assert_eq!(sends.lock().expect("capture lock").len(), 1);
     }

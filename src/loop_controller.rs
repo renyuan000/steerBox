@@ -1976,7 +1976,8 @@ impl ReadOnlyLoopController {
         let model_call_id = format!("call-{}-{step_id}", self.loop_run.loop_run_id);
         let resolved = match adapter.complete_resolved_with_action(request, pack) {
             Ok(response) => response,
-            Err(error) => {
+            Err(failure) => {
+                let (error, evidence) = failure.into_parts();
                 let (failure_stage, failure_class) = model_call_failure_metadata(&error);
                 let failure_record = ModelCallFailureRecord {
                     schema_version: crate::model_contracts::MODEL_CALL_FAILURE_SCHEMA_VERSION,
@@ -1993,11 +1994,19 @@ impl ReadOnlyLoopController {
                     ended_at: chrono::Utc::now().to_rfc3339(),
                     failure_stage: failure_stage.into(),
                     failure_class: failure_class.into(),
-                    input_context_hash: None,
+                    input_context_hash: evidence
+                        .as_ref()
+                        .map(|evidence| evidence.input_context_hash().to_owned()),
                     output_artifact_ref: None,
-                    finish_reason: None,
-                    input_tokens: None,
-                    output_tokens: None,
+                    finish_reason: evidence
+                        .as_ref()
+                        .and_then(|evidence| evidence.finish_reason().map(str::to_owned)),
+                    input_tokens: evidence
+                        .as_ref()
+                        .and_then(|evidence| evidence.input_tokens()),
+                    output_tokens: evidence
+                        .as_ref()
+                        .and_then(|evidence| evidence.output_tokens()),
                     estimated_cost: None,
                 };
                 if let Err(store_error) = store.append_failure(&failure_record) {

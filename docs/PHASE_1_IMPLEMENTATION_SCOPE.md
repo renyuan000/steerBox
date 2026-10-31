@@ -39,6 +39,8 @@ OpenAI-compatible 与 Anthropic non-stream adapter、注入式 HTTP transport、
 
 模型路径已有本地规则路由到 `ModelAdapterRegistry` 的 LoopController 接线，EventLog 保存路由及关联的调用事件；High risk 或 Restricted privacy 路由在没有审批 resolver 时拒绝调用。静态 `ResolvedPromptPack`、opt-in provider bridge 和 `ModelCallStore` 审计已有 fake/localhost 请求验证，覆盖成功 resolved 调用的 provider/endpoint/model/prompt 绑定、wire hash、usage/finish_reason 和 fail-closed 路径。opt-in resolved controller 的 adapter-error 分支另写独立 `ModelCallFailureRecord` 和 failure JSONL，不改变成功 `ModelCallRecord` 合同、不保存 provider 原始错误正文；无法取得的 hash、output artifact、finish reason、usage/cost 保留为 `None`，不伪造成功事实。failure audit 写入失败则返回错误；该覆盖不延伸到所有前置 binding/approval、routed 或工具失败路径，也不是通用 DLP 保证。routed fixture/model-adapter fallback 已创建新的父链 Attempt，记录实际事件证据并共享累计预算；不以模型切换清零 no-progress，不可恢复失败或额度耗尽后运行进入失败终态。此结果不覆盖 resolved provider fallback、retry/resume/fork 或跨进程恢复。
 
+resolved 入口的公开错误类型为 `ResolvedCallFailure`：两协议 wire 已成功解析后的决策拒绝，以及 OpenAI actionless / bounded Markdown 后置门禁拒绝，会保留安全的精确请求 hash、逐字段已知 token 和白名单 finish reason。预检、transport/wire 失败没有可信完成证据，保持 `None`；未知或部分 usage 不补零、不从 total 倒算。该证据通过既有 failure JSONL 保存，不携带原始响应、wire identity、endpoint 或 auth_ref，不改变失败分类和审计次序，也不授权升级或增加预算。token/金额累计预算仍待完成。
+
 routed 路径的 EventLog 或 ProgressSink 故障会将仍 Running 的 Attempt/TaskRun/LoopRun 在当前进程内封为失败，防止再次调用模型；保留原故障，不把 progress 故障当成模型可重试错误，不覆盖已完成/取消/暂停状态。失败日志无法写入时不伪造 evidence refs，也不声称终态已持久化或可跨进程恢复。此封口不扩展 non-routed/resolved 路径的故障保证。
 
 只读模型动作已接入 `PolicyGate → ReadOnlyToolExecutor → verification`。任意文件写入/Bash、真实 profile/live provider 和完整恢复仍未验收。`ModelRegistry` / `RuntimeConfig` 的 auth_ref 与 endpoint 认证材料校验、本地 `Redactor` 和 provider 出站脱敏均是已测规则边界，不是任意敏感正文的通用 DLP 保证。
