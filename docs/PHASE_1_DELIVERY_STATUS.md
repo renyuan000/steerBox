@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+2026-11-01 已报告token门禁增量：`enable_reported_token_budget(limit)`库API默认关闭且只能在首次模型调用前启用；TaskRun持有私有累计账本，resolved普通/fallback/upgrade/continuation共用，unknown不计零、checked累计、重复ID不重发、审计/进度故障阻断。独立边界回归验证实际修复故障后跨入口零新增发送、TaskRun恢复继承及两次升档请求累计。规格、质量与测试增量审核通过，master最终全量64套/774项、严格clippy、lib/bin build、fmt/diff均通过，持久日志见`PHASE_1_VALIDATION_PLAN.md`。不是单请求token硬上限、金额预算、生产runner/CLI接线、live验收或Phase 1整体完成；契约见`REPORTED_TOKEN_BUDGET_CONTRACT.md`。
+
 2026-10-31 tool-call CLI 复核：`tool-call page <config.json> <offset> <limit>` 查询固定 metadata schema，缺日志返回空页且不创建主 JSONL；沿用 store 锁机制，可能创建父目录和 `.lock`，不是零磁盘写入。正常 append 的 summary 会先脱敏，但读取不对任意导入记录提供通用 DLP。已复现并修复坏记录类型错误回显正文的问题，CLI 现在只报告行号；合成敏感 summary、错误回显、零 limit、越界 offset、1024/1025 边界回归通过。master 在 `/tmp/steerbox-cli-resume-20261031-target` 下执行 `cargo test --locked --offline --test runtime_cli --test tool_call_store`，16 + 14 项通过；不代表 live provider 或完整 Phase 1 已验收。
 
 2026-10-31 profile 增量：可选 typed `effect` 已接入配置 HTTP factory、foreground 和 bounded Markdown 共用装配 helper，支持显式固定档位与严格递增的稀疏映射；配置及公开变异使用前复验，Anthropic 当前明确拒绝该声明。无配置不发送 native 参数，配置 `x_high` 对应 native `xhigh`。foreground 四档/no-effect 与 Markdown 有/无配置验证实际出站 body/hash；非法 Markdown 配置在 prepare 拒绝，零调用、无审计文件且原文不变。真实 loopback 仅在 `#[cfg(test)]` 中向生产共用的 crate-private helper 注入 loopback transport，不宣称公开生产 factory 支持 HTTP；HTTPS 门禁不变。master 在独立 `/tmp/steerbox-profile-master-20261031-target`、jobs=2 下执行 `cargo test --locked --offline --tests --quiet`、严格 lib/bin/tests clippy（`-D warnings`）、lib/bin build、fmt/diff，均退出 0。固定配置不授予自动升级权限；没有 live 调用或真实凭据验收。

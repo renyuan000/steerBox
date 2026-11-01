@@ -36,6 +36,637 @@ use steerbox::tool_registry::ToolRegistry;
 
 const BASE_URL: &str = "https://fixture.example.test/v1";
 
+fn token_budget_request(pack: &ResolvedPromptPack, step_id: &str) -> ModelRequest {
+    ModelRequest {
+        model_id: pack.model_id().into(),
+        goal_id: "goal-model-audit".into(),
+        loop_run_id: "loop-model-audit".into(),
+        step_id: step_id.into(),
+        objective: pack.objective().into(),
+        observation: pack.observation().into(),
+    }
+}
+
+fn token_usage_transport(input: Option<u64>, output: Option<u64>, valid: bool) -> FakeTransport {
+    FakeTransport {
+        result: Ok(TransportResponse::body(
+            200,
+            json!({
+                "id": "fixture-response", "model": "wire-model",
+                "choices": [{"message": {"role": "assistant", "content": if valid {
+                    r#"{"decision":"continue_observation","summary":"fixture observed"}"#
+                } else { "not decision JSON" }}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": input, "completion_tokens": output, "total_tokens": 999}
+            })
+            .to_string(),
+        )),
+        sends: Arc::new(Mutex::new(Vec::new())),
+    }
+}
+
+#[test]
+fn reported_token_budget_zero_limit_stops_before_count_budgets_and_send() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller(&directory)
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    controller.enable_reported_token_budget(0).unwrap();
+    assert!(matches!(
+        controller.run_resolved_model_step(
+            &adapter,
+            token_budget_request(&pack, "zero"),
+            &pack,
+            &route,
+            "zero"
+        ),
+        Err(LoopControllerError::ReportedTokenBudget(_))
+    ));
+    assert_eq!(controller.budget().steps_used, 0);
+    assert_eq!(controller.budget().model_calls_used, 0);
+    assert!(sends.lock().unwrap().is_empty());
+    assert!(controller
+        .task_run()
+        .reported_token_budget()
+        .unwrap()
+        .records()
+        .is_empty());
+}
+
+#[test]
+fn reported_token_budget_settles_before_followup_and_rejects_duplicate_send() {
+    for usage in [(Some(2), Some(3)), (None, Some(3)), (Some(0), Some(0))] {
+        let directory = TestDirectory::new();
+        let (pack, route) = resolved_fixture();
+        let transport = token_usage_transport(usage.0, usage.1, true);
+        let sends = transport.sends.clone();
+        let adapter = ProviderModelAdapter::new(
+            OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+            None,
+        );
+        let mut controller = controller_with_budget(
+            &directory,
+            vec![".".into()],
+            LoopBudget::new(6, 0, 6, 1, 0, 6, 6, 1),
+        )
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        controller.enable_reported_token_budget(5).unwrap();
+        controller
+            .run_resolved_model_step(
+                &adapter,
+                token_budget_request(&pack, "first"),
+                &pack,
+                &route,
+                "first",
+            )
+            .unwrap();
+        let before = controller.budget().clone();
+        assert!(matches!(
+            controller.run_resolved_model_step(
+                &adapter,
+                token_budget_request(&pack, "first"),
+                &pack,
+                &route,
+                "first"
+            ),
+            Err(LoopControllerError::ReportedTokenBudget(_))
+        ));
+        assert_eq!(controller.budget(), &before);
+        assert_eq!(sends.lock().unwrap().len(), 1);
+        assert!(controller.enable_reported_token_budget(100).is_err());
+        let budget = controller.task_run().reported_token_budget().unwrap();
+        assert_eq!(budget.records()[0].input_tokens(), usage.0);
+        assert_eq!(budget.records()[0].output_tokens(), usage.1);
+        assert_eq!(
+            budget.known_total_tokens(),
+            usage.0.unwrap_or(0) + usage.1.unwrap_or(0)
+        );
+        let next = controller.run_resolved_model_step(
+            &adapter,
+            token_budget_request(&pack, "next"),
+            &pack,
+            &route,
+            "next",
+        );
+        if usage == (Some(0), Some(0)) {
+            next.unwrap();
+            assert_eq!(sends.lock().unwrap().len(), 2);
+        } else {
+            assert!(matches!(
+                next,
+                Err(LoopControllerError::ReportedTokenBudget(_))
+            ));
+            assert_eq!(sends.lock().unwrap().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn reported_token_budget_failure_preserves_original_error_and_usage() {
+    for usage in [
+        (Some(4), Some(3)),
+        (Some(0), None),
+        (None, Some(2)),
+        (None, None),
+    ] {
+        let directory = TestDirectory::new();
+        let (pack, route) = resolved_fixture();
+        let transport = token_usage_transport(usage.0, usage.1, false);
+        let adapter = ProviderModelAdapter::new(
+            OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+            None,
+        );
+        let mut controller = controller(&directory)
+            .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+        controller.enable_reported_token_budget(20).unwrap();
+        assert!(matches!(
+            controller.run_resolved_model_step(
+                &adapter,
+                token_budget_request(&pack, "failure"),
+                &pack,
+                &route,
+                "failure"
+            ),
+            Err(LoopControllerError::ModelAdapter(_))
+        ));
+        let budget = controller.task_run().reported_token_budget().unwrap();
+        assert_eq!(
+            budget.known_total_tokens(),
+            usage.0.unwrap_or(0) + usage.1.unwrap_or(0)
+        );
+        assert_eq!(budget.records()[0].input_tokens(), usage.0);
+        assert_eq!(budget.records()[0].output_tokens(), usage.1);
+        assert_eq!(
+            budget.blocked().is_some(),
+            usage.0.is_none() || usage.1.is_none()
+        );
+    }
+}
+
+#[test]
+fn reported_token_budget_legacy_api_is_rejected_without_send_or_usage() {
+    let directory = TestDirectory::new();
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller(&directory);
+    controller.enable_reported_token_budget(100).unwrap();
+    let before = controller.budget().clone();
+    assert!(matches!(
+        controller.run_model_step(&adapter, "logical-model", "legacy", "observation"),
+        Err(LoopControllerError::ReportedTokenBudget(_))
+    ));
+    assert_eq!(controller.budget(), &before);
+    assert!(sends.lock().unwrap().is_empty());
+    assert!(controller
+        .task_run()
+        .reported_token_budget()
+        .unwrap()
+        .records()
+        .is_empty());
+}
+
+#[test]
+fn reported_token_budget_success_and_failure_share_one_total() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let good = token_usage_transport(Some(2), Some(3), true);
+    let bad = token_usage_transport(Some(4), Some(1), false);
+    let sends_good = good.sends.clone();
+    let sends_bad = bad.sends.clone();
+    let good = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, good),
+        None,
+    );
+    let bad = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, bad),
+        None,
+    );
+    let mut controller = controller_with_budget(
+        &directory,
+        vec![".".into()],
+        LoopBudget::new(6, 0, 6, 1, 0, 6, 6, 1),
+    )
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    controller.enable_reported_token_budget(10).unwrap();
+    controller
+        .run_resolved_model_step(
+            &good,
+            token_budget_request(&pack, "success"),
+            &pack,
+            &route,
+            "success",
+        )
+        .unwrap();
+    assert!(matches!(
+        controller.run_resolved_model_step(
+            &bad,
+            token_budget_request(&pack, "failed"),
+            &pack,
+            &route,
+            "failed"
+        ),
+        Err(LoopControllerError::ModelAdapter(_))
+    ));
+    assert_eq!(
+        controller
+            .task_run()
+            .reported_token_budget()
+            .unwrap()
+            .known_total_tokens(),
+        10
+    );
+    let before = controller.budget().clone();
+    assert!(matches!(
+        controller.run_resolved_model_step(
+            &good,
+            token_budget_request(&pack, "after"),
+            &pack,
+            &route,
+            "after"
+        ),
+        Err(LoopControllerError::ReportedTokenBudget(_))
+    ));
+    assert_eq!(controller.budget(), &before);
+    assert_eq!(sends_good.lock().unwrap().len(), 1);
+    assert_eq!(sends_bad.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn reported_token_budget_transport_failure_keeps_unknown_and_original_error() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::failing();
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_budget(
+        &directory,
+        vec![".".into()],
+        LoopBudget::new(6, 0, 6, 1, 0, 6, 6, 1),
+    )
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    controller.enable_reported_token_budget(100).unwrap();
+    assert!(matches!(
+        controller.run_resolved_model_step(
+            &adapter,
+            token_budget_request(&pack, "failed"),
+            &pack,
+            &route,
+            "failed"
+        ),
+        Err(LoopControllerError::ModelAdapter(_))
+    ));
+    let record = &controller
+        .task_run()
+        .reported_token_budget()
+        .unwrap()
+        .records()[0];
+    assert_eq!(record.input_tokens(), None);
+    assert_eq!(record.output_tokens(), None);
+    assert!(matches!(
+        controller.run_resolved_model_step(
+            &adapter,
+            token_budget_request(&pack, "after"),
+            &pack,
+            &route,
+            "after"
+        ),
+        Err(LoopControllerError::ReportedTokenBudget(_))
+    ));
+    assert_eq!(sends.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn reported_token_budget_task_run_roundtrip_preserves_state_and_old_snapshots_disable() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let transport = token_usage_transport(Some(2), Some(3), true);
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller(&directory)
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    let old = serde_json::to_value(controller.task_run()).unwrap();
+    assert!(old.get("reported_token_budget").is_none());
+    let restored: steerbox::domain::TaskRun = serde_json::from_value(old).unwrap();
+    assert!(restored.reported_token_budget().is_none());
+    controller.enable_reported_token_budget(5).unwrap();
+    controller
+        .run_resolved_model_step(
+            &adapter,
+            token_budget_request(&pack, "first"),
+            &pack,
+            &route,
+            "first",
+        )
+        .unwrap();
+    let mut value = serde_json::to_value(controller.task_run()).unwrap();
+    let restored: steerbox::domain::TaskRun = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(&restored, controller.task_run());
+    value["reported_token_budget"]["known_total_tokens"] = json!(0);
+    assert!(serde_json::from_value::<steerbox::domain::TaskRun>(value).is_err());
+}
+
+#[test]
+fn reported_token_budget_cannot_be_enabled_after_an_unmetered_model_call() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::valid();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller(&directory)
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    controller
+        .run_resolved_model_step(
+            &adapter,
+            token_budget_request(&pack, "first"),
+            &pack,
+            &route,
+            "first",
+        )
+        .unwrap();
+    assert!(controller.enable_reported_token_budget(100).is_err());
+    assert!(controller.task_run().reported_token_budget().is_none());
+}
+
+#[test]
+fn reported_token_budget_fallback_attempt_does_not_clear_unknown_usage() {
+    let directory = TestDirectory::new();
+    let (primary_pack, primary_route) = resolved_fixture_for(
+        "logical-model",
+        "route-primary",
+        vec!["backup-model".into()],
+    );
+    let (fallback_pack, fallback_route) =
+        resolved_fixture_for("backup-model", "route-backup", vec![]);
+    let transport = FakeTransport::failing();
+    let sends = transport.sends.clone();
+    let mut controller = controller_with_budget(
+        &directory,
+        vec![".".into()],
+        LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4),
+    )
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    controller.enable_reported_token_budget(100).unwrap();
+    let result =
+        controller.run_resolved_routed_model_step(&primary_route, "fallback", |route, model| {
+            let (pack, route) = if model == "logical-model" {
+                (primary_pack.clone(), route.clone())
+            } else {
+                (fallback_pack.clone(), fallback_route.clone())
+            };
+            Ok(steerbox::loop_controller::ResolvedProviderCandidate {
+                request: token_budget_request(&pack, "fallback"),
+                pack,
+                route,
+                adapter: Box::new(ProviderModelAdapter::new(
+                    OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport.clone()),
+                    None,
+                )),
+            })
+        });
+    assert!(matches!(
+        result,
+        Err(LoopControllerError::ReportedTokenBudget(_))
+    ));
+    assert_eq!(sends.lock().unwrap().len(), 1);
+    assert_eq!(controller.budget().model_calls_used, 1);
+    assert_eq!(controller.budget().steps_used, 1);
+    assert_eq!(controller.task_run().attempts.len(), 2);
+    assert_eq!(
+        controller
+            .task_run()
+            .reported_token_budget()
+            .unwrap()
+            .records()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn reported_token_budget_upgrade_attempt_does_not_replenish_known_usage() {
+    use steerbox::adaptive_routing::{EffectLevel, QualityObservation};
+    let directory = TestDirectory::new();
+    let config = effect_upgrade_config(true);
+    let transport = token_usage_transport(Some(3), Some(2), true);
+    let sends = transport.sends.clone();
+    let mut controller = upgrade_controller(&directory, LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4))
+        .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    controller.enable_reported_token_budget(5).unwrap();
+    let result = controller.run_resolved_upgrade_model_step(
+        primary_upgrade_candidate(&config, transport.clone()),
+        "step-upgrade",
+        |_| QualityObservation {
+            low_quality: true,
+            ..QualityObservation::default()
+        },
+        |child_route, level| {
+            assert_eq!(level, EffectLevel::Balanced);
+            let (pack, route) =
+                resolved_fixture_for("wire-model", &child_route.route_decision_id, vec![]);
+            Ok(config
+                .build_effect_bound_candidate(
+                    "wire-model",
+                    level,
+                    transport,
+                    upgrade_request(&pack),
+                    pack,
+                    route,
+                )
+                .unwrap())
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(LoopControllerError::ReportedTokenBudget(_))
+    ));
+    assert_eq!(sends.lock().unwrap().len(), 1);
+    assert_eq!(controller.budget().model_calls_used, 1);
+    assert_eq!(controller.budget().steps_used, 1);
+    assert_eq!(
+        controller
+            .task_run()
+            .reported_token_budget()
+            .unwrap()
+            .known_total_tokens(),
+        5
+    );
+}
+
+#[test]
+fn reported_token_budget_continuation_stops_after_verified_action_without_refill() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let workspace = std::env::current_dir().unwrap();
+    let first = json!({"decision":"continue_observation", "summary":"fixture action", "action": {
+        "schema_version": 1, "action_id": "token-action", "tool_id": "git_status", "parameters": {"scope":"workspace"},
+        "path_scope": {"root":workspace.display().to_string(), "allowed_paths":["README.md"]},
+        "verification": {"verifier_tool_id":"markdown_link_check", "parameters":{"path":"README.md"}}
+    }}).to_string();
+    let mut wire: serde_json::Value = serde_json::from_str(&openai_response(first)).unwrap();
+    wire["usage"] = json!({"prompt_tokens":3, "completion_tokens":2});
+    let transport = SequenceTransport::new(vec![wire.to_string()]);
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = controller_with_budget(
+        &directory,
+        vec!["git_status".into(), "markdown_link_check".into()],
+        LoopBudget::new(4, 4, 4, 1, 0, 4, 4, 1),
+    )
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    controller.enable_reported_token_budget(5).unwrap();
+    let registry = ToolRegistry::baseline().unwrap();
+    let gate = PolicyGate::new();
+    let executor = ReadOnlyToolExecutor;
+    let runtime = ModelActionRuntime::new(&registry, &gate, &executor, &workspace);
+    let result = controller.run_resolved_model_loop(
+        &adapter,
+        token_budget_request(&pack, "continuation"),
+        &pack,
+        &route,
+        &runtime,
+        3,
+    );
+    assert!(matches!(
+        result,
+        Err(LoopControllerError::ReportedTokenBudget(_))
+    ));
+    assert_eq!(sends.lock().unwrap().len(), 1);
+    assert_eq!(controller.budget().steps_used, 1);
+    assert_eq!(controller.budget().model_calls_used, 1);
+    let records = ModelCallStore::open(directory.model_calls())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].tool_call_count, 2);
+    assert_eq!(records[0].verification_status, "passed");
+    assert_eq!(
+        controller
+            .task_run()
+            .reported_token_budget()
+            .unwrap()
+            .known_total_tokens(),
+        5
+    );
+}
+
+#[test]
+fn reported_token_budget_wrapped_snapshot_audit_failure_blocks_later_send() {
+    use steerbox::reported_token_budget::ReportedTokenBudgetError;
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    fs::write(directory.path.join("README.md"), "# Before\n").unwrap();
+    let mut goal = GoalContract::new(
+        "goal-model-audit",
+        "project-model-audit",
+        pack.objective(),
+        vec!["README.md".into()],
+        vec![],
+        vec!["verified".into()],
+    );
+    goal.allowed_tools = vec!["edit_markdown".into(), "markdown_link_check".into()];
+    goal.human_steering_mode = HumanSteeringMode::AutonomousLoop;
+    let mut wire: serde_json::Value = serde_json::from_str(&openai_response(json!({
+        "decision":"continue_observation", "summary":"bounded edit", "action": {
+            "schema_version":1, "action_id":"snapshot-failure-action", "tool_id":"edit_markdown",
+            "parameters":{"path":"README.md", "expected":"# Before\n", "replacement":"# After\n"},
+            "path_scope":{"root":directory.path.display().to_string(), "allowed_paths":["README.md"]},
+            "verification":{"verifier_tool_id":"markdown_link_check", "parameters":{"path":"README.md"}}
+        }
+    }).to_string())).unwrap();
+    wire["usage"] = json!({"prompt_tokens":3, "completion_tokens":2});
+    let transport = FakeTransport {
+        result: Ok(TransportResponse::body(200, wire.to_string())),
+        sends: Arc::new(Mutex::new(vec![])),
+    };
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let mut controller = ReadOnlyLoopController::start(
+        EventLog::open(directory.events()).unwrap(),
+        goal,
+        "loop-model-audit",
+        "task-run-model-audit",
+        LoopBudget::new(4, 4, 4, 1, 0, 4, 4, 1),
+    )
+    .unwrap()
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap())
+    .with_checkpoint_store(directory.path.join("checkpoints.jsonl"))
+    .with_audit_stores(
+        directory.path.join("traces.jsonl"),
+        directory.path.join("side-effects.jsonl"),
+    )
+    .with_snapshot_store(directory.path.join("invalid-nested-snapshots"));
+    controller.enable_reported_token_budget(100).unwrap();
+    let registry = ToolRegistry::baseline().unwrap();
+    let gate = PolicyGate::new();
+    let workspace_executor = WorkspaceToolExecutor;
+    let executor = ReadOnlyToolExecutor;
+    let runtime = WorkspaceEditActionRuntime::new(
+        &registry,
+        &gate,
+        &workspace_executor,
+        &executor,
+        &directory.path,
+        false,
+    );
+    let result = controller.run_resolved_model_step_with_workspace_edit(
+        &adapter,
+        token_budget_request(&pack, "snapshot-failed"),
+        &pack,
+        &route,
+        &runtime,
+        "snapshot-failed",
+    );
+    assert!(matches!(
+        result,
+        Err(LoopControllerError::WorkspaceSnapshot(_))
+    ));
+    let budget = controller.task_run().reported_token_budget().unwrap();
+    assert_eq!(budget.known_total_tokens(), 5);
+    assert_eq!(
+        budget.blocked(),
+        Some(ReportedTokenBudgetError::AuditFailure)
+    );
+    assert!(matches!(
+        controller.run_resolved_model_step_with_workspace_edit(
+            &adapter,
+            token_budget_request(&pack, "after-snapshot-failed"),
+            &pack,
+            &route,
+            &runtime,
+            "after-snapshot-failed"
+        ),
+        Err(LoopControllerError::ReportedTokenBudget(_))
+    ));
+    assert_eq!(sends.lock().unwrap().len(), 1);
+    assert_eq!(
+        fs::read_to_string(directory.path.join("README.md")).unwrap(),
+        "# Before\n"
+    );
+}
+
 #[derive(Clone)]
 struct RecordingProgressSink(Arc<Mutex<Vec<ProgressEvent>>>);
 

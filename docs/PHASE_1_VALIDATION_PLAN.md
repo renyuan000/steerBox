@@ -75,7 +75,7 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 | V13.1 Resolved failure evidence | 已验证安全投影切片 | 两协议 fake transport 验证决策失败的精确 wire hash、逐字段 usage（含完整/缺失/部分/零）与受控 finish reason；OpenAI actionless 和 Markdown 后置门禁保留证据、零工具/原文不变；transport/wire 失败无证据；恶意正文/identity/未知 finish reason 不入错误或持久日志；失败审计写入错误 fail-closed、旧幂等/冲突和 one-shot 限制不变。独立 focused 101项、全量62套/733项、严格 clippy、lib/bin build、fmt/diff 通过。不含 live provider、token/成本预算或自动升级 |
 | V18 StreamReporter | 已验证 CLI 接入切片 | `tests/stream_reporter.rs`、`tests/runtime_cli.rs`；支持 lifecycle/progress/disable/writer error/redaction，readonly/fixture 生命周期输出与事件和状态一致；ContinueObservation/RequestHuman 不伪报 loop completed；尚未接入 LoopController 内部工具/模型 streaming |
 | V26 紧凑交互与路由边界 | 设计已冻结，代码验证待做 | `docs/AGENT_REFERENCE_ARCHITECTURE_REVIEW_2026_10_20.md`、`docs/SECURITY_MODEL_DISCUSSION.md`；待验证短状态/详情分离、窄宽终端格式、endpoint/auth_ref 不进模型输入、低风险路由不重复询问及性能档位有限升级 |
-| V27 主动自适应路由 | 已验证 opt-in 单次升档库切片，完整运行链未完成 | `tests/config_provider_binding.rs`、`tests/model_call_controller_audit.rs`：默认关闭、显式同边界 factory、wire low→medium、相邻单次升档、新 Attempt/Route/PromptPack/Call、父证据和次数预算继承、两轮宿主质量验收、RequestHuman 不完成、安全/解析/动作错误不重调、预算与审计故障后不再发送、事件查询；一次上限不是多次 cooldown。生产 runner/CLI、统一采集、token/金额约束及 live 验收仍待完成 |
+| V27 主动自适应路由 | 已验证 opt-in 单次升档与已报告token门禁库切片，完整运行链未完成 | `tests/config_provider_binding.rs`、`tests/model_call_controller_audit.rs`：默认关闭、显式同边界 factory、wire low→medium、相邻单次升档、新 Attempt/Route/PromptPack/Call、父证据和次数预算继承、两轮宿主质量验收、RequestHuman 不完成、安全/解析/动作错误不重调、预算与审计故障后不再发送、事件查询。`tests/reported_token_budget.rs`及`tests/reported_token_controller_boundary.rs`验证Option用量、checked累计/冲突/未知阻断、重复ID、store/progress修复后跨入口阻断、恢复及实际child累计；一次上限不是多次 cooldown。生产 runner/CLI、统一采集、预留式硬上限、金额约束及 live 验收仍待完成 |
 | V19 Execution History Query | 已验证最小只读切片 | `tests/execution_query.rs`、`tests/runtime_cli.rs`；EventLog 事实源、StateStore 当前状态投影、metadata-only `execution list/show/page` 和 detached snapshot 分页；覆盖非法参数、空页、越界和未知 loop；底层仍依赖 `read_all()`，live worker/control plane 未实现 |
 | V14 Run Summary | 已验证最小切片 | `tests/audit_store.rs`、`tests/runtime_cli.rs`；完整 task/attempt/evidence 反查仍待实现 |
 | V15 Task 状态迁移 | 已验证最小切片 | `tests/domain_contracts.rs`；TaskRun/Attempt 命令 lineage 仍待实现 |
@@ -91,6 +91,8 @@ WSL2 重启恢复检查必须先执行 `git status --short --branch`、`git log 
 状态更新规则：只有可复现命令、测试输出或运行日志支持时，才能把“未验证”改为“已验证”。
 
 2026-11-01 单次升档切片：规格及质量源码审查通过后，主 Agent 在冻结实现上独立执行 `cargo test --locked --offline --tests --quiet`（62 套、751 项通过、0 失败/忽略）、`cargo clippy --locked --offline --all-targets -- -D warnings`、`cargo build --locked --offline --lib --bins`、`cargo fmt --all -- --check` 与 `git diff --check`，均通过。WSL2 重启前未收取的全量测试不作为证据；重跑日志及独立 target 保存在项目外 `/temp/codex/steerbox-validation/effect-upgrade-20261101/`，编译 jobs=1。测试使用合成配置/fake transport，没有真实凭据读取或 live LLM 调用；不代表完整 Phase 1、生产部署或服务端能力验收。
+
+2026-11-01 已报告token门禁切片：独立规格与质量源码审核、边界回归增量审核通过；master在最终冻结代码及新增独立测试上执行`cargo test --locked --offline --all-targets -- --test-threads=1`，64套/774项通过、0失败/忽略；`cargo clippy --locked --offline --all-targets -- -D warnings`、`cargo build --locked --offline --lib --bins`、`cargo fmt --all -- --check`与`git diff --check`均通过。独立target为项目外持久目录`/temp/codex/steerbox-validation/reported-token-budget-20261101/master-target`，jobs=1；证据位于该target的父目录：`master-final-tests.log`、`master-final-clippy.log`、`master-final-build.log`。纯账本6项、controller audit 62项和独立boundary 5项包含于全量，不重复相加。无真实凭据或live调用，不代表Phase 1整体完成、单请求token硬上限或金额预算。
 
 ## 验证用例
 

@@ -728,6 +728,8 @@ pub struct TaskRun {
     pub worker_id: Option<String>,
     pub workspace_ref: Option<String>,
     pub budget: LoopBudget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reported_token_budget: Option<crate::reported_token_budget::ReportedTokenBudget>,
     pub status: TaskRunStatus,
     pub verification_status: String,
     pub artifact_refs: Vec<String>,
@@ -758,6 +760,7 @@ impl TaskRun {
             worker_id: None,
             workspace_ref: None,
             budget,
+            reported_token_budget: None,
             status: TaskRunStatus::Running,
             verification_status: "not_run".into(),
             artifact_refs: Vec::new(),
@@ -769,6 +772,12 @@ impl TaskRun {
             current_attempt_id: None,
             attempts: Vec::new(),
         })
+    }
+
+    pub fn reported_token_budget(
+        &self,
+    ) -> Option<&crate::reported_token_budget::ReportedTokenBudget> {
+        self.reported_token_budget.as_ref()
     }
 
     pub fn start_attempt(

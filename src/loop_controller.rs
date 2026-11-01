@@ -35,6 +35,7 @@ use crate::policy_gate::{PolicyDecision, PolicyGate, PolicyGateError, PolicyRequ
 use crate::provider_adapter::ProviderErrorClass;
 use crate::provider_model_adapter::ResolvedModelAdapter;
 use crate::redaction::{RedactionError, Redactor, FAIL_CLOSED_MARKER};
+use crate::reported_token_budget::{ReportedTokenBudget, ReportedTokenBudgetError};
 use crate::resolved_prompt::{PromptResolutionError, ResolvedPromptPack};
 use crate::strategy_selector::{StrategyDecision, StrategySelectionError, StrategySelector};
 use crate::stream_reporter::{ProgressEvent, ProgressSink, ProgressStatus, ProgressSubject};
@@ -59,6 +60,8 @@ const MAX_MODEL_TOOL_CONTEXT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
 pub enum LoopControllerError {
+    #[error("reported token budget rejected: {0}")]
+    ReportedTokenBudget(#[from] ReportedTokenBudgetError),
     #[error("loop event log failed: {0}")]
     EventLog(#[from] EventLogError),
     #[error("loop event rejected: {0}")]
@@ -546,6 +549,14 @@ impl ReadOnlyLoopController {
 
     pub fn task_run(&self) -> &TaskRun {
         &self.task_run
+    }
+
+    pub fn enable_reported_token_budget(&mut self, limit: u64) -> Result<(), LoopControllerError> {
+        if self.budget.model_calls_used != 0 || self.task_run.reported_token_budget.is_some() {
+            return Err(ReportedTokenBudgetError::EnableRejected.into());
+        }
+        self.task_run.reported_token_budget = Some(ReportedTokenBudget::new(limit));
+        Ok(())
     }
 
     pub fn current_attempt_id(&self) -> Option<&str> {
@@ -2129,6 +2140,46 @@ impl ReadOnlyLoopController {
         check_no_progress: bool,
         complete_loop: bool,
     ) -> Result<ResolvedStepOutcome, LoopControllerError> {
+        let result = self.run_resolved_model_step_controlled_inner(
+            adapter,
+            request,
+            pack,
+            route,
+            step_id,
+            action_runtime,
+            check_no_progress,
+            complete_loop,
+        );
+        if matches!(
+            result,
+            Err(LoopControllerError::EventLog(_)
+                | LoopControllerError::EventEnvelope(_)
+                | LoopControllerError::ModelCallStore(_)
+                | LoopControllerError::ModelContract(_)
+                | LoopControllerError::ToolCallStore(_)
+                | LoopControllerError::AuditStore(_)
+                | LoopControllerError::PolicyGate(_)
+                | LoopControllerError::WorkspaceSnapshot(_)
+                | LoopControllerError::WorkspaceSnapshotAuditUncertain { .. }
+                | LoopControllerError::ProgressReport(_))
+        ) {
+            self.block_reported_token_budget_for_audit();
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_resolved_model_step_controlled_inner<A: ResolvedModelAdapter + ?Sized>(
+        &mut self,
+        adapter: &A,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+        route: &RouteDecision,
+        step_id: impl Into<String>,
+        action_runtime: Option<ResolvedModelActionRuntime<'_>>,
+        check_no_progress: bool,
+        complete_loop: bool,
+    ) -> Result<ResolvedStepOutcome, LoopControllerError> {
         let store = self
             .model_call_store
             .clone()
@@ -2170,6 +2221,10 @@ impl ReadOnlyLoopController {
         }
         self.prepare_step_action()?;
         let step_id = step_id.into();
+        let model_call_id = format!("call-{}-{step_id}", self.loop_run.loop_run_id);
+        if let Some(budget) = self.task_run.reported_token_budget.as_ref() {
+            budget.check_send(&model_call_id)?;
+        }
         let action_fingerprint = format!(
             "{}\n{}\n{}",
             request.model_id, self.goal.goal_id, request.observation
@@ -2258,11 +2313,31 @@ impl ReadOnlyLoopController {
         )?;
 
         let started_at = chrono::Utc::now().to_rfc3339();
-        let model_call_id = format!("call-{}-{step_id}", self.loop_run.loop_run_id);
         let resolved = match adapter.complete_resolved_with_action(request, pack) {
-            Ok(response) => response,
+            Ok(response) => {
+                if let Some(budget) = self.task_run.reported_token_budget.as_mut() {
+                    let usage = response.provider_response.usage.as_ref();
+                    let _ = budget.settle(
+                        &model_call_id,
+                        usage.and_then(|usage| usage.prompt_tokens),
+                        usage.and_then(|usage| usage.completion_tokens),
+                    );
+                }
+                response
+            }
             Err(failure) => {
                 let (error, evidence) = failure.into_parts();
+                if let Some(budget) = self.task_run.reported_token_budget.as_mut() {
+                    let _ = budget.settle(
+                        &model_call_id,
+                        evidence
+                            .as_ref()
+                            .and_then(|evidence| evidence.input_tokens()),
+                        evidence
+                            .as_ref()
+                            .and_then(|evidence| evidence.output_tokens()),
+                    );
+                }
                 let (failure_stage, failure_class) = model_call_failure_metadata(&error);
                 let failure_record = ModelCallFailureRecord {
                     schema_version: crate::model_contracts::MODEL_CALL_FAILURE_SCHEMA_VERSION,
@@ -2690,6 +2765,9 @@ impl ReadOnlyLoopController {
         F: FnOnce(ModelRequest) -> Result<ModelResponseWithAction, ModelAdapterError>,
     {
         self.prepare_step_action()?;
+        if self.task_run.reported_token_budget.is_some() {
+            return Err(ReportedTokenBudgetError::ResolvedCallRequired.into());
+        }
         if let Err(kind) = self.budget.consume_step() {
             self.append_model_event(
                 "loop_budget_exhausted",
@@ -4139,6 +4217,25 @@ impl ReadOnlyLoopController {
         event_id: &str,
         payload: serde_json::Value,
     ) -> Result<u64, LoopControllerError> {
+        let result = self.append_model_event_inner(event_type, event_id, payload);
+        if result.is_err() {
+            self.block_reported_token_budget_for_audit();
+        }
+        result
+    }
+
+    fn block_reported_token_budget_for_audit(&mut self) {
+        if let Some(budget) = self.task_run.reported_token_budget.as_mut() {
+            budget.block_audit_failure();
+        }
+    }
+
+    fn append_model_event_inner(
+        &mut self,
+        event_type: &str,
+        event_id: &str,
+        payload: serde_json::Value,
+    ) -> Result<u64, LoopControllerError> {
         let mut event = EventEnvelope::new(
             "loop_run",
             event_id,
@@ -4207,7 +4304,7 @@ impl ReadOnlyLoopController {
     ) -> Result<(), LoopControllerError> {
         let summary = summary.map(str::to_owned);
         if let Some(holder) = &mut self.progress_sink {
-            holder
+            let result = holder
                 .sink
                 .report(ProgressEvent {
                     subject,
@@ -4216,7 +4313,11 @@ impl ReadOnlyLoopController {
                     summary,
                     progress,
                 })
-                .map_err(|error| LoopControllerError::ProgressReport(error.to_string()))?;
+                .map_err(|error| LoopControllerError::ProgressReport(error.to_string()));
+            if result.is_err() {
+                self.block_reported_token_budget_for_audit();
+            }
+            result?;
         }
         Ok(())
     }
