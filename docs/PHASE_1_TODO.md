@@ -288,14 +288,15 @@ Memory 最小实现：
 - [x] 定义 `EffectLevel`（fast/balanced/strong/x_high）、`QualityAssessment` 和 `AdaptationDecision` 的版本化契约（`src/adaptive_routing.rs`；focused contract tests）
 - [ ] 将结构化输出、verification、工具结果、超时、截断、usage、延迟和无进展计数接入质量评估（`QualityObservation` 与 fail-closed `QualityAssessment::from_observation()` 已完成；普通/resolved model step 已写入 metadata-only `model_quality_assessed`，usage/latency/truncation/no-progress 的统一运行时填充仍待完成）
 - [x] 将 profile 显式固定效果配置接入配置 HTTP factory、foreground 和 bounded Markdown 共用装配 helper（配置与公开变异重验；四档/no-effect 请求 body/hash、非法 Markdown 零执行、Anthropic 明确拒绝已有回归；仅在测试模块向生产共用 helper 注入 loopback transport 验证 HTTP 出站，生产 HTTPS 门禁不变，不代表 live 或自动升级）
-- [ ] 实现当前 TaskRun 内的单级效果升级，受总预算、最大 Attempt、最大重试和冷却窗口约束（显式 opt-in 的 `run_resolved_upgrade_model_step()` 库入口已接入：宿主质量驱动单次相邻升档、真实新 Attempt/Route/PromptPack/Call、父证据保留、累计次数预算及 child 再验收；一次上限不允许反复升降，无额外循环。已报告token后续发送门禁另有opt-in库切片；生产 runner/CLI、发送前预留硬上限、金额预算和统一测量仍未接线，故整项不关闭；安全/动作/脱敏及解析拒绝不升级重调）
-- [x] 实现TaskRun已报告token累计与后续发送门禁（`REPORTED_TOKEN_BUDGET_CONTRACT.md`）：默认关闭、首次调用前显式启用、逐字段未知不计零、checked累计、重复ID不重发、成败共用账本、审计/进度故障阻断；恢复与升档累计有独立回归。全量64套/774项、严格clippy、lib/bin build、fmt/diff通过。仅库切片，不是单请求硬上限、金额预算或live验收。
+- [ ] 实现当前 TaskRun 内的单级效果升级，受总预算、最大 Attempt、最大重试和冷却窗口约束（显式 opt-in 的 `run_resolved_upgrade_model_step()` 库入口已接入：宿主质量驱动单次相邻升档、真实新 Attempt/Route/PromptPack/Call、父证据保留、累计次数预算及 child 再验收；一次上限不允许反复升降，无额外循环。已报告token后续发送门禁及其配置/runner接线另有独立切片；生产 runner/CLI自动升档、发送前预留硬上限、金额预算和统一测量仍未完成，故整项不关闭；安全/动作/脱敏及解析拒绝不升级重调）
+- [x] 实现TaskRun已报告token累计与后续发送门禁（`REPORTED_TOKEN_BUDGET_CONTRACT.md`）：默认关闭、首次调用前显式启用、逐字段未知不计零、checked累计、重复ID不重发、成败共用账本、审计/进度故障阻断；恢复与升档累计有独立回归。库片历史全量64套/774项、严格clippy、lib/bin build、fmt/diff通过。不是单请求硬上限、金额预算或live验收。
+- [x] 将已报告token门禁接入顶层可选`reported_token_limit`和既有runner（`REPORTED_TOKEN_RUNNER_CONFIG_CONTRACT.md`）：缺省/null关闭、0启用首发拒绝、非法值固定诊断；prepare冻结额度，OpenAI/Anthropic foreground及Markdown双协议共用门禁，零send/零resolver/零invocation及正额度私有快照有回归。master独立全量783项、严格clippy、lib/bin build、fmt/diff通过；不新增CLI参数，不提供生产自动升档、跨运行累计配额、同ID重跑保护或完整TaskRun持久恢复。
 - [x] 实现 retryable provider failure 的新 Attempt／新 RouteDecision／失败证据保留；禁止静默覆盖原 Attempt（普通 routed 与 resolved routed controller 已接入 `plan_adaptation()` 门禁，并保留父 Attempt 失败 evidence；完整质量驱动 controller 仍待完成）
 - [x] 校验自适应决策不能改变 provider allowlist、endpoint、auth_ref、隐私等级、工具权限和安全底线（契约决策不携带这些字段；route planner 只返回已声明 fallback）
 - [ ] 对低质量、不可重试、安全阻断、预算耗尽分别生成可解释的 metadata-only 审计事件（当前 routed retryable fallback 已有 `model_route_fallback` 与 `model_adaptation_stopped`；NeedsUpgrade、Blocked、Failed 的统一自适应事件仍待完成）
 - [ ] 用 fake/localhost provider 覆盖 Verified、NeedsUpgrade、Retryable、Blocked、Failed 和预算耗尽分支
 - [x] 将两协议决策 parser 的 JSON 语法、结构、空摘要、动作合同及脱敏拒绝区分为无正文 typed 诊断（公开错误契约变化；controller 审计仍为 `response_unmappable`、质量仍保守失败，不授予重调/升级；保留首先拒绝而非完整安全结论）
-- [x] 让 resolved 解析/后置边界失败保留已知的安全 usage/hash/finish reason 证据；未知用量保持未知，token/成本累计预算须另行接入，不能将八维次数预算当作计费预算（`ResolvedCallFailure`/`ResolvedCallEvidence` 已接入 OpenAI-compatible、Anthropic、Markdown wrapper 和 controller；focused 101项、全量62套/733项、严格 clippy、lib/bin build、fmt/diff 均通过；不代表 token/成本预算、自动升级或 live provider 已完成）
+- [x] 让 resolved 解析/后置边界失败保留已知的安全 usage/hash/finish reason 证据；未知用量保持未知，本failure-evidence切片不实现累计预算；已报告token累计与门禁见独立条目，金额预算仍待完成，不能将八维次数预算当作计费预算（`ResolvedCallFailure`/`ResolvedCallEvidence` 已接入 OpenAI-compatible、Anthropic、Markdown wrapper 和 controller；focused 101项、全量62套/733项为该切片历史验收，严格 clippy、lib/bin build、fmt/diff 均通过；不代表自动升级生产入口、金额预算或 live provider 已完成）
 
 Phase 1 不实现跨任务在线学习、并行 quorum、自动修改全局路由配置或根据单次异常永久调整模型权重。
 

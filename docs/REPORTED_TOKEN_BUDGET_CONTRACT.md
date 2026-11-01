@@ -1,6 +1,6 @@
 # TaskRun 已报告 token 累计与后续发送门禁
 
-日期：2026-11-01。状态：库切片已实现并通过独立验收；生产 runner/CLI 未接线。关联：`PHASE_1_TODO.md` P12.3、自适应模型策略及 resolved 失败证据契约。
+日期：2026-11-01。状态：库切片已实现并通过独立验收；配置及 runner 接线增量见 `REPORTED_TOKEN_RUNNER_CONFIG_CONTRACT.md`，其验收记录单列于 `PHASE_1_VALIDATION_PLAN.md`。关联：`PHASE_1_TODO.md` P12.3、自适应模型策略及 resolved 失败证据契约。
 
 ## 目标与方案选择
 
@@ -38,4 +38,4 @@
 
 功能基线：`0aae738`；审核约定基线：`53deb0a`。工作树：`/temp/codex/steerbox-worktrees/reported-token-budget-20261101`。编译/日志：`/temp/codex/steerbox-validation/reported-token-budget-20261101`，jobs=1、offline；master最终日志为`master-final-tests.log`、`master-final-clippy.log`和`master-final-build.log`。不读取真实配置或调用live LLM。
 
-宿主在首次调用前显式调用`controller.enable_reported_token_budget(limit)`；通过`controller.task_run().reported_token_budget()`只读查看。尚未增加配置字段或CLI开关；不保证在途请求不超额，也不是金额预算或跨进程恢复协调。
+宿主在首次调用前显式调用`controller.enable_reported_token_budget(limit)`；通过`controller.task_run().reported_token_budget()`只读查看。后续顶层配置字段`reported_token_limit`及runner接线见独立契约；不新增CLI参数，不保证在途请求不超额，也不是金额预算或跨进程恢复协调。上方64套/774项是本库切片的历史验收，不代替后续配置接线验收。

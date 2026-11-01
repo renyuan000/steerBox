@@ -19,6 +19,7 @@ use crate::provider_adapter::ProviderTransport;
 use crate::provider_model_adapter::{
     ResolvedCallFailure, ResolvedModelAdapter, ResolvedModelResponseWithAction,
 };
+use crate::reported_token_budget::ReportedTokenBudget;
 use crate::resolved_prompt::{
     resolve_prompt, AgentRolePrompt, ModelPromptFragment, ProviderPromptFragment,
     ResolvePromptInput, ResolvedPromptPack, TaskPromptPack, VersionedPromptFragment,
@@ -77,6 +78,16 @@ pub struct ProviderRunRequest {
 pub struct ProviderRunOutcome {
     pub decision: ModelDecision,
     pub loop_status: LoopStatus,
+    reported_token_budget: Option<ReportedTokenBudget>,
+}
+
+impl ProviderRunOutcome {
+    /// Read-only private clone of the successful run's task-local ledger.
+    /// This snapshot is not persisted TaskRun state and cannot resume a budget
+    /// across runs or processes; each runner creates a fresh TaskRun.
+    pub fn reported_token_budget(&self) -> Option<&ReportedTokenBudget> {
+        self.reported_token_budget.as_ref()
+    }
 }
 
 /// Explicit caller-owned resources for the bounded Markdown write path.
@@ -102,6 +113,7 @@ pub struct ForegroundProviderRun {
     profile: ModelProfileConfig,
     route: RouteDecision,
     prompt: ResolvedPromptPack,
+    reported_token_limit: Option<u64>,
 }
 
 /// Provider-side Markdown runner. The controller remains the only mutation
@@ -358,6 +370,7 @@ impl ForegroundProviderRun {
             profile,
             route,
             prompt,
+            reported_token_limit: config.reported_token_limit,
         })
     }
 
@@ -406,6 +419,7 @@ impl ForegroundProviderRun {
         )?
         .with_model_call_store(model_calls)
         .with_tool_call_store(tool_calls);
+        configure_reported_token_budget(&mut controller, self.reported_token_limit)?;
         let decision = controller.run_resolved_model_step(
             &adapter,
             ModelRequest {
@@ -423,6 +437,7 @@ impl ForegroundProviderRun {
         Ok(ProviderRunOutcome {
             decision,
             loop_status: controller.status(),
+            reported_token_budget: controller.task_run().reported_token_budget.clone(),
         })
     }
 
@@ -459,6 +474,7 @@ impl ForegroundProviderRun {
         )?
         .with_model_call_store(model_calls)
         .with_tool_call_store(tool_calls);
+        configure_reported_token_budget(&mut controller, self.reported_token_limit)?;
         let adapter = AnthropicAdapter::new(
             self.profile.provider,
             self.profile.endpoint,
@@ -483,6 +499,7 @@ impl ForegroundProviderRun {
         Ok(ProviderRunOutcome {
             decision,
             loop_status: controller.status(),
+            reported_token_budget: controller.task_run().reported_token_budget.clone(),
         })
     }
 }
@@ -616,6 +633,7 @@ impl BoundedMarkdownProviderRun {
         .with_tool_call_store(tool_calls)
         .with_checkpoint_store(&run.checkpoint_path)
         .with_audit_stores(&run.trace_path, &run.side_effect_path);
+        configure_reported_token_budget(&mut controller, inner.reported_token_limit)?;
         let adapter = MarkdownBoundAdapter {
             inner: adapter,
             config: &run,
@@ -663,8 +681,19 @@ impl BoundedMarkdownProviderRun {
         Ok(ProviderRunOutcome {
             decision,
             loop_status: controller.status(),
+            reported_token_budget: controller.task_run().reported_token_budget.clone(),
         })
     }
+}
+
+fn configure_reported_token_budget(
+    controller: &mut ReadOnlyLoopController,
+    limit: Option<u64>,
+) -> Result<(), ProviderRunError> {
+    if let Some(limit) = limit {
+        controller.enable_reported_token_budget(limit)?;
+    }
+    Ok(())
 }
 
 fn validate_markdown_storage_paths(

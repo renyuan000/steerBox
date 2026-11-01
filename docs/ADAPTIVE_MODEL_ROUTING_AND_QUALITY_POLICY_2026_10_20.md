@@ -1,7 +1,7 @@
 # 受约束的主动自适应模型路由与质量策略
 
 **日期**：2026-10-20
-**状态**：Phase 1 设计增量；已接入显式 opt-in、同授权边界的单次相邻效果升档库入口；生产 runner 接线、统一用量约束及 live 验收未完成
+**状态**：Phase 1 设计增量；已接入显式 opt-in、同授权边界的单次相邻效果升档库入口；自动升档的生产 runner 接线、统一测量、预留式硬上限、金额预算及 live 验收未完成。已报告token的配置/runner门禁见下节与独立契约
 
 ## 2026-11-01 单次升档库入口
 
@@ -24,7 +24,7 @@
 - 始终保持同一 model/provider/endpoint/auth_ref、mapping/上限及 prompt/policy/tool/context/privacy/risk 边界；先核验当前 goal/task/loop 和 `allowed_models`，再发请求。parser/provider/action/安全/脱敏/verification 错误不能借升档重调。
 - 首轮和 child 的 route 在发送前落盘并绑定 Attempt。质量、升档和耗尽停止事件均为 metadata-only，可由 execution query 查看；审计或进度输出故障先收敛运行状态，不允许再次发送，也不补造未落盘 evidence。
 
-这是 transport 注入式库入口，不是 CLI 开关。普通配置 HTTP factory、foreground 和 bounded Markdown 装配遇到 `automatic_upgrade=true` 明确拒绝，不能静默降为固定档位。已报告token后续发送门禁已另有显式opt-in库切片，见下节；生产 runner/CLI 自动升档、统一 usage/latency/truncation/no-progress 采集、发送前预留硬上限、金额总预算、Anthropic native 效果适配和真实 provider 验收仍待完成。既有次数预算不等于计费预算。下方 2026-10-31/2026-10-20 记录为对应历史切片，不覆盖本节的新入口。
+这是 transport 注入式库入口，不是 CLI 开关。普通配置 HTTP factory、foreground 和 bounded Markdown 装配遇到 `automatic_upgrade=true` 明确拒绝，不能静默降为固定档位。已报告token后续发送门禁另有显式opt-in库切片及配置/runner接线，见下节；生产 runner/CLI 自动升档、统一 usage/latency/truncation/no-progress 采集、发送前预留硬上限、金额总预算、Anthropic native 效果适配和真实 provider 验收仍待完成。既有次数预算不等于计费预算。下方 2026-10-31/2026-10-20 记录为对应历史切片，不覆盖本节的新入口。
 
 验证入口：`tests/config_provider_binding.rs` 与 `tests/model_call_controller_audit.rs` 的 `resolved_effect_upgrade` 测试；本轮最终全量结果在验证计划同步，不把源码审核 PASS 当作测试 PASS。
 
@@ -32,7 +32,9 @@
 
 `enable_reported_token_budget(limit)`仅允许在首次模型调用前显式启用一次；私有可选账本归TaskRun所有，普通resolved、fallback、upgrade和continuation共用，默认关闭。逐字段保存input/output Option，不从total倒算；真实零可继续，未知、冲突、溢出或审计/进度故障永久阻断后续发送。调用ID结算幂等不授权重发；门禁在step/model次数消费前执行，non-resolved入口不能绕过。
 
-成功和失败返回后先保留已知用量，再走审计；TaskRun JSON round-trip及`start_with_task_run`保留累计和阻断，不重建Initial Attempt。独立回归验证高余量、Running、非零已知用量下store/progress故障修复后跨入口仍阻断，以及实际升档child发送后的累计。完整契约及验证见`REPORTED_TOKEN_BUDGET_CONTRACT.md`；仅限制后续请求，不限制已在途单请求超额，不是金额预算、生产CLI开关或跨进程恢复协调。
+成功和失败返回后先保留已知用量，再走审计；TaskRun JSON round-trip及`start_with_task_run`保留累计和阻断，不重建Initial Attempt。独立回归验证高余量、Running、非零已知用量下store/progress故障修复后跨入口仍阻断，以及实际升档child发送后的累计。完整库契约及历史验证见`REPORTED_TOKEN_BUDGET_CONTRACT.md`。
+
+配置接线增量见`REPORTED_TOKEN_RUNNER_CONFIG_CONTRACT.md`：顶层`reported_token_limit`缺省/null关闭、0启用并首发阻断；准备时冻结已校验额度，OpenAI foreground、Anthropic foreground及共用Markdown双协议入口在首调前统一启用。现有OpenAI provider CLI沿用配置加载，无新CLI参数；Anthropic/Markdown本增量验证的是既有注入式库入口。成功outcome提供私有账本快照的只读getter。每次runner仍新建TaskRun，额度不是跨运行配额，快照不是持久恢复；仅限制后续请求，不限制在途单请求超额，不是金额预算或跨进程恢复协调。新片验收单列于`PHASE_1_VALIDATION_PLAN.md`，不复用旧库片结果。
 
 ## 2026-10-31 实现边界
 

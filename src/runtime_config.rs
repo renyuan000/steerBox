@@ -62,8 +62,24 @@ pub struct RuntimeConfig {
     pub schema_version: u32,
     pub project_ref: String,
     pub data_root: PathBuf,
+    /// Optional reported-token bound for each fresh runner-created TaskRun.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_reported_token_limit"
+    )]
+    pub reported_token_limit: Option<u64>,
     #[serde(default)]
     pub model_profiles: Vec<ModelProfileConfig>,
+}
+
+fn deserialize_reported_token_limit<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<u64>::deserialize(deserializer).map_err(|_| {
+        serde::de::Error::custom("reported_token_limit must be null or an unsigned 64-bit integer")
+    })
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -380,6 +396,7 @@ impl RuntimeConfig {
             schema_version: 1,
             project_ref,
             data_root,
+            reported_token_limit: None,
             model_profiles: Vec::new(),
         };
         config.validate()?;

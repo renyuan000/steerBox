@@ -2,7 +2,9 @@
 
 ## 定位与证据边界
 
-2026-11-01 已报告token门禁增量：`enable_reported_token_budget(limit)`库API默认关闭且只能在首次模型调用前启用；TaskRun持有私有累计账本，resolved普通/fallback/upgrade/continuation共用，unknown不计零、checked累计、重复ID不重发、审计/进度故障阻断。独立边界回归验证实际修复故障后跨入口零新增发送、TaskRun恢复继承及两次升档请求累计。规格、质量与测试增量审核通过，master最终全量64套/774项、严格clippy、lib/bin build、fmt/diff均通过，持久日志见`PHASE_1_VALIDATION_PLAN.md`。不是单请求token硬上限、金额预算、生产runner/CLI接线、live验收或Phase 1整体完成；契约见`REPORTED_TOKEN_BUDGET_CONTRACT.md`。
+2026-11-01 配置/runner接线增量：顶层`reported_token_limit`缺省/null关闭、0启用并阻止首次发送，错误类型使用字段级固定诊断，不回显非法字符串。prepare冻结重验后的额度，OpenAI foreground、Anthropic foreground及共用Markdown双协议路径在首次调用前统一启用；成功outcome通过只读getter返回私有用量账本快照。现有OpenAI provider CLI沿用配置加载，无新参数；Anthropic/Markdown在本增量中仍是既有注入式库入口。master独立全量783项通过、0失败/忽略，严格all-targets clippy、lib/bin build、fmt/diff均退出0，证据单列于`PHASE_1_VALIDATION_PLAN.md`。每次runner仍新建TaskRun，本限额不是跨运行配额，getter不是持久恢复；同ID重跑防护、安全恢复、单请求硬上限、金额预算、生产自动升档、live和完整Phase 1仍未完成。契约见`REPORTED_TOKEN_RUNNER_CONFIG_CONTRACT.md`。
+
+2026-11-01 已报告token门禁库片（历史验收）：`enable_reported_token_budget(limit)`库API默认关闭且只能在首次模型调用前启用；TaskRun持有私有累计账本，resolved普通/fallback/upgrade/continuation共用，unknown不计零、checked累计、重复ID不重发、审计/进度故障阻断。独立边界回归验证实际修复故障后跨入口零新增发送、TaskRun恢复继承及两次升档请求累计。规格、质量与测试增量审核通过，master最终全量64套/774项、严格clippy、lib/bin build、fmt/diff均通过，持久日志见`PHASE_1_VALIDATION_PLAN.md`。该库片本身不是单请求token硬上限、金额预算、生产runner/CLI接线、live验收或Phase 1整体完成；后续配置接线见上方独立增量，契约见`REPORTED_TOKEN_BUDGET_CONTRACT.md`。
 
 2026-10-31 tool-call CLI 复核：`tool-call page <config.json> <offset> <limit>` 查询固定 metadata schema，缺日志返回空页且不创建主 JSONL；沿用 store 锁机制，可能创建父目录和 `.lock`，不是零磁盘写入。正常 append 的 summary 会先脱敏，但读取不对任意导入记录提供通用 DLP。已复现并修复坏记录类型错误回显正文的问题，CLI 现在只报告行号；合成敏感 summary、错误回显、零 limit、越界 offset、1024/1025 边界回归通过。master 在 `/tmp/steerbox-cli-resume-20261031-target` 下执行 `cargo test --locked --offline --test runtime_cli --test tool_call_store`，16 + 14 项通过；不代表 live provider 或完整 Phase 1 已验收。
 

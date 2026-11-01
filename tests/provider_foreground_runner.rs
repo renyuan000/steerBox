@@ -2,16 +2,26 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::Duration;
 use steerbox::anthropic_adapter::{AnthropicHeaders, AnthropicTransport, AnthropicTransportError};
 use steerbox::domain::LoopStatus;
 use steerbox::event_log::EventLog;
+use steerbox::http_transport::{
+    CredentialError, CredentialResolver, HttpAnthropicTransport, ResolvedCredential,
+};
+use steerbox::loop_controller::LoopControllerError;
 use steerbox::model_adapter::ModelDecision;
 use steerbox::model_call_store::ModelCallStore;
 use steerbox::provider_adapter::{ProviderTransport, TransportError, TransportResponse};
 use steerbox::provider_runner::{ForegroundProviderRun, ProviderRunError, ProviderRunRequest};
+use steerbox::reported_token_budget::ReportedTokenBudgetError;
 use steerbox::runtime_config::{ConfigError, RuntimeConfig};
 use steerbox::stream_reporter::StreamReporter;
+use steerbox::tool_call_store::ToolCallRecordStore;
 
 struct TestTransport {
     calls: Cell<usize>,
@@ -379,4 +389,172 @@ fn invalid_effect_is_rejected_during_prepare_before_missing_auth() {
         error,
         ProviderRunError::Config(ConfigError::InvalidModelEffect { .. })
     ));
+}
+
+#[test]
+fn zero_reported_token_limit_stops_both_foreground_transports_before_any_call() {
+    for provider in ["openai-compatible", "anthropic"] {
+        let directory = tempfile::tempdir().unwrap();
+        let calls = ModelCallStore::open(directory.path().join("calls.jsonl")).unwrap();
+        let mut config = config(Some("secret-ref:provider-fixture"), provider);
+        config.reported_token_limit = Some(0);
+        let prepared = ForegroundProviderRun::prepare(&config, request()).unwrap();
+        config.reported_token_limit = None;
+        let openai = TestTransport {
+            calls: Cell::new(0),
+            status: 200,
+        };
+        let anthropic = AnthropicTestTransport {
+            calls: Cell::new(0),
+        };
+        let events = EventLog::open(directory.path().join("events.jsonl")).unwrap();
+        let result = if provider == "anthropic" {
+            prepared.run_anthropic_with_transport(
+                &anthropic,
+                events,
+                calls.clone(),
+                StreamReporter::new(Vec::new()),
+            )
+        } else {
+            prepared.run_with_transport(
+                &openai,
+                events,
+                calls.clone(),
+                StreamReporter::new(Vec::new()),
+            )
+        };
+        assert_eq!(openai.calls.get() + anthropic.calls.get(), 0, "{provider}");
+        assert!(
+            matches!(
+                result,
+                Err(ProviderRunError::Controller(
+                    LoopControllerError::ReportedTokenBudget(ReportedTokenBudgetError::Exhausted)
+                ))
+            ),
+            "{result:?}"
+        );
+        assert!(calls.read_all().unwrap().is_empty());
+        assert!(calls.read_failures().unwrap().is_empty());
+        assert!(
+            ToolCallRecordStore::open(directory.path().join("tool-calls.jsonl"))
+                .unwrap()
+                .read_page(0, 16)
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+struct UnavailableCountingResolver(Arc<AtomicUsize>);
+
+impl CredentialResolver for UnavailableCountingResolver {
+    fn resolve(&self, _: &str) -> Result<ResolvedCredential, CredentialError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err(CredentialError::Unavailable)
+    }
+}
+
+#[test]
+fn zero_reported_token_limit_stops_both_http_protocols_before_credential_resolution() {
+    for provider in ["openai-compatible", "anthropic"] {
+        let directory = tempfile::tempdir().unwrap();
+        let resolutions = Arc::new(AtomicUsize::new(0));
+        let resolver = UnavailableCountingResolver(resolutions.clone());
+        let mut config = config(Some("secret-ref:provider-fixture"), provider);
+        config.reported_token_limit = Some(0);
+        let prepared = ForegroundProviderRun::prepare(&config, request()).unwrap();
+        let events = EventLog::open(directory.path().join("events.jsonl")).unwrap();
+        let calls = ModelCallStore::open(directory.path().join("calls.jsonl")).unwrap();
+        let result = if provider == "anthropic" {
+            prepared.run_anthropic_with_transport(
+                HttpAnthropicTransport::new(resolver).unwrap(),
+                events,
+                calls.clone(),
+                StreamReporter::new(Vec::new()),
+            )
+        } else {
+            prepared.run_with_resolver(
+                resolver,
+                events,
+                calls.clone(),
+                StreamReporter::new(Vec::new()),
+            )
+        };
+        assert_eq!(resolutions.load(Ordering::SeqCst), 0, "{provider}");
+        assert!(
+            matches!(
+                result,
+                Err(ProviderRunError::Controller(
+                    LoopControllerError::ReportedTokenBudget(ReportedTokenBudgetError::Exhausted)
+                ))
+            ),
+            "{result:?}"
+        );
+        assert!(calls.read_all().unwrap().is_empty());
+        assert!(calls.read_failures().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn foreground_outcomes_snapshot_frozen_task_local_usage_or_disabled_budget() {
+    for provider in ["openai-compatible", "anthropic"] {
+        for limit in [None, Some(1)] {
+            for _ in 0..2 {
+                let directory = tempfile::tempdir().unwrap();
+                let calls = ModelCallStore::open(directory.path().join("calls.jsonl")).unwrap();
+                let mut config = config(Some("secret-ref:provider-fixture"), provider);
+                config.reported_token_limit = limit;
+                let prepared = ForegroundProviderRun::prepare(&config, request()).unwrap();
+                config.reported_token_limit = Some(0);
+                let openai = TestTransport {
+                    calls: Cell::new(0),
+                    status: 200,
+                };
+                let anthropic = AnthropicTestTransport {
+                    calls: Cell::new(0),
+                };
+                let events = EventLog::open(directory.path().join("events.jsonl")).unwrap();
+                let outcome = if provider == "anthropic" {
+                    prepared.run_anthropic_with_transport(
+                        &anthropic,
+                        events,
+                        calls.clone(),
+                        StreamReporter::new(Vec::new()),
+                    )
+                } else {
+                    prepared.run_with_transport(
+                        &openai,
+                        events,
+                        calls.clone(),
+                        StreamReporter::new(Vec::new()),
+                    )
+                }
+                .unwrap();
+                assert_eq!(openai.calls.get() + anthropic.calls.get(), 1);
+                assert_eq!(outcome.loop_status, LoopStatus::Completed);
+                let records = calls.read_all().unwrap();
+                assert_eq!(records.len(), 1);
+                if let Some(limit) = limit {
+                    let budget = outcome.reported_token_budget().unwrap();
+                    let (input, output) = if provider == "anthropic" {
+                        (17, 5)
+                    } else {
+                        (21, 8)
+                    };
+                    assert_eq!(budget.limit(), limit);
+                    assert_eq!(budget.known_input_tokens(), input);
+                    assert_eq!(budget.known_output_tokens(), output);
+                    assert_eq!(budget.known_total_tokens(), input + output);
+                    assert_eq!(budget.blocked(), None);
+                    assert_eq!(budget.records().len(), 1);
+                    assert_eq!(
+                        budget.records()[0].model_call_id(),
+                        records[0].model_call_id
+                    );
+                } else {
+                    assert_eq!(outcome.reported_token_budget(), None);
+                }
+            }
+        }
+    }
 }

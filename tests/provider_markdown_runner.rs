@@ -9,11 +9,13 @@ use std::{
 use steerbox::anthropic_adapter::{AnthropicHeaders, AnthropicTransport, AnthropicTransportError};
 use steerbox::domain::{HumanSteeringMode, LoopStatus};
 use steerbox::event_log::EventLog;
+use steerbox::loop_controller::LoopControllerError;
 use steerbox::model_call_store::ModelCallStore;
 use steerbox::provider_adapter::{ProviderTransport, TransportError, TransportResponse};
 use steerbox::provider_runner::{
-    BoundedMarkdownRunConfig, ForegroundProviderRun, ProviderRunRequest,
+    BoundedMarkdownRunConfig, ForegroundProviderRun, ProviderRunError, ProviderRunRequest,
 };
+use steerbox::reported_token_budget::ReportedTokenBudgetError;
 use steerbox::runtime_config::{ConfigError, RuntimeConfig};
 use steerbox::stream_reporter::StreamReporter;
 use steerbox::tool_call_store::ToolCallRecordStore;
@@ -21,6 +23,199 @@ use steerbox::tool_call_store::ToolCallRecordStore;
 struct AnthropicMarkdownTransport<'a> {
     workspace: &'a Path,
     replacement: &'a str,
+}
+
+struct CountingBlockedTransport(Cell<usize>);
+
+impl ProviderTransport for &CountingBlockedTransport {
+    fn send(
+        &self,
+        _: &str,
+        _: Option<&str>,
+        _: &str,
+        _: Duration,
+        _: bool,
+    ) -> Result<TransportResponse, TransportError> {
+        self.0.set(self.0.get() + 1);
+        Ok(TransportResponse::body(500, "synthetic blocked response"))
+    }
+}
+
+impl AnthropicTransport for &CountingBlockedTransport {
+    fn send(
+        &self,
+        _: &str,
+        _: &AnthropicHeaders,
+        _: &str,
+        _: Duration,
+        _: bool,
+    ) -> Result<TransportResponse, AnthropicTransportError> {
+        self.0.set(self.0.get() + 1);
+        Ok(TransportResponse::body(500, "synthetic blocked response"))
+    }
+}
+
+#[test]
+fn zero_reported_token_limit_stops_both_markdown_transports_without_edit_or_invocation_records() {
+    for provider in ["openai-compatible", "anthropic"] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let original = b"before\r\n\0unchanged bytes\n";
+        fs::write(root.join("README.md"), original).unwrap();
+        let mut config = RuntimeConfig::from_json_str(&json!({
+            "schema_version":1,"project_ref":"zero-markdown","data_root":"/temp/steerbox/zero-markdown",
+            "reported_token_limit":0,
+            "model_profiles":[{"model_id":"test-model","provider":provider,
+                "endpoint":"https://fixture.example.test/v1","auth_ref":"secret-ref:synthetic","capabilities":["text"]}]
+        }).to_string()).unwrap();
+        let request = ProviderRunRequest {
+            project_id: "project".into(),
+            goal_id: "goal".into(),
+            loop_run_id: "loop".into(),
+            task_run_id: "task".into(),
+            model_id: "test-model".into(),
+            objective: "Update README.md".into(),
+            observation: "synthetic observation".into(),
+        };
+        let run = BoundedMarkdownRunConfig {
+            workspace: root.into(),
+            allowed_paths: vec!["README.md".into()],
+            checkpoint_path: root.join("checkpoints.jsonl"),
+            trace_path: root.join("traces.jsonl"),
+            side_effect_path: root.join("effects.jsonl"),
+            approved: true,
+            human_steering_mode: HumanSteeringMode::HumanSteerableLoop,
+        };
+        let prepared = ForegroundProviderRun::prepare_markdown(&config, request, run).unwrap();
+        config.reported_token_limit = None;
+        let transport = CountingBlockedTransport(Cell::new(0));
+        let events = EventLog::open(root.join("events.jsonl")).unwrap();
+        let calls = ModelCallStore::open(root.join("calls.jsonl")).unwrap();
+        let result = if provider == "anthropic" {
+            prepared.run_with_anthropic_transport(
+                &transport,
+                events,
+                calls.clone(),
+                StreamReporter::new(Vec::new()),
+            )
+        } else {
+            prepared.run_with_transport(
+                &transport,
+                events,
+                calls.clone(),
+                StreamReporter::new(Vec::new()),
+            )
+        };
+        assert_eq!(transport.0.get(), 0, "{provider}");
+        assert!(
+            matches!(
+                result,
+                Err(ProviderRunError::Controller(
+                    LoopControllerError::ReportedTokenBudget(ReportedTokenBudgetError::Exhausted)
+                ))
+            ),
+            "{result:?}"
+        );
+        assert_eq!(fs::read(root.join("README.md")).unwrap(), original);
+        assert!(calls.read_all().unwrap().is_empty());
+        assert!(calls.read_failures().unwrap().is_empty());
+        assert!(tool_call_records(root).is_empty());
+    }
+}
+
+#[test]
+fn markdown_outcomes_snapshot_frozen_known_usage_or_disabled_budget_for_both_protocols() {
+    for provider in ["openai-compatible", "anthropic"] {
+        for limit in [None, Some(1)] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            fs::write(root.join("README.md"), "before\n").unwrap();
+            let (model_id, auth_ref) = if provider == "anthropic" {
+                ("claude-fixture", "secret-ref:anthropic-markdown")
+            } else {
+                ("test-model", "secret-ref:markdown-fixture")
+            };
+            let mut config = RuntimeConfig::from_json_str(&json!({
+                "schema_version":1,"project_ref":"usage-markdown","data_root":"/temp/steerbox/usage-markdown",
+                "reported_token_limit":limit,
+                "model_profiles":[{"model_id":model_id,"provider":provider,
+                    "endpoint":"https://fixture.example.test/v1","auth_ref":auth_ref,"capabilities":["text"]}]
+            }).to_string()).unwrap();
+            let request = ProviderRunRequest {
+                project_id: "project".into(),
+                goal_id: "goal".into(),
+                loop_run_id: "loop".into(),
+                task_run_id: "task".into(),
+                model_id: model_id.into(),
+                objective: "Update README.md".into(),
+                observation: "before\n".into(),
+            };
+            let run = BoundedMarkdownRunConfig {
+                workspace: root.into(),
+                allowed_paths: vec!["README.md".into()],
+                checkpoint_path: root.join("checkpoints.jsonl"),
+                trace_path: root.join("traces.jsonl"),
+                side_effect_path: root.join("effects.jsonl"),
+                approved: true,
+                human_steering_mode: HumanSteeringMode::HumanSteerableLoop,
+            };
+            let prepared = ForegroundProviderRun::prepare_markdown(&config, request, run).unwrap();
+            config.reported_token_limit = Some(0);
+            let calls = ModelCallStore::open(root.join("calls.jsonl")).unwrap();
+            let events = EventLog::open(root.join("events.jsonl")).unwrap();
+            let openai = FakeTransport {
+                workspace: root,
+                replacement: "after\n",
+                action_path: "README.md",
+                decision: "complete_loop",
+                calls: Cell::new(0),
+            };
+            let anthropic = AnthropicMarkdownTransport {
+                workspace: root,
+                replacement: "after\n",
+            };
+            let outcome = if provider == "anthropic" {
+                prepared.run_with_anthropic_transport(
+                    &anthropic,
+                    events,
+                    calls.clone(),
+                    StreamReporter::new(Vec::new()),
+                )
+            } else {
+                prepared.run_with_transport(
+                    &openai,
+                    events,
+                    calls.clone(),
+                    StreamReporter::new(Vec::new()),
+                )
+            }
+            .unwrap();
+            assert_eq!(outcome.loop_status, LoopStatus::Completed);
+            assert_eq!(fs::read(root.join("README.md")).unwrap(), b"after\n");
+            let records = calls.read_all().unwrap();
+            assert_eq!(records.len(), 1);
+            if let Some(limit) = limit {
+                let budget = outcome.reported_token_budget().unwrap();
+                let (input, output) = if provider == "anthropic" {
+                    (3, 2)
+                } else {
+                    (0, 2)
+                };
+                assert_eq!(budget.limit(), limit);
+                assert_eq!(budget.known_input_tokens(), input);
+                assert_eq!(budget.known_output_tokens(), output);
+                assert_eq!(budget.known_total_tokens(), input + output);
+                assert_eq!(budget.blocked(), None);
+                assert_eq!(budget.records().len(), 1);
+                assert_eq!(
+                    budget.records()[0].model_call_id(),
+                    records[0].model_call_id
+                );
+            } else {
+                assert_eq!(outcome.reported_token_budget(), None);
+            }
+        }
+    }
 }
 
 impl AnthropicTransport for &AnthropicMarkdownTransport<'_> {
