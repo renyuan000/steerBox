@@ -187,6 +187,54 @@ impl ModelCallStore {
             .collect()
     }
 
+    pub(crate) fn contains_run_identity(
+        &self,
+        task_run_id: &str,
+        model_call_id: &str,
+    ) -> Result<bool, ModelCallStoreError> {
+        // Per-file read locks are not an atomic claim across the run history set.
+        let mut found = false;
+        for (path, failure) in [(&self.path, false), (&self.failure_path, true)] {
+            let _lock = if failure {
+                self.acquire_failure_lock()?
+            } else {
+                self.acquire_lock()?
+            };
+            let file = match File::open(path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            for (index, line) in BufReader::new(file).lines().enumerate() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let invalid_json = |source| ModelCallStoreError::InvalidJson {
+                    line: index + 1,
+                    source,
+                };
+                let invalid_contract = |source| ModelCallStoreError::InvalidContractAtLine {
+                    line: index + 1,
+                    source,
+                };
+                let (record_task, record_call) = if failure {
+                    let record: ModelCallFailureRecord =
+                        serde_json::from_str(&line).map_err(invalid_json)?;
+                    record.validate().map_err(invalid_contract)?;
+                    (record.task_run_id, record.model_call_id)
+                } else {
+                    let record: ModelCallRecord =
+                        serde_json::from_str(&line).map_err(invalid_json)?;
+                    record.validate().map_err(invalid_contract)?;
+                    (record.task_run_id, record.model_call_id)
+                };
+                found |= record_task == task_run_id || record_call == model_call_id;
+            }
+        }
+        Ok(found)
+    }
+
     /// Read a bounded page of non-blank JSONL records without loading the full log.
     pub fn read_page(
         &self,

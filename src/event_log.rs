@@ -104,6 +104,36 @@ impl EventLog {
         Ok(events)
     }
 
+    pub(crate) fn contains_run_identity(
+        &self,
+        loop_run_id: &str,
+        task_run_id: &str,
+    ) -> Result<bool, EventLogError> {
+        // Serial history query only; it does not atomically claim an identity.
+        let file = match File::open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        let mut found = false;
+        for (index, line) in BufReader::new(file).lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let event: EventEnvelope =
+                serde_json::from_str(&line).map_err(|source| EventLogError::InvalidEvent {
+                    line: index + 1,
+                    source,
+                })?;
+            found |= event.loop_run_id.as_deref() == Some(loop_run_id)
+                || event.task_run_id.as_deref() == Some(task_run_id)
+                || (event.aggregate_type == "loop_run" && event.aggregate_id == loop_run_id)
+                || (event.aggregate_type == "task_run" && event.aggregate_id == task_run_id);
+        }
+        Ok(found)
+    }
+
     pub fn read_page(
         &self,
         offset: usize,

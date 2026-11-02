@@ -55,6 +55,10 @@ pub enum ProviderRunError {
     InvalidRequest,
     #[error("provider transport could not be constructed")]
     TransportBuild,
+    #[error("provider run identity already exists in caller-supplied history")]
+    DuplicateRunIdentity,
+    #[error("provider run history could not be checked safely")]
+    RunHistoryUnavailable,
     #[error("bounded Markdown run did not reach a completed decision")]
     IncompleteMarkdownRun,
     #[error(transparent)]
@@ -398,6 +402,7 @@ impl ForegroundProviderRun {
         if self.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
+        reject_reused_run_identity(&events, &model_calls, &self.request)?;
         let adapter = self.profile.build_openai_adapter(transport)?;
         let request = self.request;
         let tool_calls = ToolCallRecordStore::open(tool_call_store_path(events.path()))?;
@@ -454,6 +459,7 @@ impl ForegroundProviderRun {
         if self.profile.endpoint_protocol != ANTHROPIC_MESSAGES_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
+        reject_reused_run_identity(&events, &model_calls, &self.request)?;
         let request = self.request;
         let tool_calls = ToolCallRecordStore::open(tool_call_store_path(events.path()))?;
         let goal = GoalContract::new(
@@ -609,6 +615,7 @@ impl BoundedMarkdownProviderRun {
         let tool_calls_path = tool_call_store_path(events.path());
         validate_markdown_storage_paths(&run, events.path(), &model_calls)?;
         validate_storage_path(&tool_calls_path)?;
+        reject_reused_run_identity(&events, &model_calls, &inner.request)?;
         let tool_calls = ToolCallRecordStore::open(&tool_calls_path)?;
         let request = inner.request;
         let mut goal = GoalContract::new(
@@ -684,6 +691,25 @@ impl BoundedMarkdownProviderRun {
             reported_token_budget: controller.task_run().reported_token_budget.clone(),
         })
     }
+}
+
+fn reject_reused_run_identity(
+    events: &EventLog,
+    model_calls: &ModelCallStore,
+    request: &ProviderRunRequest,
+) -> Result<(), ProviderRunError> {
+    // Reject serial reuse; concurrent checks and controller start can still race.
+    let event_match = events
+        .contains_run_identity(&request.loop_run_id, &request.task_run_id)
+        .map_err(|_| ProviderRunError::RunHistoryUnavailable)?;
+    let next_call_id = format!("call-{}-step-1", request.loop_run_id);
+    let call_match = model_calls
+        .contains_run_identity(&request.task_run_id, &next_call_id)
+        .map_err(|_| ProviderRunError::RunHistoryUnavailable)?;
+    if event_match || call_match {
+        return Err(ProviderRunError::DuplicateRunIdentity);
+    }
+    Ok(())
 }
 
 fn configure_reported_token_budget(

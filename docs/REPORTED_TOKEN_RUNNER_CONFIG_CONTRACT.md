@@ -38,8 +38,11 @@ field. A disabled budget returns `None`.
 
 Each runner currently creates a fresh TaskRun. The limit is only for that
 TaskRun, not a cross-run cumulative quota. The getter is not persisted recovery;
-CLI StateStore replay is not TaskRun-budget persistence. Same-ID rerun protection
-and safe cross-run recovery require a separate slice. There are no new CLI
+CLI StateStore replay is not TaskRun-budget persistence. Serial same-history
+identity-reuse rejection is specified separately in
+`PROVIDER_RUN_IDENTITY_GUARD_CONTRACT.md`; it does not restore the ledger or make
+unknown in-flight calls safe to retry. Safe cross-run recovery remains open.
+There are no new CLI
 flags, credentials/config-file discovery, live calls, prices, tokenizer-based
 estimates, global learning, or cross-process semantics in this slice.
 
