@@ -489,3 +489,41 @@ fn identity_guard_precedes_disabled_zero_and_positive_token_budget() {
         assert_eq!(fixture.snapshot(), snapshot);
     }
 }
+
+#[test]
+fn distinct_foreground_runs_share_history_and_rebuild_loop_scoped_steps() {
+    for provider in ["openai-compatible", "anthropic"] {
+        let fixture = Fixture::new();
+        fixture.run(provider, false, "loop-1", "task-1").unwrap();
+        fixture.run(provider, false, "loop-2", "task-2").unwrap();
+        assert_eq!(fixture.sends.get(), 2);
+        let events = EventLog::open(fixture.directory.path().join("events.jsonl"))
+            .unwrap()
+            .read_all()
+            .unwrap();
+        let state = steerbox::state_store::StateStore::rebuild(&events).unwrap();
+        assert_eq!(state.steps().count(), 2);
+        let query = steerbox::execution_query::ExecutionQuery::from_events(&events).unwrap();
+        assert_eq!(query.list().len(), 2);
+        for (loop_id, task_id) in [("loop-1", "task-1"), ("loop-2", "task-2")] {
+            let step = state.step(loop_id, "step-1").unwrap();
+            assert_eq!(step.loop_run_id, loop_id);
+            assert_eq!(step.status, steerbox::domain::LoopStepStatus::Completed);
+            let snapshot = query.surface_snapshot(loop_id).unwrap();
+            assert_eq!(snapshot.execution.loop_run_id, loop_id);
+            assert_eq!(snapshot.execution.task_run_id, task_id);
+            assert_eq!(
+                snapshot.execution.status,
+                steerbox::domain::LoopStatus::Completed
+            );
+            assert!(snapshot
+                .events
+                .iter()
+                .all(|event| event.loop_run_id == loop_id));
+            let page = query.events_page(loop_id, 0, 2).unwrap();
+            assert_eq!(page.loop_run_id, loop_id);
+            assert_eq!(page.total, snapshot.events.len());
+            assert_eq!(page.events, snapshot.events[..2]);
+        }
+    }
+}

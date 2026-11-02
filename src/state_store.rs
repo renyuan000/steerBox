@@ -61,7 +61,8 @@ pub struct StepState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StateStore {
     loops: BTreeMap<String, LoopState>,
-    steps: BTreeMap<String, StepState>,
+    // Nonempty legacy flat projections must be rebuilt from EventLog.
+    steps: BTreeMap<String, BTreeMap<String, StepState>>,
 }
 
 impl StateStore {
@@ -129,8 +130,9 @@ impl StateStore {
         self.loops.get(loop_run_id)
     }
 
-    pub fn step(&self, step_id: &str) -> Option<&StepState> {
-        self.steps.get(step_id)
+    /// Finds a step by its loop-scoped identity.
+    pub fn step(&self, loop_run_id: &str, step_id: &str) -> Option<&StepState> {
+        self.steps.get(loop_run_id)?.get(step_id)
     }
 
     pub fn loops(&self) -> impl Iterator<Item = &LoopState> {
@@ -138,7 +140,7 @@ impl StateStore {
     }
 
     pub fn steps(&self) -> impl Iterator<Item = &StepState> {
-        self.steps.values()
+        self.steps.values().flat_map(BTreeMap::values)
     }
 
     fn apply(&mut self, event: &EventEnvelope) -> Result<(), StateStoreError> {
@@ -269,7 +271,11 @@ impl StateStore {
                 reason: "step_started references a terminal loop".into(),
             });
         }
-        if self.steps.contains_key(&step_id) {
+        if self
+            .steps
+            .get(&loop_run_id)
+            .is_some_and(|steps| steps.contains_key(&step_id))
+        {
             return Err(StateStoreError::InvalidTransition {
                 event_id: event.event_id.clone(),
                 reason: "step_started was recorded more than once".into(),
@@ -277,7 +283,7 @@ impl StateStore {
         }
         loop_state.current_step_id = Some(step_id.clone());
         loop_state.last_sequence_no = event.sequence_no.or(loop_state.last_sequence_no);
-        self.steps.insert(
+        self.steps.entry(loop_run_id.clone()).or_default().insert(
             step_id.clone(),
             StepState {
                 step_id,
@@ -296,17 +302,40 @@ impl StateStore {
 
     fn apply_step_terminal(&mut self, event: &EventEnvelope) -> Result<(), StateStoreError> {
         let step_id = step_id(event)?;
-        let Some(step_state) = self.steps.get_mut(&step_id) else {
+        let loop_run_id =
+            match optional_string(event, "loop_run_id", event.loop_run_id.as_deref())? {
+                Some(loop_run_id) => loop_run_id,
+                None => {
+                    let mut matching_loops = self
+                        .steps
+                        .iter()
+                        .filter(|(_, steps)| steps.contains_key(&step_id));
+                    let (loop_run_id, _) = matching_loops.next().ok_or_else(|| {
+                        StateStoreError::InvalidTransition {
+                            event_id: event.event_id.clone(),
+                            reason: "terminal event precedes step_started".into(),
+                        }
+                    })?;
+                    if matching_loops.next().is_some() {
+                        return Err(StateStoreError::InvalidTransition {
+                            event_id: event.event_id.clone(),
+                            reason: "terminal event has an ambiguous step_id without loop_run_id"
+                                .into(),
+                        });
+                    }
+                    loop_run_id.clone()
+                }
+            };
+        let Some(step_state) = self
+            .steps
+            .get_mut(&loop_run_id)
+            .and_then(|steps| steps.get_mut(&step_id))
+        else {
             return Err(StateStoreError::InvalidTransition {
                 event_id: event.event_id.clone(),
                 reason: "terminal event precedes step_started".into(),
             });
         };
-        if let Some(loop_run_id) =
-            optional_string(event, "loop_run_id", event.loop_run_id.as_deref())?
-        {
-            check_identity(event, "loop_run_id", &step_state.loop_run_id, &loop_run_id)?;
-        }
         if step_state.status != LoopStepStatus::Running {
             return Err(StateStoreError::InvalidTransition {
                 event_id: event.event_id.clone(),

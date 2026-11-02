@@ -37,7 +37,7 @@ foreground 在协议校验之后、工具日志打开与 controller 启动之前
 - 删除、截断、更换路径或丢失日志会失去历史证据；仅保留孤立 tool/checkpoint/trace/side-effect 文件不在本片检查范围。可信调用者必须保留原日志集合。
 - provider 已发送、审计未落盘时崩溃，远端是否执行或计费仍未知；不得把缺少完成记录当成可安全自动重发的依据。
 - 每次 runner 仍新建 TaskRun，本片不恢复 TaskRun/Attempt/位置或累计预算，不提供跨运行 token 配额。
-- 不解决 StateStore 以裸 `step_id` 索引导致的跨 loop 同名步骤问题；该风险须独立复现和修复，不能把本片等同于多次 CLI 运行已完整可用。
+- 本身份门禁切片本身不解决 StateStore 的跨 loop 同名步骤问题；后续独立投影根修复见 `LOOP_SCOPED_STEP_PROJECTION_CONTRACT.md`。两者合并仍不等于多次 CLI 运行、live provider 和完整任务恢复已全部验收。
 
 ## 验收入口
 

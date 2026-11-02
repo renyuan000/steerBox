@@ -107,6 +107,7 @@ EventEnvelope {
 3. 事件 append-only；修正事实必须新增补偿或更正事件，不能覆盖历史事件。
 4. EventLog append 成功后，StateStore 可以稍后重建；StateStore 是可重建的当前状态投影，不是第二套事实源。
 5. 相同 `event_id` 或相同 mutating command 的重复提交必须返回既有结果，不重复执行副作用。
+6. StateStore 步骤投影身份为 `(loop_run_id, step_id)`，不同 loop 的同名步骤不可互相覆盖或导致重建冲突；终态不得猜测跨 loop 归属。公开查询及投影 JSON 的新布局、旧非空扁平投影的显式重建边界见 `LOOP_SCOPED_STEP_PROJECTION_CONTRACT.md`；这不代替 TaskRun/Attempt/预算恢复。
 
 Phase 1 最小事件集合：
 

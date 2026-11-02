@@ -679,7 +679,10 @@ fn failed_routed_adapter_records_step_failure_and_rebuilds_failed_state() {
     assert_eq!(quality.payload["signal"], json!("insufficient_evidence"));
     let state = StateStore::rebuild(&events).expect("failed step projection rebuilds");
     assert_eq!(
-        state.step("step-routing").expect("step exists").status,
+        state
+            .step("loop-routing", "step-routing")
+            .expect("step exists")
+            .status,
         LoopStepStatus::Failed,
         "adapter failure left the step projection running"
     );

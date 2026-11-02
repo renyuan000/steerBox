@@ -71,7 +71,9 @@ fn rebuilds_current_loop_and_step_state_from_events() {
     assert_eq!(loop_state.current_step_id.as_deref(), Some("step-1"));
     assert_eq!(loop_state.last_sequence_no, None);
 
-    let step_state = state.step("step-1").expect("step projection exists");
+    let step_state = state
+        .step("loop-1", "step-1")
+        .expect("step projection exists");
     assert_eq!(step_state.loop_run_id, "loop-1");
     assert_eq!(step_state.status, LoopStepStatus::Completed);
     assert_eq!(step_state.summary.as_deref(), Some("repository inspected"));

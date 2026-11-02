@@ -292,7 +292,7 @@ Memory 最小实现：
 - [x] 实现TaskRun已报告token累计与后续发送门禁（`REPORTED_TOKEN_BUDGET_CONTRACT.md`）：默认关闭、首次调用前显式启用、逐字段未知不计零、checked累计、重复ID不重发、成败共用账本、审计/进度故障阻断；恢复与升档累计有独立回归。库片历史全量64套/774项、严格clippy、lib/bin build、fmt/diff通过。不是单请求硬上限、金额预算或live验收。
 - [x] 将已报告token门禁接入顶层可选`reported_token_limit`和既有runner（`REPORTED_TOKEN_RUNNER_CONFIG_CONTRACT.md`）：缺省/null关闭、0启用首发拒绝、非法值固定诊断；prepare冻结额度，OpenAI/Anthropic foreground及Markdown双协议共用门禁，零send/零resolver/零invocation及正额度私有快照有回归。该切片master独立全量783项、严格clippy、lib/bin build、fmt/diff通过；不新增CLI参数，不提供生产自动升档、跨运行累计配额或完整TaskRun持久恢复；串行同历史身份重用门禁见下一项。
 - [x] 增加 provider runner 历史身份启动前门禁（`PROVIDER_RUN_IDENTITY_GUARD_CONTRACT.md`）：OpenAI/Anthropic foreground与Markdown共用检查，任意事件顶层或typed aggregate的loop/task身份、成功/失败模型历史的task或精确next call ID冲突即发送前拒绝；坏历史固定错误无source。仅可信串行caller、同一日志集合，不是并发原子认领、日志丢失后安全重发、跨运行配额或完整恢复。
-- [ ] 独立复现并修复跨loop同名step的StateStore投影冲突：当前provider使用固定step-1，投影按裸step_id索引；不同运行的新身份可过身份门禁，但不代表共享日志的连续CLI运行及execution查询已完整可用。先补两loop同名step回归，再明确索引/API/持久化边界。
+- [x] 独立复现并修复跨loop同名step的StateStore投影冲突（`LOOP_SCOPED_STEP_PROJECTION_CONTRACT.md`）：投影按loop→step嵌套索引，公开`step(loop,id)`无歧义查询；明确loop的terminal不跨loop回退，缺省loop只接受全部候选唯一匹配。同名双步骤及双协议foreground共享日志查询有回归；新嵌套JSON可round-trip，旧非空flat投影需从原EventLog重建，不做自动迁移。不改变provider/controller/call ID，不代表完整CLI/live/任务恢复。
 - [x] 实现 retryable provider failure 的新 Attempt／新 RouteDecision／失败证据保留；禁止静默覆盖原 Attempt（普通 routed 与 resolved routed controller 已接入 `plan_adaptation()` 门禁，并保留父 Attempt 失败 evidence；完整质量驱动 controller 仍待完成）
 - [x] 校验自适应决策不能改变 provider allowlist、endpoint、auth_ref、隐私等级、工具权限和安全底线（契约决策不携带这些字段；route planner 只返回已声明 fallback）
 - [ ] 对低质量、不可重试、安全阻断、预算耗尽分别生成可解释的 metadata-only 审计事件（当前 routed retryable fallback 已有 `model_route_fallback` 与 `model_adaptation_stopped`；NeedsUpgrade、Blocked、Failed 的统一自适应事件仍待完成）
