@@ -38,4 +38,5 @@ No provider/endpoint allowlist, new approval flow, automatic model selection,
 credential access, live-provider validation, or complete recovery is added.
 Candidate-resolver/binding failure closure is a separate increment documented in
 `RESOLVED_ROUTED_FAILURE_CLOSURE_CONTRACT.md`; it is not part of this allowlist
-repair. Ordinary foreground failure semantics remain separate work.
+repair. Ordinary foreground failure closure is another separate increment,
+documented in `FOREGROUND_FAILURE_CLOSURE_CONTRACT.md`.

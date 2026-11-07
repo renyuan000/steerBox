@@ -296,7 +296,8 @@ Memory 最小实现：
 - [x] 实现 retryable provider failure 的新 Attempt／新 RouteDecision／失败证据保留；禁止静默覆盖原 Attempt（普通 routed 与 resolved routed controller 已接入 `plan_adaptation()` 门禁，并保留父 Attempt 失败 evidence；完整质量驱动 controller 仍待完成）
 - [x] 修复resolved模型白名单旁路（`RESOLVED_MODEL_ALLOWLIST_CONTRACT.md`）：共用路径同时约束request/route模型，routed首选与fallback在resolver前检查，拒绝fallback不创建child且保留原失败；空白名单仍不限制，四个候选resolver/binding错误出口由下方独立增量处理。
 - [x] resolved routed候选失败收口（`RESOLVED_ROUTED_FAILURE_CLOSURE_CONTRACT.md`）：primary/fallback的resolver及候选校验失败终结三层状态，保留预算/证据，审计失败优先返回且修复日志后仍不可重发；不含后续route binding/adaptation等出口。
-- [ ] 普通OpenAI-compatible/Anthropic foreground调用失败的runner终态收尾；必须保留合法routed fallback，不将共享resolved错误路径一律提前终结。
+- [x] 普通OpenAI-compatible/Anthropic foreground调用失败的runner终态收尾（`FOREGROUND_FAILURE_CLOSURE_CONTRACT.md`）；保留合法routed fallback，不将共享resolved错误路径一律提前终结。错误时保留预算/证据，非Running不覆盖；主代理全量852项通过。
+- [ ] controller构造期间初始进度回调失败的生命周期收尾；这是独立边界，不属于上述普通foreground的已创建controller错误收尾。
 - [x] 校验自适应决策不能改变 provider allowlist、endpoint、auth_ref、隐私等级、工具权限和安全底线（契约决策不携带这些字段；route planner 只返回已声明 fallback）
 - [ ] 对低质量、不可重试、安全阻断、预算耗尽分别生成可解释的 metadata-only 审计事件（当前 routed retryable fallback 已有 `model_route_fallback` 与 `model_adaptation_stopped`；NeedsUpgrade、Blocked、Failed 的统一自适应事件仍待完成）
 - [ ] 用 fake/localhost provider 覆盖 Verified、NeedsUpgrade、Retryable、Blocked、Failed 和预算耗尽分支

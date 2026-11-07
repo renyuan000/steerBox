@@ -3311,6 +3311,14 @@ impl ReadOnlyLoopController {
     }
 
     fn close_failed_routed_run(&mut self) -> Result<(), LoopControllerError> {
+        self.close_failed_run("routed model step failed")
+    }
+
+    pub(crate) fn close_failed_foreground_run(&mut self) -> Result<(), LoopControllerError> {
+        self.close_failed_run("foreground model step failed")
+    }
+
+    fn close_failed_run(&mut self, summary: &'static str) -> Result<(), LoopControllerError> {
         if self.loop_run.status != LoopStatus::Running {
             return Ok(());
         }
@@ -3318,7 +3326,7 @@ impl ReadOnlyLoopController {
         self.append_model_event(
             "loop_failed",
             &format!("{}:failed", self.loop_run.loop_run_id),
-            json!({"status": "failed", "summary": "routed model step failed"}),
+            json!({"status": "failed", "summary": summary}),
         )?;
         Ok(())
     }
@@ -5267,4 +5275,200 @@ fn append_step_event(
     event.loop_run_id = Some(loop_run.loop_run_id.clone());
     event.step_id = Some(step.step_id.clone());
     Ok(event_log.append(event)?)
+}
+
+#[cfg(test)]
+mod foreground_failure_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn controller(directory: &std::path::Path) -> ReadOnlyLoopController {
+        ReadOnlyLoopController::start(
+            EventLog::open(directory.join("events.jsonl")).unwrap(),
+            GoalContract::new(
+                "goal",
+                "project",
+                "fixture objective",
+                vec![],
+                vec![],
+                vec![],
+            ),
+            "foreground",
+            "task-run",
+            LoopBudget::new(3, 0, 3, 1, 0, 3, 3, 3),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn foreground_failure_preserves_existing_state_and_closes_all_layers() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut controller = controller(directory.path());
+        controller.enable_reported_token_budget(100).unwrap();
+        controller
+            .task_run
+            .reported_token_budget
+            .as_mut()
+            .unwrap()
+            .settle("fixture-call", Some(3), Some(2))
+            .unwrap();
+        controller.budget.consume_step().unwrap();
+        controller.budget.consume_model_call().unwrap();
+        controller
+            .task_run
+            .artifact_refs
+            .push("artifact:task".into());
+        controller
+            .task_run
+            .evidence_refs
+            .push("evidence:task".into());
+        controller.task_run.attempts[0]
+            .artifact_refs
+            .push("artifact:attempt".into());
+        controller
+            .append_model_event(
+                "model_call_started",
+                "fixture-call:started",
+                json!({"model_id": "fixture"}),
+            )
+            .unwrap();
+        let budget = controller.budget.clone();
+        let reported = controller.task_run.reported_token_budget.clone();
+        let attempt_before = controller.task_run.attempts[0].clone();
+
+        controller.close_failed_foreground_run().unwrap();
+
+        assert_eq!(controller.status(), LoopStatus::Failed);
+        assert_eq!(controller.task_run.status, TaskRunStatus::Failed);
+        let attempt = &controller.task_run.attempts[0];
+        assert_eq!(attempt.status, AttemptStatus::Failed);
+        assert!(attempt.finished_at.is_some());
+        assert_eq!(
+            controller.loop_run.finished_at,
+            controller.task_run.finished_at
+        );
+        assert!(controller.loop_run.finished_at.is_some());
+        assert_eq!(controller.budget, budget);
+        assert_eq!(controller.task_run.budget, budget);
+        assert_eq!(controller.task_run.reported_token_budget, reported);
+        assert_eq!(controller.task_run.artifact_refs, ["artifact:task"]);
+        assert_eq!(controller.task_run.evidence_refs, ["evidence:task"]);
+        assert_eq!(attempt.artifact_refs, attempt_before.artifact_refs);
+        assert_eq!(
+            attempt.evidence_refs,
+            [
+                attempt_before.evidence_refs,
+                vec!["foreground:failed".into()]
+            ]
+            .concat()
+        );
+        assert_eq!(attempt.verification_status, "model_step_failed");
+        let state = (controller.loop_run.clone(), controller.task_run.clone());
+        controller.close_failed_foreground_run().unwrap();
+        assert_eq!(
+            (controller.loop_run.clone(), controller.task_run.clone()),
+            state
+        );
+        let events = controller.event_log.read_all().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "loop_failed")
+                .count(),
+            1
+        );
+    }
+
+    struct CountingAdapter(Cell<usize>);
+
+    impl ModelAdapter for CountingAdapter {
+        fn complete(
+            &self,
+            _: ModelRequest,
+        ) -> Result<crate::model_adapter::ModelResponse, ModelAdapterError> {
+            self.0.set(self.0.get() + 1);
+            Ok(crate::model_adapter::ModelResponse {
+                decision: ModelDecision::ContinueObservation,
+                summary: "fixture".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn foreground_audit_failure_leaves_closed_state_without_fake_evidence_or_resend() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut controller = controller(directory.path());
+        let event_path = directory.path().join("events.jsonl");
+        let saved_path = directory.path().join("events.saved.jsonl");
+        std::fs::rename(&event_path, &saved_path).unwrap();
+        std::fs::create_dir(&event_path).unwrap();
+        let evidence = controller.task_run.attempts[0].evidence_refs.clone();
+
+        assert!(matches!(
+            controller.close_failed_foreground_run(),
+            Err(LoopControllerError::EventLog(_))
+        ));
+        assert_eq!(controller.status(), LoopStatus::Failed);
+        assert_eq!(controller.task_run.status, TaskRunStatus::Failed);
+        assert_eq!(
+            controller.task_run.attempts[0].status,
+            AttemptStatus::Failed
+        );
+        assert_eq!(controller.task_run.attempts[0].evidence_refs, evidence);
+        let state = (controller.loop_run.clone(), controller.task_run.clone());
+        std::fs::remove_dir(&event_path).unwrap();
+        std::fs::rename(&saved_path, &event_path).unwrap();
+        controller.close_failed_foreground_run().unwrap();
+        assert_eq!(
+            (controller.loop_run.clone(), controller.task_run.clone()),
+            state
+        );
+        let adapter = CountingAdapter(Cell::new(0));
+        assert!(matches!(
+            controller.run_model_step(&adapter, "fixture", "next-step", "fixture"),
+            Err(LoopControllerError::Terminal)
+        ));
+        assert_eq!(adapter.0.get(), 0);
+        assert_eq!(controller.event_log.read_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn foreground_failure_does_not_mutate_non_running_states() {
+        for status in [
+            LoopStatus::Completed,
+            LoopStatus::Paused,
+            LoopStatus::Cancelled,
+            LoopStatus::Failed,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut controller = controller(directory.path());
+            match status {
+                LoopStatus::Completed => {
+                    controller.complete().unwrap();
+                }
+                LoopStatus::Failed => {
+                    controller.fail("fixture failed").unwrap();
+                }
+                LoopStatus::Paused => controller.loop_run.pause(),
+                LoopStatus::Cancelled => controller.loop_run.cancel(),
+                LoopStatus::Running => unreachable!(),
+            }
+            let before = (
+                controller.loop_run.clone(),
+                controller.task_run.clone(),
+                controller.budget.clone(),
+                controller.event_log.read_all().unwrap(),
+            );
+            controller.close_failed_foreground_run().unwrap();
+            assert_eq!(
+                (
+                    controller.loop_run.clone(),
+                    controller.task_run.clone(),
+                    controller.budget.clone(),
+                    controller.event_log.read_all().unwrap()
+                ),
+                before
+            );
+        }
+    }
 }

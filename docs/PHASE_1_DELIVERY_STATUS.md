@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+2026-11-08 普通foreground失败收尾：OpenAI-compatible与Anthropic两个普通入口在controller创建后遇到配置/模型步骤错误，关闭仍Running的Attempt、TaskRun和Loop，保留原预算、artifact/evidence；终态审计成功后返回原错误，审计失败则返回审计错误且内存已终结。零token上限无模型发送/凭据解析；已Completed后的进度错误不改判失败，其他非Running状态不覆盖。规格与质量安全审核通过，master全量852项及严格clippy、构建、fmt/diff通过。初始启动进度回调失败、Markdown/升档编排、持久恢复和live不在本片内；详见`FOREGROUND_FAILURE_CLOSURE_CONTRACT.md`。Phase 1仍未完成，下方各片保留其当时的范围说明。
+
 2026-11-08 resolved routed候选失败收口：primary/fallback的resolver或候选binding校验失败，均先终结当前Attempt、TaskRun和Loop，再返回原错误；终态审计失败则返回审计错误，内存仍已终结。fallback拒绝保留原失败证据和预算，不创建child、不进行第二次发送。独立规格、质量审核通过；master全量839项、严格clippy、构建、fmt/diff通过。仅此四个出口已修复；普通foreground失败、其他route binding/adaptation出口、持久恢复和live仍不在本片内。见`RESOLVED_ROUTED_FAILURE_CLOSURE_CONTRACT.md`与验证计划；Phase 1仍未完成。下方白名单片的“未完成”描述仅为该片当时边界。
 
 2026-11-08 resolved模型白名单修复：普通resolved共用路径检查实际request与route模型，routed首选在resolver前拒绝未授权模型，fallback在adaptation前及候选选定后复核；拒绝fallback沿用既有失败收口，不创建child、不重置预算，空白名单仍不限制。真实行为RED已复现后修复，master全量835项通过、严格clippy及构建通过；证据见`PHASE_1_VALIDATION_PLAN.md`和`RESOLVED_MODEL_ALLOWLIST_CONTRACT.md`。其他resolver/binding错误收口、后台服务、live及完整Phase 1仍未完成。

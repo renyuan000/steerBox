@@ -476,21 +476,31 @@ impl ForegroundProviderRun {
         )?
         .with_model_call_store(model_calls)
         .with_tool_call_store(tool_calls);
-        configure_reported_token_budget(&mut controller, self.reported_token_limit)?;
-        let decision = controller.run_resolved_model_step(
-            &adapter,
-            ModelRequest {
-                model_id: request.model_id,
-                goal_id: request.goal_id,
-                loop_run_id: request.loop_run_id,
-                step_id: "step-1".into(),
-                objective: request.objective,
-                observation: request.observation,
+        configure_reported_token_budget(&mut controller, self.reported_token_limit).or_else(
+            |error| {
+                controller.close_failed_foreground_run()?;
+                Err(error)
             },
-            &self.prompt,
-            &self.route,
-            "step-1",
         )?;
+        let decision = controller
+            .run_resolved_model_step(
+                &adapter,
+                ModelRequest {
+                    model_id: request.model_id,
+                    goal_id: request.goal_id,
+                    loop_run_id: request.loop_run_id,
+                    step_id: "step-1".into(),
+                    objective: request.objective,
+                    observation: request.observation,
+                },
+                &self.prompt,
+                &self.route,
+                "step-1",
+            )
+            .or_else(|error| {
+                controller.close_failed_foreground_run()?;
+                Err(error)
+            })?;
         Ok(ProviderRunOutcome {
             decision,
             loop_status: controller.status(),
@@ -532,7 +542,12 @@ impl ForegroundProviderRun {
         )?
         .with_model_call_store(model_calls)
         .with_tool_call_store(tool_calls);
-        configure_reported_token_budget(&mut controller, self.reported_token_limit)?;
+        configure_reported_token_budget(&mut controller, self.reported_token_limit).or_else(
+            |error| {
+                controller.close_failed_foreground_run()?;
+                Err(error)
+            },
+        )?;
         let adapter = AnthropicAdapter::new(
             self.profile.provider,
             self.profile.endpoint,
@@ -540,20 +555,25 @@ impl ForegroundProviderRun {
             self.profile.auth_ref,
         )
         .with_model_id(&request.model_id);
-        let decision = controller.run_resolved_model_step(
-            &adapter,
-            ModelRequest {
-                model_id: request.model_id,
-                goal_id: request.goal_id,
-                loop_run_id: request.loop_run_id,
-                step_id: "step-1".into(),
-                objective: request.objective,
-                observation: request.observation,
-            },
-            &self.prompt,
-            &self.route,
-            "step-1",
-        )?;
+        let decision = controller
+            .run_resolved_model_step(
+                &adapter,
+                ModelRequest {
+                    model_id: request.model_id,
+                    goal_id: request.goal_id,
+                    loop_run_id: request.loop_run_id,
+                    step_id: "step-1".into(),
+                    objective: request.objective,
+                    observation: request.observation,
+                },
+                &self.prompt,
+                &self.route,
+                "step-1",
+            )
+            .or_else(|error| {
+                controller.close_failed_foreground_run()?;
+                Err(error)
+            })?;
         Ok(ProviderRunOutcome {
             decision,
             loop_status: controller.status(),
