@@ -36,5 +36,6 @@ action/continuation, and routed regression suites remain required.
 
 No provider/endpoint allowlist, new approval flow, automatic model selection,
 credential access, live-provider validation, or complete recovery is added.
-Other candidate-resolver/binding failure closure and ordinary foreground
-failure semantics remain separate work; this repair does not claim to solve them.
+Candidate-resolver/binding failure closure is a separate increment documented in
+`RESOLVED_ROUTED_FAILURE_CLOSURE_CONTRACT.md`; it is not part of this allowlist
+repair. Ordinary foreground failure semantics remain separate work.

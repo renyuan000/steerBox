@@ -1711,8 +1711,17 @@ impl ReadOnlyLoopController {
         let mut attempted_models = Vec::new();
         let mut current_route = route.clone();
         let primary_model = route.selected_model.clone();
-        let primary = resolve_candidate(route, &primary_model)?;
-        validate_resolved_candidate(&primary, route, &primary_model)?;
+        let primary = match resolve_candidate(route, &primary_model) {
+            Ok(primary) => primary,
+            Err(error) => {
+                self.close_failed_routed_run()?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = validate_resolved_candidate(&primary, route, &primary_model) {
+            self.close_failed_routed_run()?;
+            return Err(error);
+        }
         self.bind_current_attempt_route(&primary.route)?;
         let mut result = self
             .run_resolved_model_step_internal(
@@ -1790,8 +1799,17 @@ impl ReadOnlyLoopController {
             }
             let fallback_index = attempted_models.len();
             let fallback_step_id = format!("{step_id}:fallback:{fallback_index}");
-            let candidate = resolve_candidate(&current_route, &fallback_model)?;
-            validate_resolved_candidate(&candidate, route, &fallback_model)?;
+            let candidate = match resolve_candidate(&current_route, &fallback_model) {
+                Ok(candidate) => candidate,
+                Err(error) => {
+                    self.close_failed_routed_run()?;
+                    return Err(error);
+                }
+            };
+            if let Err(error) = validate_resolved_candidate(&candidate, route, &fallback_model) {
+                self.close_failed_routed_run()?;
+                return Err(error);
+            }
 
             let parent_attempt_id =
                 self.task_run.current_attempt_id.clone().ok_or_else(|| {

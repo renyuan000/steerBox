@@ -294,7 +294,9 @@ Memory 最小实现：
 - [x] 增加 provider runner 历史身份启动前门禁（`PROVIDER_RUN_IDENTITY_GUARD_CONTRACT.md`）：OpenAI/Anthropic foreground与Markdown共用检查，任意事件顶层或typed aggregate的loop/task身份、成功/失败模型历史的task或精确next call ID冲突即发送前拒绝；坏历史固定错误无source。仅可信串行caller、同一日志集合，不是并发原子认领、日志丢失后安全重发、跨运行配额或完整恢复。
 - [x] 独立复现并修复跨loop同名step的StateStore投影冲突（`LOOP_SCOPED_STEP_PROJECTION_CONTRACT.md`）：投影按loop→step嵌套索引，公开`step(loop,id)`无歧义查询；明确loop的terminal不跨loop回退，缺省loop只接受全部候选唯一匹配。同名双步骤及双协议foreground共享日志查询有回归；新嵌套JSON可round-trip，旧非空flat投影需从原EventLog重建，不做自动迁移。不改变provider/controller/call ID，不代表完整CLI/live/任务恢复。
 - [x] 实现 retryable provider failure 的新 Attempt／新 RouteDecision／失败证据保留；禁止静默覆盖原 Attempt（普通 routed 与 resolved routed controller 已接入 `plan_adaptation()` 门禁，并保留父 Attempt 失败 evidence；完整质量驱动 controller 仍待完成）
-- [x] 修复resolved模型白名单旁路（`RESOLVED_MODEL_ALLOWLIST_CONTRACT.md`）：共用路径同时约束request/route模型，routed首选与fallback在resolver前检查，拒绝fallback不创建child且保留原失败；空白名单仍不限制，其他resolver/binding错误收口独立待办。
+- [x] 修复resolved模型白名单旁路（`RESOLVED_MODEL_ALLOWLIST_CONTRACT.md`）：共用路径同时约束request/route模型，routed首选与fallback在resolver前检查，拒绝fallback不创建child且保留原失败；空白名单仍不限制，四个候选resolver/binding错误出口由下方独立增量处理。
+- [x] resolved routed候选失败收口（`RESOLVED_ROUTED_FAILURE_CLOSURE_CONTRACT.md`）：primary/fallback的resolver及候选校验失败终结三层状态，保留预算/证据，审计失败优先返回且修复日志后仍不可重发；不含后续route binding/adaptation等出口。
+- [ ] 普通OpenAI-compatible/Anthropic foreground调用失败的runner终态收尾；必须保留合法routed fallback，不将共享resolved错误路径一律提前终结。
 - [x] 校验自适应决策不能改变 provider allowlist、endpoint、auth_ref、隐私等级、工具权限和安全底线（契约决策不携带这些字段；route planner 只返回已声明 fallback）
 - [ ] 对低质量、不可重试、安全阻断、预算耗尽分别生成可解释的 metadata-only 审计事件（当前 routed retryable fallback 已有 `model_route_fallback` 与 `model_adaptation_stopped`；NeedsUpgrade、Blocked、Failed 的统一自适应事件仍待完成）
 - [ ] 用 fake/localhost provider 覆盖 Verified、NeedsUpgrade、Retryable、Blocked、Failed 和预算耗尽分支

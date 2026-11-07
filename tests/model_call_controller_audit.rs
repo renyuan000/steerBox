@@ -4274,30 +4274,37 @@ fn resolved_routed_retryable_failure_creates_child_and_keeps_failure_jsonl() {
     );
     let (fallback_pack, fallback_route) =
         resolved_fixture_for("backup-model", "route-backup", vec![]);
+    let primary_transport = FakeTransport::failing();
+    let primary_sends = primary_transport.sends.clone();
+    let fallback_transport = FakeTransport::with_decision_content(
+        r#"{"decision":"complete_loop","summary":"fallback done"}"#.into(),
+    );
+    let fallback_sends = fallback_transport.sends.clone();
     let mut controller = controller_with_budget(
         &directory,
         vec![".".into()],
         LoopBudget::new(4, 0, 2, 2, 0, 2, 2, 2),
     )
     .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    let budget_before = controller.budget().clone();
+    let mut resolved_models = Vec::new();
 
     let result = controller.run_resolved_routed_model_step(
         &primary_route,
         "step-resolved-fallback",
         |route, model_id| {
+            resolved_models.push(model_id.to_owned());
             let (pack, candidate_route, transport) = if model_id == "logical-model" {
                 (
                     primary_pack.clone(),
                     route.clone(),
-                    FakeTransport::failing(),
+                    primary_transport.clone(),
                 )
             } else {
                 (
                     fallback_pack.clone(),
                     fallback_route.clone(),
-                    FakeTransport::with_decision_content(
-                        r#"{"decision":"complete_loop","summary":"fallback done"}"#.into(),
-                    ),
+                    fallback_transport.clone(),
                 )
             };
             Ok(steerbox::loop_controller::ResolvedProviderCandidate {
@@ -4319,10 +4326,25 @@ fn resolved_routed_retryable_failure_creates_child_and_keeps_failure_jsonl() {
         },
     );
 
-    assert!(
-        result.is_ok(),
-        "fallback candidate should complete: {result:?}"
+    assert_eq!(result.unwrap(), ModelDecision::CompleteLoop);
+    assert_eq!(resolved_models, vec!["logical-model", "backup-model"]);
+    assert_eq!(primary_sends.lock().unwrap().len(), 1);
+    assert_eq!(fallback_sends.lock().unwrap().len(), 1);
+    assert_eq!(controller.status(), steerbox::domain::LoopStatus::Completed);
+    assert_eq!(
+        controller.task_run().status,
+        steerbox::domain::TaskRunStatus::Succeeded
     );
+    assert_eq!(controller.budget().steps_used, budget_before.steps_used + 2);
+    assert_eq!(
+        controller.budget().model_calls_used,
+        budget_before.model_calls_used + 2
+    );
+    assert_eq!(
+        controller.budget().attempts_used,
+        budget_before.attempts_used + 1
+    );
+    assert_eq!(&controller.task_run().budget, controller.budget());
     assert_eq!(controller.task_run().attempts.len(), 2);
     assert_eq!(
         controller.task_run().attempts[0].status,
@@ -4354,6 +4376,21 @@ fn resolved_routed_retryable_failure_creates_child_and_keeps_failure_jsonl() {
         .unwrap()
         .read_all()
         .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "model_route_fallback")
+            .count(),
+        1
+    );
+    let failure_event = events
+        .iter()
+        .find(|event| event.event_type == "model_call_failed")
+        .unwrap();
+    assert!(controller.task_run().attempts[0]
+        .evidence_refs
+        .contains(&failure_event.event_id));
+    assert!(events.iter().all(|event| event.event_type != "loop_failed"));
     let fallback = events
         .iter()
         .find(|event| event.event_type == "model_route_fallback")
@@ -4459,26 +4496,89 @@ fn resolved_routed_decision_rejection_keeps_failure_audit_without_fallback_or_up
 }
 
 #[test]
+fn resolved_routed_primary_resolver_failure_closes_without_send() {
+    assert_resolved_routed_candidate_failure(false, false, false);
+}
+
+#[test]
+fn resolved_routed_primary_binding_failure_closes_without_send() {
+    assert_resolved_routed_candidate_failure(false, true, false);
+}
+
+#[test]
+fn resolved_routed_fallback_resolver_failure_closes_without_child_attempt() {
+    assert_resolved_routed_candidate_failure(true, false, false);
+}
+
+#[test]
 fn resolved_routed_binding_failure_does_not_create_child_attempt() {
+    assert_resolved_routed_candidate_failure(true, true, false);
+}
+
+#[test]
+fn resolved_routed_candidate_close_audit_failure_blocks_resend_after_repair() {
+    for fallback in [false, true] {
+        for binding in [false, true] {
+            assert_resolved_routed_candidate_failure(fallback, binding, true);
+        }
+    }
+}
+
+fn assert_resolved_routed_candidate_failure(fallback: bool, binding: bool, fail_close_audit: bool) {
     let directory = TestDirectory::new();
     let (primary_pack, primary_route) = resolved_fixture_for(
         "logical-model",
         "route-primary",
-        vec!["backup-model".into()],
+        vec!["backup-model".into(), "third-model".into()],
     );
     let (fallback_pack, fallback_route) =
         resolved_fixture_for("backup-model", "route-backup", vec![]);
+    let primary_transport = FakeTransport::failing();
+    let primary_sends = primary_transport.sends.clone();
+    let fallback_transport = FakeTransport::valid();
+    let fallback_sends = fallback_transport.sends.clone();
+    let store = ModelCallStore::open(directory.model_calls()).unwrap();
     let mut controller = controller_with_budget(
         &directory,
         vec![".".into()],
-        LoopBudget::new(4, 0, 2, 2, 0, 2, 2, 2),
+        LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4),
     )
-    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    .with_model_call_store(store.clone());
+    let budget_before = controller.budget().clone();
+    let initial_attempt = controller.task_run().attempts[0].clone();
+    let saved_events = directory.path.join("saved-events.jsonl");
+    let mut resolved_models = Vec::new();
+    let mut events_before_close = Vec::new();
+    let mut failures_before_close = Vec::new();
+    let rejected_model = if fallback {
+        "backup-model"
+    } else {
+        "logical-model"
+    };
 
     let result = controller.run_resolved_routed_model_step(
         &primary_route,
         "step-resolved-binding-failure",
         |route, model_id| {
+            resolved_models.push(model_id.to_owned());
+            assert_ne!(
+                model_id, "third-model",
+                "must not skip a rejected candidate"
+            );
+            if model_id == rejected_model {
+                events_before_close = EventLog::open(directory.events())
+                    .unwrap()
+                    .read_all()
+                    .unwrap();
+                failures_before_close = store.read_failures().unwrap();
+                if fail_close_audit {
+                    fs::rename(directory.events(), &saved_events).unwrap();
+                    fs::create_dir(directory.events()).unwrap();
+                }
+                if !binding {
+                    return Err(LoopControllerError::ModelAdapterNotFound(model_id.into()));
+                }
+            }
             let pack = if model_id == "logical-model" {
                 primary_pack.clone()
             } else {
@@ -4489,7 +4589,7 @@ fn resolved_routed_binding_failure_does_not_create_child_attempt() {
             } else {
                 fallback_route.clone()
             };
-            if model_id == "backup-model" {
+            if binding && fallback && model_id == rejected_model {
                 candidate_route.selected_model = "wrong-model".into();
             }
             Ok(steerbox::loop_controller::ResolvedProviderCandidate {
@@ -4498,15 +4598,19 @@ fn resolved_routed_binding_failure_does_not_create_child_attempt() {
                         "fixture-provider",
                         BASE_URL,
                         if model_id == "logical-model" {
-                            FakeTransport::failing()
+                            primary_transport.clone()
                         } else {
-                            FakeTransport::valid()
+                            fallback_transport.clone()
                         },
                     ),
                     None,
                 )),
                 request: ModelRequest {
-                    model_id: pack.model_id().into(),
+                    model_id: if binding && !fallback {
+                        "wrong-model".into()
+                    } else {
+                        pack.model_id().into()
+                    },
                     goal_id: "goal-model-audit".into(),
                     loop_run_id: "loop-model-audit".into(),
                     step_id: "step-resolved-binding-failure".into(),
@@ -4519,17 +4623,142 @@ fn resolved_routed_binding_failure_does_not_create_child_attempt() {
         },
     );
 
-    assert!(result.is_err(), "invalid fallback binding must be rejected");
-    assert_eq!(controller.task_run().attempts.len(), 1);
+    let error = result.expect_err("candidate rejection must fail the routed run");
+    if fail_close_audit {
+        match error {
+            LoopControllerError::EventLog(steerbox::event_log::EventLogError::Io(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::IsADirectory);
+            }
+            other => panic!("closure audit error must take precedence: {other:?}"),
+        }
+    } else if binding && fallback {
+        assert!(
+            matches!(
+                error,
+                LoopControllerError::ModelContract(
+                    steerbox::model_contracts::ModelContractError::InvalidField {
+                        field: "selected_model",
+                        reason: "must be present in candidate_models",
+                    }
+                )
+            ),
+            "original candidate contract error must be retained: {error:?}"
+        );
+    } else if binding {
+        assert!(
+            matches!(
+                error,
+                LoopControllerError::ModelAdapter(ModelAdapterError::ResolvedBindingMismatch {
+                    field: "request_model_id"
+                })
+            ),
+            "original binding field must be retained: {error:?}"
+        );
+    } else {
+        assert!(
+            matches!(&error, LoopControllerError::ModelAdapterNotFound(model)
+            if model == rejected_model),
+            "original resolver model must be retained: {error:?}"
+        );
+    }
     assert_eq!(
-        controller.task_run().attempts[0].status,
-        steerbox::domain::AttemptStatus::Running
+        resolved_models,
+        if fallback {
+            vec!["logical-model", "backup-model"]
+        } else {
+            vec!["logical-model"]
+        }
     );
-    assert!(ModelCallStore::open(directory.model_calls())
+    assert_eq!(primary_sends.lock().unwrap().len(), usize::from(fallback));
+    assert!(fallback_sends.lock().unwrap().is_empty());
+    let mut expected_budget = budget_before;
+    expected_budget.steps_used += u32::from(fallback);
+    expected_budget.model_calls_used += u32::from(fallback);
+    assert_eq!(controller.budget(), &expected_budget);
+    assert_eq!(controller.task_run().budget, expected_budget);
+    assert_eq!(controller.status(), steerbox::domain::LoopStatus::Failed);
+    assert_eq!(
+        controller.task_run().status,
+        steerbox::domain::TaskRunStatus::Failed
+    );
+    assert!(controller.task_run().finished_at.is_some());
+    assert_eq!(controller.task_run().attempts.len(), 1);
+    let attempt = &controller.task_run().attempts[0];
+    assert_eq!(attempt.attempt_id, initial_attempt.attempt_id);
+    assert_eq!(attempt.parent_attempt_id, initial_attempt.parent_attempt_id);
+    assert_eq!(attempt.reason, initial_attempt.reason);
+    assert_eq!(attempt.status, steerbox::domain::AttemptStatus::Failed);
+    assert_eq!(attempt.artifact_refs, initial_attempt.artifact_refs);
+    for evidence in &initial_attempt.evidence_refs {
+        assert!(attempt.evidence_refs.contains(evidence));
+    }
+    assert!(store.read_all().unwrap().is_empty());
+    assert_eq!(store.read_failures().unwrap(), failures_before_close);
+    assert_eq!(failures_before_close.len(), usize::from(fallback));
+    if fallback {
+        let failure = &failures_before_close[0];
+        assert_eq!(failure.model_id, "logical-model");
+        assert_eq!(failure.route_decision_id, "route-primary");
+        assert_eq!(failure.failure_stage, "provider_invocation");
+        assert_eq!(failure.failure_class, "transport");
+        let failure_event = events_before_close
+            .iter()
+            .find(|event| event.event_type == "model_call_failed")
+            .unwrap();
+        assert!(attempt.evidence_refs.contains(&failure_event.event_id));
+    }
+
+    if fail_close_audit {
+        fs::rename(directory.events(), directory.path.join("blocked-events")).unwrap();
+        fs::rename(saved_events, directory.events()).unwrap();
+        let retry_transport = FakeTransport::valid();
+        let retry_sends = retry_transport.sends.clone();
+        let adapter = ProviderModelAdapter::new(
+            OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, retry_transport),
+            None,
+        );
+        assert!(matches!(
+            controller.run_resolved_model_step(
+                &adapter,
+                token_budget_request(&primary_pack, "after-audit-repair"),
+                &primary_pack,
+                &primary_route,
+                "after-audit-repair",
+            ),
+            Err(LoopControllerError::Terminal)
+        ));
+        assert!(retry_sends.lock().unwrap().is_empty());
+        assert_eq!(controller.budget(), &expected_budget);
+        assert_eq!(controller.task_run().attempts.len(), 1);
+        assert_eq!(store.read_failures().unwrap(), failures_before_close);
+        assert!(store.read_all().unwrap().is_empty());
+    }
+    let events = EventLog::open(directory.events())
         .unwrap()
         .read_all()
-        .unwrap()
-        .is_empty());
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&events[..events_before_close.len()]).unwrap(),
+        serde_json::to_value(&events_before_close).unwrap(),
+    );
+    assert_eq!(
+        events.len(),
+        events_before_close.len() + usize::from(!fail_close_audit)
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "loop_failed")
+            .count(),
+        usize::from(!fail_close_audit)
+    );
+    for forbidden in [
+        "model_route_fallback",
+        "loop_completed",
+        "model_call_completed",
+    ] {
+        assert!(events.iter().all(|event| event.event_type != forbidden));
+    }
 }
 
 #[test]
