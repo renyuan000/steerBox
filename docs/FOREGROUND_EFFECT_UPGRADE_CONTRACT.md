@@ -31,4 +31,4 @@
 
 ## 非目标
 
-不实现生产 CLI 自动质量选择、Markdown 升档、Anthropic native 效果、多模型 fallback、并发认领、在途请求抢占、token 预留硬上限、金额预算、持久 TaskRun 恢复或 live provider 验收。后续安全待办：resolved fallback 的 Goal 模型白名单和候选拒绝收口仅有源码疑点，需要独立复现与修复；本片不调用 fallback，不声称已解决这些疑点。
+不实现生产 CLI 自动质量选择、Markdown 升档、Anthropic native 效果、多模型 fallback、并发认领、在途请求抢占、token 预留硬上限、金额预算、持久 TaskRun 恢复或 live provider 验收。本升档片不调用 fallback；后续独立的 resolved Goal 模型白名单修复见 `RESOLVED_MODEL_ALLOWLIST_CONTRACT.md`。其他候选 resolver/binding 错误的失败收口仍是单独待办，不能因白名单修复而视为全部解决。

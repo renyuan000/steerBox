@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+2026-11-08 resolved模型白名单修复：普通resolved共用路径检查实际request与route模型，routed首选在resolver前拒绝未授权模型，fallback在adaptation前及候选选定后复核；拒绝fallback沿用既有失败收口，不创建child、不重置预算，空白名单仍不限制。真实行为RED已复现后修复，master全量835项通过、严格clippy及构建通过；证据见`PHASE_1_VALIDATION_PLAN.md`和`RESOLVED_MODEL_ALLOWLIST_CONTRACT.md`。其他resolver/binding错误收口、后台服务、live及完整Phase 1仍未完成。
+
 2026-11-07 显式foreground升档接线：新增`prepare_upgrade()`，要求profile明确允许自动升级、仅OpenAI-compatible纯观察、由可信宿主提供质量evaluator；复用既有candidate/controller，在同TaskRun内最多两次调用并升相邻一档，共享次数和已报告token预算。新resolver入口使用一个HTTP client，只调用一次历史身份门禁；不会改变旧one-shot/CLI/Markdown/Anthropic行为。独立验收结果以`PHASE_1_VALIDATION_PLAN.md`对应日期记录为准；不代表自动质量采集、CLI自动调度、通用编码循环、完整恢复或live验收，详见`FOREGROUND_EFFECT_UPGRADE_CONTRACT.md`。
 
 2026-11-01 配置/runner接线增量（历史验收，后续增量见上）：顶层`reported_token_limit`缺省/null关闭、0启用并阻止首次发送，错误类型使用字段级固定诊断，不回显非法字符串。prepare冻结重验后的额度，OpenAI foreground、Anthropic foreground及共用Markdown双协议路径在首次调用前统一启用；成功outcome通过只读getter返回私有用量账本快照。现有OpenAI provider CLI沿用配置加载，无新参数；Anthropic/Markdown在本增量中仍是既有注入式库入口。master独立全量783项通过、0失败/忽略，严格all-targets clippy、lib/bin build、fmt/diff均退出0，证据单列于`PHASE_1_VALIDATION_PLAN.md`。每次runner仍新建TaskRun，本限额不是跨运行配额，getter不是持久恢复；当时同ID重跑防护、安全恢复、单请求硬上限、金额预算、生产自动升档、live和完整Phase 1仍未完成。契约见`REPORTED_TOKEN_RUNNER_CONFIG_CONTRACT.md`。

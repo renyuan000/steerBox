@@ -1698,6 +1698,15 @@ impl ReadOnlyLoopController {
         F: FnMut(&RouteDecision, &str) -> Result<ResolvedProviderCandidate, LoopControllerError>,
     {
         route.validate()?;
+        if !self.goal.allowed_models.is_empty()
+            && !self.goal.allowed_models.contains(&route.selected_model)
+        {
+            return Err(ModelRouterError::NoCompatibleModels {
+                task_id: route.task_id.clone(),
+                reasons: "selected model is outside goal allowed_models".into(),
+            }
+            .into());
+        }
         let step_id = step_id.into();
         let mut attempted_models = Vec::new();
         let mut current_route = route.clone();
@@ -1726,7 +1735,17 @@ impl ReadOnlyLoopController {
                 self.close_failed_routed_run()?;
                 return Err(error);
             }
-            if next_fallback_model(route, &attempted_models).is_none() {
+            let Some(next_candidate) = next_fallback_model(route, &attempted_models) else {
+                self.close_failed_routed_run()?;
+                return Err(error);
+            };
+            if !self.goal.allowed_models.is_empty()
+                && !self
+                    .goal
+                    .allowed_models
+                    .iter()
+                    .any(|allowed| allowed == next_candidate)
+            {
                 self.close_failed_routed_run()?;
                 return Err(error);
             }
@@ -1763,6 +1782,12 @@ impl ReadOnlyLoopController {
             let fallback_model = adaptation
                 .next_model
                 .expect("fallback adaptation must select a route candidate");
+            if !self.goal.allowed_models.is_empty()
+                && !self.goal.allowed_models.contains(&fallback_model)
+            {
+                self.close_failed_routed_run()?;
+                return Err(error);
+            }
             let fallback_index = attempted_models.len();
             let fallback_step_id = format!("{step_id}:fallback:{fallback_index}");
             let candidate = resolve_candidate(&current_route, &fallback_model)?;
@@ -2185,6 +2210,17 @@ impl ReadOnlyLoopController {
             .clone()
             .ok_or(LoopControllerError::ModelCallStoreRequired)?;
         route.validate()?;
+        if !self.goal.allowed_models.is_empty()
+            && [&request.model_id, &route.selected_model]
+                .iter()
+                .any(|model_id| !self.goal.allowed_models.contains(model_id))
+        {
+            return Err(ModelRouterError::NoCompatibleModels {
+                task_id: route.task_id.clone(),
+                reasons: "selected model is outside goal allowed_models".into(),
+            }
+            .into());
+        }
         for (actual, expected, field) in [
             (
                 route.route_decision_id.as_str(),

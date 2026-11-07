@@ -3865,6 +3865,406 @@ fn resolved_workspace_insufficient_tool_budget_prevents_mutation() {
 }
 
 #[test]
+fn goal_model_allowlist_rejects_ordinary_resolved_before_send_and_budget() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+        None,
+    );
+    let store = ModelCallStore::open(directory.model_calls()).unwrap();
+    let mut controller = upgrade_controller_with_models(
+        &directory,
+        LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4),
+        vec!["other-allowed-model".into()],
+    )
+    .with_model_call_store(store.clone());
+    let before = controller.budget().clone();
+    let result = controller.run_resolved_model_step(
+        &adapter,
+        token_budget_request(&pack, "disallowed-resolved"),
+        &pack,
+        &route,
+        "disallowed-resolved",
+    );
+    assert!(
+        sends.lock().unwrap().is_empty(),
+        "disallowed model was sent"
+    );
+    assert!(matches!(
+        result,
+        Err(LoopControllerError::ModelRouter(
+            steerbox::model_router::ModelRouterError::NoCompatibleModels { .. }
+        ))
+    ));
+    assert_eq!(controller.budget(), &before);
+    assert!(store.read_all().unwrap().is_empty());
+    assert!(store.read_failures().unwrap().is_empty());
+    let events = EventLog::open(directory.events())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    for forbidden in ["step_started", "model_call_started", "loop_completed"] {
+        assert!(events.iter().all(|event| event.event_type != forbidden));
+    }
+}
+
+#[test]
+fn goal_model_allowlist_rejects_mismatched_request_and_route_before_budget() {
+    for allowed_model in ["logical-model", "request-model"] {
+        let directory = TestDirectory::new();
+        let (pack, route) = resolved_fixture();
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let adapter = ProviderModelAdapter::new(
+            OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+            None,
+        );
+        let store = ModelCallStore::open(directory.model_calls()).unwrap();
+        let mut controller = upgrade_controller_with_models(
+            &directory,
+            LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4),
+            vec![allowed_model.into()],
+        )
+        .with_model_call_store(store.clone());
+        let before = controller.budget().clone();
+        let mut request = token_budget_request(&pack, "mismatched-model");
+        request.model_id = "request-model".into();
+        let result = controller.run_resolved_model_step(
+            &adapter,
+            request,
+            &pack,
+            &route,
+            "mismatched-model",
+        );
+        assert!(matches!(
+            result,
+            Err(LoopControllerError::ModelRouter(
+                steerbox::model_router::ModelRouterError::NoCompatibleModels { .. }
+            ))
+        ));
+        assert!(sends.lock().unwrap().is_empty());
+        assert_eq!(controller.budget(), &before);
+        assert!(store.read_all().unwrap().is_empty());
+        assert!(store.read_failures().unwrap().is_empty());
+        let events = EventLog::open(directory.events())
+            .unwrap()
+            .read_all()
+            .unwrap();
+        for forbidden in ["step_started", "model_call_started", "loop_completed"] {
+            assert!(events.iter().all(|event| event.event_type != forbidden));
+        }
+    }
+}
+
+fn allowlist_resolved_candidate(
+    pack: ResolvedPromptPack,
+    route: RouteDecision,
+    transport: FakeTransport,
+) -> steerbox::loop_controller::ResolvedProviderCandidate {
+    steerbox::loop_controller::ResolvedProviderCandidate {
+        adapter: Box::new(ProviderModelAdapter::new(
+            OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+            None,
+        )),
+        request: token_budget_request(&pack, "allowlist-step"),
+        pack,
+        route,
+    }
+}
+
+#[test]
+fn goal_model_allowlist_rejects_routed_primary_before_resolver() {
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture();
+    let transport = FakeTransport::valid();
+    let sends = transport.sends.clone();
+    let mut controller = upgrade_controller_with_models(
+        &directory,
+        LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4),
+        vec!["other-allowed-model".into()],
+    )
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+    let before = controller.budget().clone();
+    let attempts_before = controller.task_run().attempts.clone();
+    let mut resolutions = 0;
+    let result =
+        controller.run_resolved_routed_model_step(&route, "disallowed-routed", |route, _| {
+            resolutions += 1;
+            Ok(allowlist_resolved_candidate(
+                pack.clone(),
+                route.clone(),
+                transport.clone(),
+            ))
+        });
+    assert_eq!(resolutions, 0, "disallowed primary reached resolver");
+    assert!(sends.lock().unwrap().is_empty());
+    assert!(matches!(
+        result,
+        Err(LoopControllerError::ModelRouter(
+            steerbox::model_router::ModelRouterError::NoCompatibleModels { .. }
+        ))
+    ));
+    assert_eq!(controller.budget(), &before);
+    assert_eq!(controller.task_run().attempts, attempts_before);
+    let events = EventLog::open(directory.events())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    for forbidden in ["step_started", "model_call_started", "loop_completed"] {
+        assert!(events.iter().all(|event| event.event_type != forbidden));
+    }
+}
+
+#[test]
+fn goal_model_allowlist_rejects_fallback_before_resolver_and_child_attempt() {
+    for max_attempts in [1, 4] {
+        let directory = TestDirectory::new();
+        let (primary_pack, primary_route) = resolved_fixture_for(
+            "logical-model",
+            "route-primary",
+            vec!["backup-model".into()],
+        );
+        let (fallback_pack, fallback_route) =
+            resolved_fixture_for("backup-model", "route-backup", vec![]);
+        let primary_transport = FakeTransport::failing();
+        let primary_sends = primary_transport.sends.clone();
+        let backup_transport = FakeTransport::valid();
+        let backup_sends = backup_transport.sends.clone();
+        let store = ModelCallStore::open(directory.model_calls()).unwrap();
+        let mut controller = upgrade_controller_with_models(
+            &directory,
+            LoopBudget::new(4, 0, 4, max_attempts, 0, 4, 4, 4),
+            vec!["logical-model".into()],
+        )
+        .with_model_call_store(store.clone());
+        let mut resolved_models = Vec::new();
+        let result = controller.run_resolved_routed_model_step(
+            &primary_route,
+            "allowlist-fallback",
+            |route, model| {
+                resolved_models.push(model.to_owned());
+                Ok(if model == "logical-model" {
+                    allowlist_resolved_candidate(
+                        primary_pack.clone(),
+                        route.clone(),
+                        primary_transport.clone(),
+                    )
+                } else {
+                    allowlist_resolved_candidate(
+                        fallback_pack.clone(),
+                        fallback_route.clone(),
+                        backup_transport.clone(),
+                    )
+                })
+            },
+        );
+        assert_eq!(
+            resolved_models,
+            vec!["logical-model"],
+            "disallowed fallback reached resolver"
+        );
+        assert_eq!(primary_sends.lock().unwrap().len(), 1);
+        assert!(backup_sends.lock().unwrap().is_empty());
+        assert!(matches!(
+            result,
+            Err(LoopControllerError::ModelAdapter(
+                ModelAdapterError::Provider {
+                    class: steerbox::provider_adapter::ProviderErrorClass::Transport,
+                }
+            ))
+        ));
+        assert_eq!(controller.status(), steerbox::domain::LoopStatus::Failed);
+        assert_eq!(controller.budget().steps_used, 1);
+        assert_eq!(controller.budget().model_calls_used, 1);
+        assert_eq!(controller.budget().attempts_used, 1);
+        assert_eq!(controller.task_run().attempts.len(), 1);
+        assert_eq!(
+            controller.task_run().status,
+            steerbox::domain::TaskRunStatus::Failed
+        );
+        assert_eq!(
+            controller.task_run().attempts[0].status,
+            steerbox::domain::AttemptStatus::Failed
+        );
+        assert!(store.read_all().unwrap().is_empty());
+        assert_eq!(store.read_failures().unwrap().len(), 1);
+        let events = EventLog::open(directory.events())
+            .unwrap()
+            .read_all()
+            .unwrap();
+        assert!(events.iter().any(|event| event.event_type == "loop_failed"));
+        for forbidden in ["model_route_fallback", "loop_completed"] {
+            assert!(events.iter().all(|event| event.event_type != forbidden));
+        }
+    }
+}
+
+#[test]
+fn goal_model_allowlist_failed_close_audit_prevents_resend_after_log_repair() {
+    struct BlockCloseAudit {
+        events: PathBuf,
+        saved_events: PathBuf,
+    }
+    impl ProgressSink for BlockCloseAudit {
+        fn report(&mut self, event: ProgressEvent) -> std::io::Result<()> {
+            if event.subject == ProgressSubject::Step && event.status == ProgressStatus::Failed {
+                fs::rename(&self.events, &self.saved_events)?;
+                fs::create_dir(&self.events)?;
+            }
+            Ok(())
+        }
+    }
+
+    let directory = TestDirectory::new();
+    let (pack, route) = resolved_fixture_for(
+        "logical-model",
+        "route-primary",
+        vec!["backup-model".into()],
+    );
+    let primary_transport = FakeTransport::failing();
+    let primary_sends = primary_transport.sends.clone();
+    let retry_transport = FakeTransport::valid();
+    let retry_sends = retry_transport.sends.clone();
+    let saved_events = directory.path.join("saved-events.jsonl");
+    let mut controller = upgrade_controller_with_models(
+        &directory,
+        LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4),
+        vec!["logical-model".into()],
+    )
+    .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap())
+    .with_progress_sink(BlockCloseAudit {
+        events: directory.events(),
+        saved_events: saved_events.clone(),
+    });
+    let mut resolved_models = Vec::new();
+    let result =
+        controller.run_resolved_routed_model_step(&route, "audit-close", |route, model| {
+            resolved_models.push(model.to_owned());
+            if model != "logical-model" {
+                return Err(LoopControllerError::ModelAdapterNotFound(model.into()));
+            }
+            Ok(allowlist_resolved_candidate(
+                pack.clone(),
+                route.clone(),
+                primary_transport.clone(),
+            ))
+        });
+    assert!(matches!(result, Err(LoopControllerError::EventLog(_))));
+    assert_eq!(resolved_models, vec!["logical-model"]);
+    assert_eq!(primary_sends.lock().unwrap().len(), 1);
+    assert_eq!(controller.status(), steerbox::domain::LoopStatus::Failed);
+    assert_eq!(
+        controller.task_run().status,
+        steerbox::domain::TaskRunStatus::Failed
+    );
+    assert_eq!(controller.task_run().attempts.len(), 1);
+    assert_eq!(
+        controller.task_run().attempts[0].status,
+        steerbox::domain::AttemptStatus::Failed
+    );
+    fs::rename(directory.events(), directory.path.join("blocked-events")).unwrap();
+    fs::rename(saved_events, directory.events()).unwrap();
+    let before = controller.budget().clone();
+    let adapter = ProviderModelAdapter::new(
+        OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, retry_transport),
+        None,
+    );
+    assert!(controller
+        .run_resolved_model_step(
+            &adapter,
+            token_budget_request(&pack, "after-audit-repair"),
+            &pack,
+            &route,
+            "after-audit-repair",
+        )
+        .is_err());
+    assert!(retry_sends.lock().unwrap().is_empty());
+    assert_eq!(controller.budget(), &before);
+    let events = EventLog::open(directory.events())
+        .unwrap()
+        .read_all()
+        .unwrap();
+    for forbidden in ["model_route_fallback", "loop_completed"] {
+        assert!(events.iter().all(|event| event.event_type != forbidden));
+    }
+}
+
+#[test]
+fn goal_model_allowlist_allows_explicit_and_empty_lists_on_ordinary_and_routed_calls() {
+    for allowed_models in [vec![], vec!["logical-model".into(), "backup-model".into()]] {
+        for routed in [false, true] {
+            let directory = TestDirectory::new();
+            let (pack, route) = resolved_fixture_for(
+                "logical-model",
+                "route-primary",
+                vec!["backup-model".into()],
+            );
+            let (backup_pack, backup_route) =
+                resolved_fixture_for("backup-model", "route-backup", vec![]);
+            let transport = FakeTransport::valid();
+            let sends = transport.sends.clone();
+            let mut controller = upgrade_controller_with_models(
+                &directory,
+                LoopBudget::new(4, 0, 4, 4, 0, 4, 4, 4),
+                allowed_models.clone(),
+            )
+            .with_model_call_store(ModelCallStore::open(directory.model_calls()).unwrap());
+            let mut resolved_models = Vec::new();
+            let result = if routed {
+                controller.run_resolved_routed_model_step(
+                    &route,
+                    "allowed-routed",
+                    |route, model| {
+                        resolved_models.push(model.to_owned());
+                        Ok(if model == "logical-model" {
+                            allowlist_resolved_candidate(
+                                pack.clone(),
+                                route.clone(),
+                                FakeTransport::failing(),
+                            )
+                        } else {
+                            allowlist_resolved_candidate(
+                                backup_pack.clone(),
+                                backup_route.clone(),
+                                transport.clone(),
+                            )
+                        })
+                    },
+                )
+            } else {
+                let adapter = ProviderModelAdapter::new(
+                    OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport),
+                    None,
+                );
+                controller.run_resolved_model_step(
+                    &adapter,
+                    token_budget_request(&pack, "allowed-resolved"),
+                    &pack,
+                    &route,
+                    "allowed-resolved",
+                )
+            };
+            assert_eq!(result.unwrap(), ModelDecision::ContinueObservation);
+            assert_eq!(sends.lock().unwrap().len(), 1);
+            assert_eq!(
+                controller.budget().model_calls_used,
+                if routed { 2 } else { 1 }
+            );
+            assert_eq!(
+                controller.task_run().attempts.len(),
+                if routed { 2 } else { 1 }
+            );
+            if routed {
+                assert_eq!(resolved_models, vec!["logical-model", "backup-model"]);
+            }
+        }
+    }
+}
+
+#[test]
 fn resolved_routed_retryable_failure_creates_child_and_keeps_failure_jsonl() {
     let directory = TestDirectory::new();
     let (primary_pack, primary_route) = resolved_fixture_for(
