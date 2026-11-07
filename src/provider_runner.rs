@@ -2,6 +2,7 @@
 //! the trusted caller; this module does not load secrets. Markdown mutations
 //! use only the controller's explicit policy/checkpoint/audit/verification path.
 
+use crate::adaptive_routing::QualityObservation;
 use crate::anthropic_adapter::{AnthropicAdapter, AnthropicTransport};
 use crate::domain::{GoalContract, HumanSteeringMode, LoopBudget, LoopStatus};
 use crate::event_log::EventLog;
@@ -9,13 +10,13 @@ use crate::http_transport::{CredentialResolver, HttpProviderTransport};
 use crate::loop_controller::{
     LoopControllerError, ReadOnlyLoopController, WorkspaceEditActionRuntime,
 };
-use crate::model_adapter::{ModelAdapterError, ModelDecision, ModelRequest};
+use crate::model_adapter::{ModelAdapterError, ModelDecision, ModelRequest, ModelResponse};
 use crate::model_call_store::ModelCallStore;
 use crate::model_contracts::RouteDecision;
 use crate::model_registry::{EndpointProfile, ModelProfile, ModelRegistry, ProviderProfile};
 use crate::policy_gate::PolicyGate;
 use crate::prompt_registry::{PromptProfile, PromptRegistry};
-use crate::provider_adapter::ProviderTransport;
+use crate::provider_adapter::{ProviderTransport, TransportError, TransportResponse};
 use crate::provider_model_adapter::{
     ResolvedCallFailure, ResolvedModelAdapter, ResolvedModelResponseWithAction,
 };
@@ -34,6 +35,8 @@ use crate::tool_executor::{ReadOnlyToolExecutor, WorkspaceToolExecutor};
 use crate::tool_registry::ToolRegistry;
 use std::fs;
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::Duration;
 use thiserror::Error;
 
 const ROLE: &str = "observer";
@@ -68,6 +71,7 @@ pub enum ProviderRunError {
 }
 
 /// These are caller-supplied objective and metadata, never credential bodies.
+#[derive(Clone)]
 pub struct ProviderRunRequest {
     pub project_id: String,
     pub goal_id: String,
@@ -120,6 +124,29 @@ pub struct ForegroundProviderRun {
     reported_token_limit: Option<u64>,
 }
 
+/// Explicit pure-observation run with at most one adjacent effect upgrade.
+/// Frozen configuration and a trusted host evaluator govern both model calls;
+/// preparation performs no provider access or credential resolution.
+pub struct ForegroundUpgradeProviderRun {
+    inner: ForegroundProviderRun,
+    config: RuntimeConfig,
+}
+
+struct SharedProviderTransport<T>(Rc<T>);
+
+impl<T: ProviderTransport> ProviderTransport for SharedProviderTransport<T> {
+    fn send(
+        &self,
+        endpoint: &str,
+        auth_ref: Option<&str>,
+        body: &str,
+        timeout: Duration,
+        streaming: bool,
+    ) -> Result<TransportResponse, TransportError> {
+        self.0.send(endpoint, auth_ref, body, timeout, streaming)
+    }
+}
+
 /// Provider-side Markdown runner. The controller remains the only mutation
 /// path; this type merely binds the Markdown prompt and explicit audit paths.
 pub struct BoundedMarkdownProviderRun {
@@ -132,7 +159,31 @@ impl ForegroundProviderRun {
         config: &RuntimeConfig,
         request: ProviderRunRequest,
     ) -> Result<Self, ProviderRunError> {
-        Self::prepare_internal(config, request, None)
+        Self::prepare_internal(config, request, None, None)
+    }
+
+    /// Freeze a revalidated OpenAI-compatible profile with automatic upgrade enabled.
+    /// This opt-in does not change the fixed-level behavior of `prepare`.
+    pub fn prepare_upgrade(
+        config: &RuntimeConfig,
+        request: ProviderRunRequest,
+    ) -> Result<ForegroundUpgradeProviderRun, ProviderRunError> {
+        let encoded =
+            serde_json::to_string(config).map_err(|_| ProviderRunError::InvalidRequest)?;
+        let config = RuntimeConfig::from_json_str(&encoded)?;
+        let inner = Self::prepare_internal(&config, request, None, None)?;
+        if inner.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
+            return Err(ProviderRunError::UnsupportedProtocol);
+        }
+        if !inner
+            .profile
+            .effect
+            .as_ref()
+            .is_some_and(|effect| effect.automatic_upgrade)
+        {
+            return Err(ProviderRunError::InvalidRequest);
+        }
+        Ok(ForegroundUpgradeProviderRun { inner, config })
     }
 
     pub fn prepare_markdown(
@@ -173,7 +224,7 @@ impl ForegroundProviderRun {
             }
         }
         Ok(BoundedMarkdownProviderRun {
-            inner: Self::prepare_internal(config, request, Some(&run))?,
+            inner: Self::prepare_internal(config, request, Some(&run), None)?,
             run,
         })
     }
@@ -182,6 +233,7 @@ impl ForegroundProviderRun {
         config: &RuntimeConfig,
         request: ProviderRunRequest,
         markdown: Option<&BoundedMarkdownRunConfig>,
+        exact_route: Option<&RouteDecision>,
     ) -> Result<Self, ProviderRunError> {
         // RuntimeConfig fields are public; revalidate caller-mutated configs
         // before accepting endpoint/auth metadata for a provider invocation.
@@ -299,7 +351,7 @@ impl ForegroundProviderRun {
             )
             .map_err(|_| ProviderRunError::InvalidRequest)?;
         let now = chrono::Utc::now().to_rfc3339();
-        let route = RouteDecision {
+        let route = exact_route.cloned().unwrap_or_else(|| RouteDecision {
             route_decision_id: format!("{}:route:step-1", request.loop_run_id),
             task_id: request.task_run_id.clone(),
             task_type: task.into(),
@@ -319,7 +371,7 @@ impl ForegroundProviderRun {
             prompt_profile_version: "1".into(),
             approval_required: false,
             created_at: now.clone(),
-        };
+        });
         let fragment = |id: &str, content: &str| VersionedPromptFragment {
             id: id.into(),
             version: 1,
@@ -501,6 +553,126 @@ impl ForegroundProviderRun {
             &self.prompt,
             &self.route,
             "step-1",
+        )?;
+        Ok(ProviderRunOutcome {
+            decision,
+            loop_status: controller.status(),
+            reported_token_budget: controller.task_run().reported_token_budget.clone(),
+        })
+    }
+}
+
+impl ForegroundUpgradeProviderRun {
+    /// Execute at most two calls using one HTTP client and caller-owned resolver.
+    /// The host must supply quality evidence; model output is not self-evaluation.
+    /// This method can access the configured provider when the run is admitted.
+    pub fn run_with_resolver<
+        R: CredentialResolver + 'static,
+        S: ProgressSink + 'static,
+        E: FnMut(&ModelResponse) -> QualityObservation,
+    >(
+        self,
+        resolver: R,
+        events: EventLog,
+        model_calls: ModelCallStore,
+        sink: S,
+        evaluate: E,
+    ) -> Result<ProviderRunOutcome, ProviderRunError> {
+        let transport =
+            HttpProviderTransport::new(resolver).map_err(|_| ProviderRunError::TransportBuild)?;
+        self.run_with_transport(transport, events, model_calls, sink, evaluate)
+    }
+
+    /// Execute at most two calls through the same injected transport.
+    /// `evaluate` supplies trusted host observations, never model self-ratings.
+    /// No live access is inherent to this seam; transport behavior is caller-owned.
+    pub fn run_with_transport<
+        T: ProviderTransport + 'static,
+        S: ProgressSink + 'static,
+        E: FnMut(&ModelResponse) -> QualityObservation,
+    >(
+        self,
+        transport: T,
+        events: EventLog,
+        model_calls: ModelCallStore,
+        sink: S,
+        evaluate: E,
+    ) -> Result<ProviderRunOutcome, ProviderRunError> {
+        let Self { inner, config } = self;
+        reject_reused_run_identity(&events, &model_calls, &inner.request)?;
+        let transport = Rc::new(transport);
+        let request = inner.request;
+        let selected_level = inner
+            .profile
+            .effect
+            .as_ref()
+            .ok_or(ProviderRunError::InvalidRequest)?
+            .selected_level;
+        let model_request = ModelRequest {
+            model_id: request.model_id.clone(),
+            goal_id: request.goal_id.clone(),
+            loop_run_id: request.loop_run_id.clone(),
+            step_id: "step-1".into(),
+            objective: request.objective.clone(),
+            observation: request.observation.clone(),
+        };
+        let candidate = config.build_effect_bound_candidate(
+            &request.model_id,
+            selected_level,
+            SharedProviderTransport(Rc::clone(&transport)),
+            model_request.clone(),
+            inner.prompt,
+            inner.route,
+        )?;
+        let tool_calls = ToolCallRecordStore::open(tool_call_store_path(events.path()))?;
+        let mut goal = GoalContract::new(
+            &request.goal_id,
+            &request.project_id,
+            &request.objective,
+            Vec::new(),
+            Vec::new(),
+            vec!["model_result_recorded".into()],
+        );
+        goal.allowed_models = vec![request.model_id.clone()];
+        let mut controller = ReadOnlyLoopController::start_with_progress_sink(
+            events,
+            goal,
+            &request.loop_run_id,
+            &request.task_run_id,
+            LoopBudget::new(2, 0, 2, 2, 0, 2, 2, 2),
+            sink,
+        )?
+        .with_model_call_store(model_calls)
+        .with_tool_call_store(tool_calls);
+        configure_reported_token_budget(&mut controller, inner.reported_token_limit)?;
+        let decision = controller.run_resolved_upgrade_model_step(
+            candidate,
+            "step-1",
+            evaluate,
+            |route, level| {
+                let binding_error = || {
+                    LoopControllerError::ModelAdapter(ModelAdapterError::ResolvedBindingMismatch {
+                        field: "foreground_upgrade_binding",
+                    })
+                };
+                let child = ForegroundProviderRun::prepare_internal(
+                    &config,
+                    request.clone(),
+                    None,
+                    Some(route),
+                )
+                .map_err(|_| binding_error())?;
+                config
+                    .build_effect_bound_candidate(
+                        &request.model_id,
+                        level,
+                        SharedProviderTransport(Rc::clone(&transport)),
+                        model_request,
+                        child.prompt,
+                        child.route,
+                    )
+                    .map_err(|_| binding_error())
+            },
         )?;
         Ok(ProviderRunOutcome {
             decision,

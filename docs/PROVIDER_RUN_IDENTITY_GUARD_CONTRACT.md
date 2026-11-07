@@ -4,7 +4,7 @@
 
 在可信宿主串行使用同一组 caller-owned 日志时，拒绝复用已经出现的运行身份，避免先发送 provider 请求、再由审计或状态投影发现重复。
 
-本契约限定于 OpenAI-compatible foreground、Anthropic foreground，以及两协议共用的 bounded Markdown runner。不是完整恢复协议，也不是跨进程 exactly-once 保证；当前验证证据见 `PHASE_1_VALIDATION_PLAN.md`。
+本契约限定于 OpenAI-compatible foreground、Anthropic foreground，以及两协议共用的 bounded Markdown runner；显式 `ForegroundUpgradeProviderRun` 也须在首发前复用同一门禁，具体约束见 `FOREGROUND_EFFECT_UPGRADE_CONTRACT.md`。不是完整恢复协议，也不是跨进程 exactly-once 保证；当前验证证据见 `PHASE_1_VALIDATION_PLAN.md`。
 
 ## 启动前检查
 

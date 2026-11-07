@@ -1,7 +1,13 @@
 # 受约束的主动自适应模型路由与质量策略
 
 **日期**：2026-10-20
-**状态**：Phase 1 设计增量；已接入显式 opt-in、同授权边界的单次相邻效果升档库入口；自动升档的生产 runner 接线、统一测量、预留式硬上限、金额预算及 live 验收未完成。已报告token的配置/runner门禁见下节与独立契约
+**状态**：Phase 1 设计增量；单次相邻效果升档库入口已扩展到显式 opt-in 的纯观察 foreground runner，须由可信宿主提供 evaluator。CLI 自动质量判断、Markdown/Anthropic 升档、统一测量、预留式硬上限、金额预算及 live 验收未完成。实际验证记录见 `PHASE_1_VALIDATION_PLAN.md`。
+
+## 2026-11-07 显式 foreground 升档接线
+
+`ForegroundProviderRun::prepare_upgrade()` 重新验证并冻结配置，返回独立的 `ForegroundUpgradeProviderRun`；其 transport/resolver 两入口都必须传可信宿主 evaluator。复用原 candidate 工厂和 controller，在同一 TaskRun 的两次调用上限内升相邻一档，固定所选模型及 endpoint/auth_ref、prompt 和权限，共享已报告 token 账本。两次调用复用同一传输实例，不因配置在 prepare 后被修改而变更 child。
+
+旧 one-shot、普通配置 HTTP factory 和 Markdown 仍拒绝 automatic-upgrade profile；不静默增加调用。新入口不提供 CLI 自动质量策略，不将模型自评视为授权，不新增 fallback 或恢复。RequestHuman 不调用 evaluator；接受的 Continue 保持 Running。具体边界和验收矩阵见 `FOREGROUND_EFFECT_UPGRADE_CONTRACT.md`。
 
 ## 2026-11-01 单次升档库入口
 
@@ -24,7 +30,7 @@
 - 始终保持同一 model/provider/endpoint/auth_ref、mapping/上限及 prompt/policy/tool/context/privacy/risk 边界；先核验当前 goal/task/loop 和 `allowed_models`，再发请求。parser/provider/action/安全/脱敏/verification 错误不能借升档重调。
 - 首轮和 child 的 route 在发送前落盘并绑定 Attempt。质量、升档和耗尽停止事件均为 metadata-only，可由 execution query 查看；审计或进度输出故障先收敛运行状态，不允许再次发送，也不补造未落盘 evidence。
 
-这是 transport 注入式库入口，不是 CLI 开关。普通配置 HTTP factory、foreground 和 bounded Markdown 装配遇到 `automatic_upgrade=true` 明确拒绝，不能静默降为固定档位。已报告token后续发送门禁另有显式opt-in库切片及配置/runner接线，见下节；生产 runner/CLI 自动升档、统一 usage/latency/truncation/no-progress 采集、发送前预留硬上限、金额总预算、Anthropic native 效果适配和真实 provider 验收仍待完成。既有次数预算不等于计费预算。下方 2026-10-31/2026-10-20 记录为对应历史切片，不覆盖本节的新入口。
+这是原始 transport 注入式库入口，不是 CLI 开关。普通配置 HTTP factory、旧 one-shot foreground 和 bounded Markdown 装配遇到 `automatic_upgrade=true` 仍明确拒绝；新显式 foreground 接线见上节，不能静默降为固定档位。CLI 自动升档、统一 usage/latency/truncation/no-progress 采集、发送前预留硬上限、金额总预算、Anthropic native 效果适配和真实 provider 验收仍待完成。既有次数预算不等于计费预算。下方 2026-10-31/2026-10-20 记录为对应历史切片，不覆盖本节的新入口。
 
 验证入口：`tests/config_provider_binding.rs` 与 `tests/model_call_controller_audit.rs` 的 `resolved_effect_upgrade` 测试；本轮最终全量结果在验证计划同步，不把源码审核 PASS 当作测试 PASS。
 
@@ -211,6 +217,6 @@ wire 已成功解析、但决策解析、OpenAI actionless 门禁或 bounded Mar
 
 证据保留不发起额外请求，不改变错误分类、保守质量判断、retry 白名单、既有 step/model 次数消耗或 foreground one-shot 限制；不授权自动升级，不自动重试写入。token/金额累计预算、统一质量测量、自动升级闭环及 live provider 验收仍待完成。本轮测试与审核结果在切片冻结后另记，以上契约不替代交付验证证据。
 
-## 当前状态
+## 2026-10-20 历史状态
 
 截至 2026-10-20，steerBox 已实现并通过 focused 契约测试验证 `EffectLevel`、`QualityAssessment`、`QualityObservation`、`AdaptationDecision` 和纯 task-local `BoundedAdaptationController`，并将 secret-free `plan_adaptation()` 接入普通 routed 与 resolved routed controller 的顺序 fallback 门禁；现有 fallback 会保留父 Attempt 失败证据并创建受预算约束的子 Attempt。普通与 resolved model step 的成功、adapter/provider 失败和 action/verification 结果现在会写入 metadata-only `model_quality_assessed`，并可由 execution query 查询；事件不包含模型响应正文、endpoint 或凭据。`BoundedAdaptationController` 只推进效果级别、Attempt 预算和冷却状态，不执行重试或网络调用；完整 runtime controller、NeedsUpgrade 自动效果升级和根据质量事件自动重路由仍未实现。因此这仍是受约束的运行时切片，不是完整模型连接型 Agent。

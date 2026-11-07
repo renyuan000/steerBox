@@ -23,7 +23,10 @@ fields. It saves the checked limit in the prepared run; later changes to the
 caller's configuration cannot change that prepared run. One small helper enables
 the existing controller budget after stores are attached and before the first
 resolved model call in all three paths: OpenAI foreground, Anthropic foreground,
-and the shared Markdown path (both protocols).
+and the shared Markdown path (both protocols). The explicit foreground upgrade
+entry uses the same helper before its first call and keeps one ledger for both
+calls; its separate opt-in and quality requirements are specified in
+`FOREGROUND_EFFECT_UPGRADE_CONTRACT.md`.
 
 Zero-limit runs perform no transport send or credential resolution and produce
 no model/tool invocation audit records or Markdown edit. Local controller-start
