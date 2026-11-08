@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+2026-11-08 bounded只读provider循环：新增`prepare_readonly()`库入口，OpenAI-compatible与Anthropic共用现有resolved多步循环；只允许显式授权的Git发现仓库元数据和Markdown链接检查，action与verifier均在工具执行前检查。Git可发现祖先仓库，元数据不受workspace子树隔离。单TaskRun/Attempt共享迭代、模型、工具与已报告token预算；校验七条外置runtime路径并复核工作区身份，当前仅Unix支持，其他平台fail-closed，非Unix行为尚未实测。补齐实际事件的StateStore/ExecutionQuery与身份关联证据后，规格与独立质量安全终审通过，零阻断项；master重启后全量69个harness/871项、严格clippy、lib/bin build、fmt/diff通过，提交树复验另记持久台账。CLI接线、获准live、通用写入/Bash和跨进程恢复仍未完成；human/no-action是已返回的显式停止，不表示后台worker。详见`BOUNDED_READONLY_PROVIDER_LOOP_CONTRACT.md`与验证计划；Phase 1仍未完成。
+
 2026-11-08 普通foreground失败收尾：OpenAI-compatible与Anthropic两个普通入口在controller创建后遇到配置/模型步骤错误，关闭仍Running的Attempt、TaskRun和Loop，保留原预算、artifact/evidence；终态审计成功后返回原错误，审计失败则返回审计错误且内存已终结。零token上限无模型发送/凭据解析；已Completed后的进度错误不改判失败，其他非Running状态不覆盖。规格与质量安全审核通过，master全量852项及严格clippy、构建、fmt/diff通过。初始启动进度回调失败、Markdown/升档编排、持久恢复和live不在本片内；详见`FOREGROUND_FAILURE_CLOSURE_CONTRACT.md`。Phase 1仍未完成，下方各片保留其当时的范围说明。
 
 2026-11-08 resolved routed候选失败收口：primary/fallback的resolver或候选binding校验失败，均先终结当前Attempt、TaskRun和Loop，再返回原错误；终态审计失败则返回审计错误，内存仍已终结。fallback拒绝保留原失败证据和预算，不创建child、不进行第二次发送。独立规格、质量审核通过；master全量839项、严格clippy、构建、fmt/diff通过。仅此四个出口已修复；普通foreground失败、其他route binding/adaptation出口、持久恢复和live仍不在本片内。见`RESOLVED_ROUTED_FAILURE_CLOSURE_CONTRACT.md`与验证计划；Phase 1仍未完成。下方白名单片的“未完成”描述仅为该片当时边界。

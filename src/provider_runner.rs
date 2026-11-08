@@ -46,6 +46,11 @@ const MARKDOWN_ROLE: &str = "software_developer";
 const MARKDOWN_TASK: &str = "bounded_markdown_edit";
 const MARKDOWN_PROMPT: &str = "bounded-markdown-edit";
 
+mod readonly;
+pub use readonly::{
+    BoundedReadOnlyProviderRun, BoundedReadOnlyProviderRunOutcome, BoundedReadOnlyRunConfig,
+};
+
 #[derive(Debug, Error)]
 pub enum ProviderRunError {
     #[error(transparent)]
@@ -159,7 +164,7 @@ impl ForegroundProviderRun {
         config: &RuntimeConfig,
         request: ProviderRunRequest,
     ) -> Result<Self, ProviderRunError> {
-        Self::prepare_internal(config, request, None, None)
+        Self::prepare_internal(config, request, None, None, None)
     }
 
     /// Freeze a revalidated OpenAI-compatible profile with automatic upgrade enabled.
@@ -171,7 +176,7 @@ impl ForegroundProviderRun {
         let encoded =
             serde_json::to_string(config).map_err(|_| ProviderRunError::InvalidRequest)?;
         let config = RuntimeConfig::from_json_str(&encoded)?;
-        let inner = Self::prepare_internal(&config, request, None, None)?;
+        let inner = Self::prepare_internal(&config, request, None, None, None)?;
         if inner.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
@@ -224,7 +229,7 @@ impl ForegroundProviderRun {
             }
         }
         Ok(BoundedMarkdownProviderRun {
-            inner: Self::prepare_internal(config, request, Some(&run), None)?,
+            inner: Self::prepare_internal(config, request, Some(&run), None, None)?,
             run,
         })
     }
@@ -234,6 +239,7 @@ impl ForegroundProviderRun {
         request: ProviderRunRequest,
         markdown: Option<&BoundedMarkdownRunConfig>,
         exact_route: Option<&RouteDecision>,
+        readonly: Option<&BoundedReadOnlyRunConfig>,
     ) -> Result<Self, ProviderRunError> {
         // RuntimeConfig fields are public; revalidate caller-mutated configs
         // before accepting endpoint/auth metadata for a provider invocation.
@@ -285,7 +291,17 @@ impl ForegroundProviderRun {
             privacy_requirement,
             risk_level,
             resolution_reason,
-        ) = if markdown.is_some() {
+        ) = if readonly.is_some() {
+            ("readonly_inspector", "bounded_readonly_inspection", "bounded-readonly-inspection",
+                 "Inspect only the explicitly authorized workspace metadata and Markdown links. Return a decision and optionally one bounded action with required verification.",
+                 "Use the pinned decision-output contract and the exact read-only action schema in tool_summary.",
+                 "Only git_status and markdown_link_check are authorized; never request arbitrary file reads, writes, shell, network, credentials, or scope widening.",
+                 "Use verified tool observations to decide whether to continue, complete, or request human help.",
+                 serde_json::json!({"mode":"bounded_readonly","tool_execution":true,"writes":false}),
+                 readonly::tool_summary(),
+                 "caller_authorized_workspace_metadata_and_markdown_links", "low",
+                 "explicit caller-selected bounded read-only model profile")
+        } else if markdown.is_some() {
             (MARKDOWN_ROLE, MARKDOWN_TASK, MARKDOWN_PROMPT,
                  "Prepare only a bounded Markdown edit and its required markdown_link_check verification.",
                  "Use the pinned decision-output contract and bounded Markdown action schema.",
@@ -381,7 +397,11 @@ impl ForegroundProviderRun {
             || serde_json::json!({}),
             |run| serde_json::json!({"workspace":run.workspace,"allowed_paths":run.allowed_paths}),
         );
-        let base_text = if markdown.is_some() {
+        let context = readonly.map_or(context, |run| serde_json::json!({
+            "workspace":run.workspace,"allowed_paths":run.allowed_paths,"max_iterations":run.max_iterations,
+            "action_example":readonly::action_example(run)
+        }));
+        let base_text = if markdown.is_some() || readonly.is_some() {
             prompt_text
         } else {
             "A bounded, read-only foreground observation. Never request or reveal credentials."
@@ -680,6 +700,7 @@ impl ForegroundUpgradeProviderRun {
                     request.clone(),
                     None,
                     Some(route),
+                    None,
                 )
                 .map_err(|_| binding_error())?;
                 config

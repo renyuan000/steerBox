@@ -121,6 +121,8 @@ pub enum LoopControllerError {
     ApprovalContract(#[from] ApprovalError),
     #[error("tool execution failed: {0}")]
     ToolExecution(#[from] ToolExecutionError),
+    #[error("read-only action verification did not pass")]
+    ReadOnlyVerificationFailed,
     #[error("workspace tool execution failed: {0}")]
     WorkspaceToolExecution(String),
     #[error("workspace snapshot failed: {0}")]
@@ -2003,13 +2005,13 @@ impl ReadOnlyLoopController {
                         stop_reason,
                     )?;
                     if stop_reason == ResolvedModelLoopStopReason::RequestHuman {
-                        let _ = self.report_progress(
+                        self.report_progress(
                             ProgressSubject::Loop,
                             self.loop_run.loop_run_id.clone(),
                             ProgressStatus::Progress,
                             Some("bounded resolved loop stopped: request human"),
                             None,
-                        );
+                        )?;
                     }
                     return Ok(ResolvedModelLoopOutcome {
                         decision,
@@ -2027,13 +2029,13 @@ impl ReadOnlyLoopController {
                         iteration + 1,
                         stop_reason,
                     )?;
-                    let _ = self.report_progress(
+                    self.report_progress(
                         ProgressSubject::Loop,
                         self.loop_run.loop_run_id.clone(),
                         ProgressStatus::Progress,
                         Some("bounded resolved loop stopped: no verified action"),
                         None,
-                    );
+                    )?;
                     return Ok(ResolvedModelLoopOutcome {
                         decision: ModelDecision::ContinueObservation,
                         iterations: iteration + 1,
@@ -4124,6 +4126,31 @@ impl ReadOnlyLoopController {
                 })
             }
         };
+        let verification_passed = match registry
+            .get(&verification_action.tool_id)
+            .and_then(|profile| profile.recipe_ref.as_deref())
+        {
+            Some("git-status-readonly") => {
+                verification_output
+                    .result
+                    .get("exit_code")
+                    .and_then(|value| value.as_i64())
+                    == Some(0)
+            }
+            Some("markdown-link-check") => verification_output
+                .result
+                .get("missing_local_links")
+                .and_then(|value| value.as_array())
+                .is_some_and(|missing| missing.is_empty()),
+            _ => true,
+        };
+        if !verification_passed {
+            return Err(ModelActionFailure {
+                error: LoopControllerError::ReadOnlyVerificationFailed,
+                attempted_tool_calls: 2,
+                verification_started: true,
+            });
+        }
         if let Err(error) = self.append_model_event(
             "model_action_verified",
             &format!("{step_id}:action_verified"),
