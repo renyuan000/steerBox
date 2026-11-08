@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+2026-11-08 离线只读预检增量：新增 `loop preflight-readonly`，复用实际只读运行入口的参数、配置/profile、授权范围和八条 runtime 目的地门禁。固定摘要明确 credentials/transport/history 均未检查；不解析凭据、不联网、不打开 stores、不预留身份。最终新增 9 项及既有 CLI 8 项定向回归通过，完整验证与审核收据见 `PHASE_1_VALIDATION_PLAN.md`。预检不是执行许可，不检查可写性、历史内容/身份或真实工具结果；获准 live、后台控制、通用写入/Bash 和持久恢复仍未完成，Phase 1 未完成。
+
 2026-11-08 受限只读CLI接线：新增`loop provider-readonly`，显式workspace/路径/迭代授权，参数先于配置解析，八条store/lock/state目标先于open检查；执行后重验冻结scope再投影，投影失败不掩盖原执行错误。生产resolver沿用双协议分派及默认拒绝/显式env；合成双协议工具闭环、实际停止摘要与身份关联已补测。master全量70组/884项、严格clippy、lib/bin build、fmt/diff通过；独立规格与质量安全审核通过，零Critical/Important/Minor。release两轮各86次采样完成：简单CLI启动中位0.680–0.717ms、峰值RSS中位3.24–3.48MiB；注入式只读循环峰值中位4.51–4.59MiB。第一轮启动器污染的RSS字段已废弃，用GNU time独立复测纠正；不是live或daemon idle。用法见`BOUNDED_READONLY_PROVIDER_CLI.md`，测量口径与证据见`CLI_RESOURCE_BASELINE_2026_11_08.md`；live、通用写入/Bash、后台控制与持久恢复仍未完成。下方记录保留各片当时的边界，Phase 1仍未完成。
 
 2026-11-08 bounded只读provider循环：新增`prepare_readonly()`库入口，OpenAI-compatible与Anthropic共用现有resolved多步循环；只允许显式授权的Git发现仓库元数据和Markdown链接检查，action与verifier均在工具执行前检查。Git可发现祖先仓库，元数据不受workspace子树隔离。单TaskRun/Attempt共享迭代、模型、工具与已报告token预算；校验七条外置runtime路径并复核工作区身份，当前仅Unix支持，其他平台fail-closed，非Unix行为尚未实测。补齐实际事件的StateStore/ExecutionQuery与身份关联证据后，规格与独立质量安全终审通过，零阻断项；master重启后全量69个harness/871项、严格clippy、lib/bin build、fmt/diff通过，提交树复验另记持久台账。CLI接线、获准live、通用写入/Bash和跨进程恢复仍未完成；human/no-action是已返回的显式停止，不表示后台worker。详见`BOUNDED_READONLY_PROVIDER_LOOP_CONTRACT.md`与验证计划；Phase 1仍未完成。

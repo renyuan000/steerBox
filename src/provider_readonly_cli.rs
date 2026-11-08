@@ -94,6 +94,19 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Arguments, &'static s
     })
 }
 
+/// Offline preparation only: no credential lookup, transport, store open or run.
+pub fn preflight(args: impl Iterator<Item = String>) -> Result<String, Box<dyn Error>> {
+    let args = parse(args)?;
+    let config = RuntimeConfig::load(args.config_path)?;
+    let prepared = ForegroundProviderRun::prepare_readonly(&config, args.request, args.run)?;
+    prepared.validate_runtime_paths(
+        &config.events_path(),
+        &config.model_calls_path(),
+        Some(&config.state_path()),
+    )?;
+    Ok("preflight=passed scope=readonly credentials=not_checked transport=not_checked history=not_checked".into())
+}
+
 pub fn run(args: impl Iterator<Item = String>) -> Result<String, Box<dyn Error>> {
     run_with(args, |prepared, credentials, events, calls| {
         prepared.run_with_resolver(

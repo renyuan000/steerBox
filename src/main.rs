@@ -449,6 +449,9 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 controller_status(&controller)
             );
         }
+        (Some("loop"), Some("preflight-readonly")) => {
+            println!("{}", provider_readonly_cli::preflight(args)?);
+        }
         (Some("loop"), Some("provider-readonly")) => {
             println!("{}", provider_readonly_cli::run(args)?);
         }
@@ -804,6 +807,7 @@ fn print_usage() {
     eprintln!("  steerbox loop fixture <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> [continue_observation|complete_loop|request_human] <observation> [summary]");
     eprintln!("  steerbox loop provider <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> <objective> <observation> [--credential-source env]");
     eprintln!("  steerbox loop provider-readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> <objective> <observation> --workspace <absolute> --max-iterations <1..16> --path <relative.md>... [--credential-source env]");
+    eprintln!("  steerbox loop preflight-readonly <same arguments as provider-readonly>");
     eprintln!("    Default credential source is fail-closed; `--credential-source env` resolves only opaque env:NAME references.");
     eprintln!("  steerbox dev markdown <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <path> <expected> <replacement> <auto|ask|approved>");
 }

@@ -37,6 +37,42 @@ profile 的 `auth_ref` 必须采用已有 resolver 支持的 `env:NAME` 引用�
 同一日志集合中的 `loop_run_id` / `task_run_id` 不可当成恢复句柄重复执行；
 已使用身份会在模型发送前被拒绝。新任务使用新身份，不静默重跑旧任务。
 
+## 离线只读预检
+
+把上述命令的 `provider-readonly` 换成 `preflight-readonly`，其余参数完全相同：
+
+```bash
+steerbox loop preflight-readonly /temp/steerbox/demo-project/config.json \
+  demo-project goal-review review-loop-1 review-task-1 review-model \
+  'Check authorized documentation links and Git metadata' \
+  'Inspect README.md without editing files' \
+  --workspace /absolute/path/to/repository --max-iterations 4 \
+  --path README.md
+```
+
+通过时退出码为 0，stdout 固定为一行：
+
+```text
+preflight=passed scope=readonly credentials=not_checked transport=not_checked history=not_checked
+```
+
+参数错误或本地门禁不通过时退出非零，不输出通过摘要。该命令读取配置、文件系统
+元数据和时钟，复用运行入口的模型/profile、workspace、授权路径、迭代及八条
+store/lock/state 目的地检查；不打开 stores、不写文件、不预留运行身份，不执行
+Git、工具或模型请求。同一身份可重复预检，不代表该身份可以重复运行。
+
+| 已检查 | 尚未检查 |
+|---|---|
+| 模型绑定、文本能力、认证引用元数据 | 引用对应的真实凭据是否存在或有效 |
+| workspace 和授权 Markdown 路径的元数据门禁 | 文件链接语义、Git 状态及实际工具结果 |
+| runtime 目的地的父目录、类型、别名与工作区隔离 | 实际可写性、日志内容、历史身份冲突和恢复状态 |
+| 本地配置与参数有效性 | HTTP client、TLS、网络可达性及真实 provider 接受情况 |
+
+即使传入 `--credential-source env`，预检也不会解析环境变量或联网。
+损坏的现存日志可以通过，因为 `history=not_checked`；运行命令仍会自行执行
+历史门禁。预检只是当时的本地快照，不是执行许可，也不是竞态隔离保证；正式
+`provider-readonly` 会重新检查自己的门禁。它不替代 live 验收。
+
 ## 授权与停止语义
 
 - 仅允许 `git_status` 和显式授权 Markdown 文件的 `markdown_link_check`，包括
