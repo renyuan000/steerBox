@@ -21,6 +21,14 @@ Its core question is not simply whether an agent can do work, but how to combine
 
 ### Current Phase 1 Runtime Slice
 
+The new `loop provider-readonly` command connects the bounded multi-step runner
+to OpenAI-compatible or Anthropic HTTP transports with explicit workspace and
+Markdown-path authorization. It validates all audit/state destinations before
+opening stores, shares task-local budgets, and prints the actual stop reason.
+See [CLI usage and boundaries](./docs/BOUNDED_READONLY_PROVIDER_CLI.md).
+Live-provider acceptance, generic editing/Bash and background recovery remain
+unfinished; this is a constrained read-only entry, not a complete coding agent.
+
 The repository currently contains a verified Rust domain and local runtime slice, including EventLog/StateStore, trace/checkpoint metadata, a read-only board fixture, and an approved Markdown edit-and-verify development slice. A verification failure is persisted and returns a non-zero exit code. The bounded `loop provider` CLI rejects credential resolution by default; explicitly passing `--credential-source env` enables profile `auth_ref` values in `env:NAME` form. Live-provider acceptance remains pending; this is not yet an end-to-end model-connected coding agent. The reproducible commands are:
 
 ```bash

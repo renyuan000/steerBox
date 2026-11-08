@@ -89,6 +89,11 @@
 
 最小验证命令：
 
+新增 `loop provider-readonly` 双协议多步只读入口，要求显式 workspace、Markdown
+路径和迭代上限；先检查全部审计／状态目标再打开文件，同任务共享预算并输出实际
+停止原因。用法见[受限只读 CLI](./docs/BOUNDED_READONLY_PROVIDER_CLI.md)。这不代表
+live provider、通用写入／Bash、后台控制或完整恢复已完成。
+
 ```bash
 cargo test
 cargo run -- runtime init demo-project

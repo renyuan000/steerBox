@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+2026-11-08 受限只读CLI接线：新增`loop provider-readonly`，显式workspace/路径/迭代授权，参数先于配置解析，八条store/lock/state目标先于open检查；执行后重验冻结scope再投影，投影失败不掩盖原执行错误。生产resolver沿用双协议分派及默认拒绝/显式env；合成双协议工具闭环、实际停止摘要与身份关联已补测。master全量70组/884项、严格clippy、lib/bin build、fmt/diff通过；独立规格与质量安全审核通过，零Critical/Important/Minor。release两轮各86次采样完成：简单CLI启动中位0.680–0.717ms、峰值RSS中位3.24–3.48MiB；注入式只读循环峰值中位4.51–4.59MiB。第一轮启动器污染的RSS字段已废弃，用GNU time独立复测纠正；不是live或daemon idle。用法见`BOUNDED_READONLY_PROVIDER_CLI.md`，测量口径与证据见`CLI_RESOURCE_BASELINE_2026_11_08.md`；live、通用写入/Bash、后台控制与持久恢复仍未完成。下方记录保留各片当时的边界，Phase 1仍未完成。
+
 2026-11-08 bounded只读provider循环：新增`prepare_readonly()`库入口，OpenAI-compatible与Anthropic共用现有resolved多步循环；只允许显式授权的Git发现仓库元数据和Markdown链接检查，action与verifier均在工具执行前检查。Git可发现祖先仓库，元数据不受workspace子树隔离。单TaskRun/Attempt共享迭代、模型、工具与已报告token预算；校验七条外置runtime路径并复核工作区身份，当前仅Unix支持，其他平台fail-closed，非Unix行为尚未实测。补齐实际事件的StateStore/ExecutionQuery与身份关联证据后，规格与独立质量安全终审通过，零阻断项；master重启后全量69个harness/871项、严格clippy、lib/bin build、fmt/diff通过，提交树复验另记持久台账。CLI接线、获准live、通用写入/Bash和跨进程恢复仍未完成；human/no-action是已返回的显式停止，不表示后台worker。详见`BOUNDED_READONLY_PROVIDER_LOOP_CONTRACT.md`与验证计划；Phase 1仍未完成。
 
 2026-11-08 普通foreground失败收尾：OpenAI-compatible与Anthropic两个普通入口在controller创建后遇到配置/模型步骤错误，关闭仍Running的Attempt、TaskRun和Loop，保留原预算、artifact/evidence；终态审计成功后返回原错误，审计失败则返回审计错误且内存已终结。零token上限无模型发送/凭据解析；已Completed后的进度错误不改判失败，其他非Running状态不覆盖。规格与质量安全审核通过，master全量852项及严格clippy、构建、fmt/diff通过。初始启动进度回调失败、Markdown/升档编排、持久恢复和live不在本片内；详见`FOREGROUND_FAILURE_CLOSURE_CONTRACT.md`。Phase 1仍未完成，下方各片保留其当时的范围说明。

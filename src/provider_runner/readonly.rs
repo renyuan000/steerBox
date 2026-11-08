@@ -41,13 +41,38 @@ impl BoundedReadOnlyProviderRunOutcome {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct WorkspaceIdentity {
     canonical: PathBuf,
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
     inode: u64,
+}
+
+/// Frozen filesystem scope for rechecking destinations after the prepared run
+/// is consumed. Checks create no files or directories and inspect the current
+/// filesystem; they are not an immutable permit or protection from OS races.
+pub struct ReadOnlyRuntimePathCheck {
+    run: BoundedReadOnlyRunConfig,
+    workspace_identity: WorkspaceIdentity,
+    events: PathBuf,
+    model_calls: PathBuf,
+    projection: Option<PathBuf>,
+}
+
+impl ReadOnlyRuntimePathCheck {
+    pub fn revalidate(&self) -> Result<(), ProviderRunError> {
+        if validate_run(&self.run)? != self.workspace_identity {
+            return Err(ProviderRunError::InvalidRequest);
+        }
+        validate_stores(
+            &self.run,
+            &self.events,
+            &self.model_calls,
+            self.projection.as_deref(),
+        )
+    }
 }
 
 impl ForegroundProviderRun {
@@ -67,6 +92,23 @@ impl ForegroundProviderRun {
 }
 
 impl BoundedReadOnlyProviderRun {
+    pub fn validate_runtime_paths(
+        &self,
+        events: &Path,
+        model_calls: &Path,
+        projection: Option<&Path>,
+    ) -> Result<ReadOnlyRuntimePathCheck, ProviderRunError> {
+        let check = ReadOnlyRuntimePathCheck {
+            run: self.run.clone(),
+            workspace_identity: self.workspace_identity.clone(),
+            events: events.to_owned(),
+            model_calls: model_calls.to_owned(),
+            projection: projection.map(Path::to_owned),
+        };
+        check.revalidate()?;
+        Ok(check)
+    }
+
     pub fn run_with_transport<T: ProviderTransport, S: ProgressSink + 'static>(
         self,
         transport: T,
@@ -127,10 +169,7 @@ impl BoundedReadOnlyProviderRun {
     }
 
     fn preflight(&self, events: &EventLog, calls: &ModelCallStore) -> Result<(), ProviderRunError> {
-        if validate_run(&self.run)? != self.workspace_identity {
-            return Err(ProviderRunError::InvalidRequest);
-        }
-        validate_stores(&self.run, events.path(), calls)?;
+        self.validate_runtime_paths(events.path(), &calls.storage_paths()[0], None)?;
         reject_reused_run_identity(events, calls, &self.inner.request)
     }
 
@@ -382,13 +421,15 @@ fn validate_run(run: &BoundedReadOnlyRunConfig) -> Result<WorkspaceIdentity, Pro
 fn validate_stores(
     run: &BoundedReadOnlyRunConfig,
     event_path: &Path,
-    calls: &ModelCallStore,
+    calls_path: &Path,
+    projection: Option<&Path>,
 ) -> Result<(), ProviderRunError> {
     let tools = tool_call_store_path(event_path);
     let mut tools_lock = tools.as_os_str().to_os_string();
     tools_lock.push(".lock");
     let mut paths = vec![event_path.to_path_buf(), tools, PathBuf::from(tools_lock)];
-    paths.extend(calls.storage_paths());
+    paths.extend(ModelCallStore::storage_paths_for(calls_path));
+    paths.extend(projection.map(Path::to_path_buf));
     let workspace =
         fs::canonicalize(&run.workspace).map_err(|_| ProviderRunError::InvalidRequest)?;
     let mut normalized = Vec::new();

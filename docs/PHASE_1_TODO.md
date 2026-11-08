@@ -263,7 +263,7 @@ Memory 最小实现：
 - [x] 增加 bounded foreground provider runner 库/CLI 入口（加载并重验 profile、冻结 prompt/route、接入 resolved LoopController、ModelCallStore 与 metadata-only ToolCallRecordStore；OpenAI-compatible 与 Anthropic 均有 library-only 注入式 transport seam；bounded Markdown 的 mutation/verification ToolCallRecord 生命周期有 focused 回归；CLI 默认使用拒绝型 resolver，未配置可信 resolver 时 fail-closed，不代表 live provider 已接通）
 - [ ] 接入至少一个真实网络 model provider（HTTP transport 和 secret-free profile/auth_ref 绑定已通过 focused 回归；仍未完成获准 live 调用）
 - [x] 将既有resolved多步只读循环接入双协议provider库入口：显式workspace/Markdown授权、action/verifier预检、同TaskRun次数/token预算、语义验证失败停止、真实StateStore/ExecutionQuery投影证据；只读范围不等于通用coding agent，Unix以外fail-closed，契约见`BOUNDED_READONLY_PROVIDER_LOOP_CONTRACT.md`
-- [ ] 新增该bounded只读runner的独立CLI：打开store前校验七条runtime路径及state路径、协议自动分派、保留原执行错误、输出真实停止原因；随后进行获准live验收，不放开HTTPS门禁
+- [x] 新增该bounded只读runner的独立CLI：打开store前校验七条runtime路径及state路径、协议自动分派、保留原执行错误、输出真实停止原因；合成双协议与路径/状态回归已通过，见`BOUNDED_READONLY_PROVIDER_CLI.md`；获准live验收仍待完成，不放开HTTPS门禁
 - [x] 接入 secret-free `LocalFixtureModelAdapter`，并记录结构化 model decision 事件
 - [x] 配置 cheap/fast、strong/slow、specialized、evaluator 和 local profile fixture（`tests/fixtures/model_roles.json`；`tests/model_role_fixtures.rs` 验证角色/能力、风险、预算/延迟、隐私及 fallback 候选过滤；均为虚构配置，非实测模型能力/价格或 live provider 验收）
 - [x] 实现按 task type、agent role、能力、风险、成本和延迟过滤与排序的规则式路由，并通过 `ModelAdapterRegistry` 接入 LoopController（需审批时 fail-closed；审批恢复尚未实现）

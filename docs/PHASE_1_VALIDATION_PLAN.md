@@ -1,5 +1,36 @@
 # Phase 1 Validation Plan
 
+## 2026-11-08 受限只读 provider CLI 验收
+
+基线 `034967f` 的独立 CLI 切片：master 已收取会话 82191 退出 0，
+`cargo test --locked --offline --tests --quiet -- --test-threads=1` 共
+70 个 harness / 884 passed / 0 failed / 0 ignored；严格 all-targets clippy、
+lib/bin build、fmt 和 diff 检查通过。新增 5 个 CLI unit 与 8 个 integration
+包含在上述 884 项中，不与 focused 77 项重复相加。
+独立规格审核和后续质量／安全审核均通过，零 Critical/Important/Minor。
+
+代码／测试覆盖参数先于配置加载、固定非回显错误、八条目标的 pre-open 门禁、
+缺父目录、目录／软链接／硬链接／别名／工作区碰撞、默认凭据拒绝与显式 env、
+双协议 action→verification→complete 的真实预算与 model/tool/state 身份、
+human/no-action 的实际停止摘要、执行错误优先和成功后 projection 目标变更。
+HTTP 的真实双协议分派另由源码审核核实；注入式成功响应不等于 live 验收。
+
+证据根目录：`/temp/codex/steerbox-validation/readonly-provider-cli-20261108/`。
+`readonly-cli-{red,green,scope-red,scope-green,final-focused}.log` 为实施者证据；
+master 的 `restart-{tests,clippy,build}.log` 与对应 `.exit` 记录实际结果。
+旧会话 43658 已失效、`master-tests.log` 为零字节，不作为通过证据。
+release CLI／合成 probe 编译会话 78089 已退出 0，日志及退出标记为
+`release-cli.{log,exit}`、`release-probe.{log,exit}`。
+所有 Cargo 使用 jobs=1 与项目外既有 target；未删除旧工作树或构建产物。
+
+本片为 Unix 上的受限只读 CLI；无真实配置／凭据读取、无 live 发送。
+真实模型、通用写入/Bash、后台控制、非环境变量凭据存储和完整恢复仍待验收。
+使用契约见 `BOUNDED_READONLY_PROVIDER_CLI.md`。release 资源两轮各 86 次成功，
+direct wall 与纠正后的 GNU time 峰值分别取值，不合并成配对样本。CPU/内存、
+采样误差纠正、环境及本机原始证据详见
+[资源基线](CLI_RESOURCE_BASELINE_2026_11_08.md)。真实 CLI 默认凭据拒绝另为
+预期退出 1 的单样本，不算成功 provider 验收；同步退出不代表后台 daemon 空闲性能。
+
 ## 文档目的
 
 本文件定义第一阶段如何验证。

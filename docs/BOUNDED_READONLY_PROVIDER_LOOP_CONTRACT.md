@@ -110,3 +110,8 @@ This increment delivers an injected/HTTP library runner.
 Standalone CLI wiring, live-provider acceptance, arbitrary coding tools,
 network streaming, background control and full Phase 1 remain separate work.
 Do not claim live validation from synthetic tests.
+
+Follow-up: the standalone CLI has a separate usage and pre-open/projection
+contract in `BOUNDED_READONLY_PROVIDER_CLI.md`. Its delivery evidence is recorded
+separately in the Phase 1 validation plan; the library increment above alone
+does not prove caller-side opens, CLI operation or live-provider acceptance.

@@ -36,7 +36,7 @@ impl ModelCallStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let failure_path = path.with_extension("failures.jsonl");
+        let failure_path = Self::storage_paths_for(&path)[1].clone();
         Ok(Self { path, failure_path })
     }
 
@@ -44,13 +44,21 @@ impl ModelCallStore {
     /// files. Callers that place the store beside mutable workspace data must
     /// validate all four paths before starting a side-effecting run.
     pub fn storage_paths(&self) -> [PathBuf; 4] {
-        let mut main_lock = self.path.as_os_str().to_os_string();
+        Self::storage_paths_for(&self.path)
+    }
+
+    /// Derive success, failure, and advisory-lock names without filesystem I/O
+    /// or creating parent directories. This does not validate their safety.
+    pub fn storage_paths_for(path: impl AsRef<Path>) -> [PathBuf; 4] {
+        let path = path.as_ref();
+        let failure_path = path.with_extension("failures.jsonl");
+        let mut main_lock = path.as_os_str().to_os_string();
         main_lock.push(".lock");
-        let mut failure_lock = self.failure_path.as_os_str().to_os_string();
+        let mut failure_lock = failure_path.as_os_str().to_os_string();
         failure_lock.push(".lock");
         [
-            self.path.clone(),
-            self.failure_path.clone(),
+            path.to_path_buf(),
+            failure_path,
             PathBuf::from(main_lock),
             PathBuf::from(failure_lock),
         ]

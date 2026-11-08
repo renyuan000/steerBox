@@ -49,6 +49,7 @@ const MARKDOWN_PROMPT: &str = "bounded-markdown-edit";
 mod readonly;
 pub use readonly::{
     BoundedReadOnlyProviderRun, BoundedReadOnlyProviderRunOutcome, BoundedReadOnlyRunConfig,
+    ReadOnlyRuntimePathCheck,
 };
 
 #[derive(Debug, Error)]

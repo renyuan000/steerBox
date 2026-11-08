@@ -28,6 +28,8 @@ use steerbox::tool_registry::{SideEffectClass, ToolProfile, ToolRegistry};
 use steerbox::user_command_inbox::{UserCommand, UserCommandEntry, UserCommandInbox};
 use steerbox::workspace_edit::{edit_markdown, verify_markdown_links};
 
+mod provider_readonly_cli;
+
 fn main() {
     if let Err(error) = run(env::args().skip(1)) {
         eprintln!("steerbox: {error}");
@@ -447,6 +449,9 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 controller_status(&controller)
             );
         }
+        (Some("loop"), Some("provider-readonly")) => {
+            println!("{}", provider_readonly_cli::run(args)?);
+        }
         (Some("loop"), Some("provider")) => {
             let config_path = args.next().ok_or("missing config path")?;
             let request = ProviderRunRequest {
@@ -798,6 +803,7 @@ fn print_usage() {
     eprintln!("  steerbox loop readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <objective> <observation>");
     eprintln!("  steerbox loop fixture <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> [continue_observation|complete_loop|request_human] <observation> [summary]");
     eprintln!("  steerbox loop provider <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> <objective> <observation> [--credential-source env]");
+    eprintln!("  steerbox loop provider-readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> <objective> <observation> --workspace <absolute> --max-iterations <1..16> --path <relative.md>... [--credential-source env]");
     eprintln!("    Default credential source is fail-closed; `--credential-source env` resolves only opaque env:NAME references.");
     eprintln!("  steerbox dev markdown <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <path> <expected> <replacement> <auto|ask|approved>");
 }
