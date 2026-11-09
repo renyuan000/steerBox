@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+2026-11-09 私有 transcript 库基础：新增独立 write-only fresh-session 存储，默认首次未同步写起 1s 或累计 64KiB 同步；用户消息、请求正文及完整响应在同步成功后 ACK。私有目录/独占 fd 创建、精确正文、序号/持久化水位、容量/敏感检查、定时与故障注入、受控 SIGKILL 已有专项测试。**尚未接入实际 provider、controller、CLI 或自动聊天采集**；无 reader/轮转/完整恢复，不能消除原有 runtime I/O 与 checkpoint 阻塞。具体契约及最终验收证据见 `PRIVATE_TRANSCRIPT_STORE.md`；Phase 1 仍未完成。
+
 2026-11-09 EventLog 重开尾部门禁：拒绝完整 JSON 无末尾换行、截断和未封口空白，不改写/截断原始历史；新增公开错误 `UnterminatedRecord { line }`。最终定向 event 10、state 6、audit 14 项通过，包含已确认 append 后真实 SIGKILL/重开续号、CRLF/空行和 UTF-8 正反例；master 全量 72 个 harness/916 项、严格 clippy、lib/bin build、fmt/diff 通过。这不是写入中途强杀、OS/VM 掉电或完整 controller resume 验收。实际 runtime 安全 I/O、checkpoint/ledger 同步和对账式恢复仍待完成；不得据此放开 live 写 CLI。当前能力、已做未记账风险及后续顺序见 `CRASH_RECOVERY_BOUNDARIES.md`；Phase 1 仍未完成。
 
 2026-11-09 bounded Markdown 门禁增量：补独立 pre-open 十条 runtime/lock 路径与 optional state 检查、workspace canonical/dev/inode 冻结、provider 前后复核和双协议 resolver。保持原 policy/approval/checkpoint/ledger/verification 路径；library 同目录 audit 兼容，不冒充全 workspace 隔离。定向 14+15 项、全量 907 项及严格 clippy/build/fmt/diff 通过；独立审核收据见验证计划。公开检查无写入，实际 run 拒绝仍可能写失败审计；共享 stores 的 runtime by-path 替换并非本片原子保护范围，未来 live 写入 CLI 前必须解决。详见 `BOUNDED_MARKDOWN_RUNTIME_GATES.md`。CLI、live、通用工具、后台及恢复仍未完成，Phase 1 未完成。

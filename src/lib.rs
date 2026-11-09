@@ -34,6 +34,7 @@ pub mod task_features;
 pub mod tool_call_store;
 pub mod tool_executor;
 pub mod tool_registry;
+pub mod transcript_store;
 pub mod user_command_inbox;
 pub mod workspace_edit;
 pub mod workspace_snapshot;

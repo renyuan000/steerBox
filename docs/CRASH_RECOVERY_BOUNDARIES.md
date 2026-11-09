@@ -1,6 +1,6 @@
 # 崩溃恢复：当前证据与实施边界
 
-核查日期：2026-11-09。基线：`5923dad`；本轮仅修复 EventLog 重开时的未封口尾行门禁。
+核查日期：2026-11-09。EventLog 尾部门禁基线 `5923dad`，私有 transcript 库增量基线 `7998508`。
 本文的“当前”不是完整 Phase 1 验收，也不把设计目标标为已实现。
 
 ## 现在能恢复什么
@@ -16,6 +16,17 @@
 源码依据：`src/event_log.rs`、`src/state_store.rs`、`src/audit_store.rs`、
 `src/workspace_snapshot.rs`、`src/loop_controller.rs`、`src/provider_runner.rs`。
 CLI 的 execution 查询和运行中 inbox Resume 不是进程重启后的恢复入口。
+
+## 私有正文日志的新增边界
+
+`transcript_store` 已增加独立存储库：获准正文可逐条写入私有 JSONL，默认首次 dirty 后
+1s 或累计 64KiB 同步；关键消息及完整模型请求/响应成功同步后才确认，显式 close 同步并
+回收后台线程。它只同步自己的文件；首次创建还同步固定的父目录，不执行全系统 sync。
+序号水位区分 written 与 durable；部分写入或同步失败后拒绝继续追加。
+
+这不是实际聊天/provider 的自动记录，也没有恢复读取/续接；整流敏感检查、受保护引用、
+轮转和 opt-in 接线仍待实现。默认 1s 是调度目标，不是故障下最大损失承诺；同 UID 恶意
+篡改、WSL/VHDX 损坏以及跨 store 原子性也未解决。详见 `PRIVATE_TRANSCRIPT_STORE.md`。
 
 ## 本轮修复：未封口尾行不得继续追加
 

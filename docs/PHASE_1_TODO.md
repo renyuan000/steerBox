@@ -91,6 +91,8 @@ Phase 1 尚未完成。以下按既有 Scope、TODO 和 Validation Plan 整理�
 
 ### P3. Local Storage
 
+- [x] 私有 transcript 存储库基础：fresh-session JSONL、逐条写入、默认 1s/64KiB 批量同步、关键正文同步后 ACK、容量/敏感信息门禁及进程 SIGKILL 回归；仅库接口，详见 `PRIVATE_TRANSCRIPT_STORE.md`
+- [ ] 安全 transcript 运行时接线：获准正文来源、整流敏感检查、受保护 reader/引用、轮转和 opt-in provider/CLI 采集；目前不会自动保存实际聊天或模型正文
 - [x] EventLog 重开拒绝未换行封口的尾行，保留异常历史原字节；合成坏尾/UTF-8/CRLF 及已确认 append 后 SIGKILL 重开回归通过。仅检测拒绝，不自动修复、不证明 OS 掉电恢复，见 `CRASH_RECOVERY_BOUNDARIES.md`
 - [ ] 加固实际 runtime I/O 与关键审计同步：覆盖读历史、成败追加、锁、目录项及替换端；当前路径预检与 EventLog 尾部门禁均不能解除 live 写 CLI 的安全阻断
 - [ ] 只读崩溃恢复检查、持久 TaskRun/Attempt/预算/授权输入与对账式受控续跑；不以 inbox Resume、顺序 reopen 或显式单文件 restore 冒充进程重启恢复
