@@ -91,6 +91,9 @@ Phase 1 尚未完成。以下按既有 Scope、TODO 和 Validation Plan 整理�
 
 ### P3. Local Storage
 
+- [x] EventLog 重开拒绝未换行封口的尾行，保留异常历史原字节；合成坏尾/UTF-8/CRLF 及已确认 append 后 SIGKILL 重开回归通过。仅检测拒绝，不自动修复、不证明 OS 掉电恢复，见 `CRASH_RECOVERY_BOUNDARIES.md`
+- [ ] 加固实际 runtime I/O 与关键审计同步：覆盖读历史、成败追加、锁、目录项及替换端；当前路径预检与 EventLog 尾部门禁均不能解除 live 写 CLI 的安全阻断
+- [ ] 只读崩溃恢复检查、持久 TaskRun/Attempt/预算/授权输入与对账式受控续跑；不以 inbox Resume、顺序 reopen 或显式单文件 restore 冒充进程重启恢复
 - [x] 实现从 EventLog 重建 loop/step current state 的最小 StateStore fixture
 - [x] 实现 StateStore JSON 持久化与 reopen 恢复测试
 - [x] 从 EventLog 重建 BoardProjection 的最小 fixture（只读 CLI 输出；完整依赖/Attempt 投影仍待实现）

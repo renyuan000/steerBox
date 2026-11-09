@@ -11,6 +11,8 @@ pub enum EventLogError {
     Io(#[from] std::io::Error),
     #[error("event log line {line} is invalid JSON: {source}")]
     InvalidEvent { line: usize, source: JsonError },
+    #[error("event log line {line} is unterminated; history was not modified")]
+    UnterminatedRecord { line: usize },
     #[error("event log sequence number overflow")]
     SequenceOverflow,
 }
@@ -33,16 +35,28 @@ impl EventLog {
         }
         let next_sequence = if existed {
             let file = File::open(&path)?;
-            let reader = BufReader::new(file);
+            let mut reader = BufReader::new(file);
             let mut last_sequence = 0;
-            for (index, line) in reader.lines().enumerate() {
-                let line = line?;
+            let mut line_number = 0;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line)? == 0 {
+                    break;
+                }
+                line_number += 1;
+                // A complete JSON value without its newline is not a sealed
+                // record: appending would concatenate the next event onto it.
+                // Refuse to open for append, preserving all recovery evidence.
+                if !line.ends_with('\n') {
+                    return Err(EventLogError::UnterminatedRecord { line: line_number });
+                }
                 if line.trim().is_empty() {
                     continue;
                 }
                 let event = serde_json::from_str::<EventEnvelope>(&line).map_err(|source| {
                     EventLogError::InvalidEvent {
-                        line: index + 1,
+                        line: line_number,
                         source,
                     }
                 })?;

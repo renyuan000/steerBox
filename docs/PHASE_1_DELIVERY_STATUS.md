@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+2026-11-09 EventLog 重开尾部门禁：拒绝完整 JSON 无末尾换行、截断和未封口空白，不改写/截断原始历史；新增公开错误 `UnterminatedRecord { line }`。最终定向 event 10、state 6、audit 14 项通过，包含已确认 append 后真实 SIGKILL/重开续号、CRLF/空行和 UTF-8 正反例；master 全量 72 个 harness/916 项、严格 clippy、lib/bin build、fmt/diff 通过。这不是写入中途强杀、OS/VM 掉电或完整 controller resume 验收。实际 runtime 安全 I/O、checkpoint/ledger 同步和对账式恢复仍待完成；不得据此放开 live 写 CLI。当前能力、已做未记账风险及后续顺序见 `CRASH_RECOVERY_BOUNDARIES.md`；Phase 1 仍未完成。
+
 2026-11-09 bounded Markdown 门禁增量：补独立 pre-open 十条 runtime/lock 路径与 optional state 检查、workspace canonical/dev/inode 冻结、provider 前后复核和双协议 resolver。保持原 policy/approval/checkpoint/ledger/verification 路径；library 同目录 audit 兼容，不冒充全 workspace 隔离。定向 14+15 项、全量 907 项及严格 clippy/build/fmt/diff 通过；独立审核收据见验证计划。公开检查无写入，实际 run 拒绝仍可能写失败审计；共享 stores 的 runtime by-path 替换并非本片原子保护范围，未来 live 写入 CLI 前必须解决。详见 `BOUNDED_MARKDOWN_RUNTIME_GATES.md`。CLI、live、通用工具、后台及恢复仍未完成，Phase 1 未完成。
 
 2026-11-08 离线只读预检增量：新增 `loop preflight-readonly`，复用实际只读运行入口的参数、配置/profile、授权范围和八条 runtime 目的地门禁。固定摘要明确 credentials/transport/history 均未检查；不解析凭据、不联网、不打开 stores、不预留身份。最终新增 9 项及既有 CLI 8 项定向回归通过，完整验证与审核收据见 `PHASE_1_VALIDATION_PLAN.md`。预检不是执行许可，不检查可写性、历史内容/身份或真实工具结果；获准 live、后台控制、通用写入/Bash 和持久恢复仍未完成，Phase 1 未完成。
