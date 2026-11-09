@@ -2,6 +2,8 @@
 
 ## 定位与证据边界
 
+2026-11-09 bounded Markdown 门禁增量：补独立 pre-open 十条 runtime/lock 路径与 optional state 检查、workspace canonical/dev/inode 冻结、provider 前后复核和双协议 resolver。保持原 policy/approval/checkpoint/ledger/verification 路径；library 同目录 audit 兼容，不冒充全 workspace 隔离。定向 14+15 项、全量 907 项及严格 clippy/build/fmt/diff 通过；独立审核收据见验证计划。公开检查无写入，实际 run 拒绝仍可能写失败审计；共享 stores 的 runtime by-path 替换并非本片原子保护范围，未来 live 写入 CLI 前必须解决。详见 `BOUNDED_MARKDOWN_RUNTIME_GATES.md`。CLI、live、通用工具、后台及恢复仍未完成，Phase 1 未完成。
+
 2026-11-08 离线只读预检增量：新增 `loop preflight-readonly`，复用实际只读运行入口的参数、配置/profile、授权范围和八条 runtime 目的地门禁。固定摘要明确 credentials/transport/history 均未检查；不解析凭据、不联网、不打开 stores、不预留身份。最终新增 9 项及既有 CLI 8 项定向回归通过，完整验证与审核收据见 `PHASE_1_VALIDATION_PLAN.md`。预检不是执行许可，不检查可写性、历史内容/身份或真实工具结果；获准 live、后台控制、通用写入/Bash 和持久恢复仍未完成，Phase 1 未完成。
 
 2026-11-08 受限只读CLI接线：新增`loop provider-readonly`，显式workspace/路径/迭代授权，参数先于配置解析，八条store/lock/state目标先于open检查；执行后重验冻结scope再投影，投影失败不掩盖原执行错误。生产resolver沿用双协议分派及默认拒绝/显式env；合成双协议工具闭环、实际停止摘要与身份关联已补测。master全量70组/884项、严格clippy、lib/bin build、fmt/diff通过；独立规格与质量安全审核通过，零Critical/Important/Minor。release两轮各86次采样完成：简单CLI启动中位0.680–0.717ms、峰值RSS中位3.24–3.48MiB；注入式只读循环峰值中位4.51–4.59MiB。第一轮启动器污染的RSS字段已废弃，用GNU time独立复测纠正；不是live或daemon idle。用法见`BOUNDED_READONLY_PROVIDER_CLI.md`，测量口径与证据见`CLI_RESOURCE_BASELINE_2026_11_08.md`；live、通用写入/Bash、后台控制与持久恢复仍未完成。下方记录保留各片当时的边界，Phase 1仍未完成。

@@ -46,7 +46,9 @@ const MARKDOWN_ROLE: &str = "software_developer";
 const MARKDOWN_TASK: &str = "bounded_markdown_edit";
 const MARKDOWN_PROMPT: &str = "bounded-markdown-edit";
 
+mod markdown_paths;
 mod readonly;
+pub use markdown_paths::MarkdownRuntimePathCheck;
 pub use readonly::{
     BoundedReadOnlyProviderRun, BoundedReadOnlyProviderRunOutcome, BoundedReadOnlyRunConfig,
     ReadOnlyRuntimePathCheck,
@@ -158,6 +160,7 @@ impl<T: ProviderTransport> ProviderTransport for SharedProviderTransport<T> {
 pub struct BoundedMarkdownProviderRun {
     inner: ForegroundProviderRun,
     run: BoundedMarkdownRunConfig,
+    workspace_identity: markdown_paths::MarkdownWorkspaceIdentity,
 }
 
 impl ForegroundProviderRun {
@@ -197,20 +200,10 @@ impl ForegroundProviderRun {
         request: ProviderRunRequest,
         run: BoundedMarkdownRunConfig,
     ) -> Result<BoundedMarkdownProviderRun, ProviderRunError> {
-        if !run.workspace.is_absolute()
-            || !run.workspace.is_dir()
-            || run.workspace.parent().is_none()
-            || run.allowed_paths.is_empty()
-            || run.allowed_paths.iter().any(|path| {
-                path.is_empty()
-                    || !(path.ends_with(".md") || path.ends_with(".markdown"))
-                    || !std::path::Path::new(path)
-                        .components()
-                        .all(|part| matches!(part, std::path::Component::Normal(_)))
-            })
-            || [&run.checkpoint_path, &run.trace_path, &run.side_effect_path]
-                .iter()
-                .any(|path| !path.is_absolute() || path.parent().is_none())
+        let workspace_identity = markdown_paths::validate_scope(&run)?;
+        if [&run.checkpoint_path, &run.trace_path, &run.side_effect_path]
+            .iter()
+            .any(|path| !path.is_absolute() || path.parent().is_none())
         {
             return Err(ProviderRunError::InvalidRequest);
         }
@@ -232,6 +225,7 @@ impl ForegroundProviderRun {
         Ok(BoundedMarkdownProviderRun {
             inner: Self::prepare_internal(config, request, Some(&run), None, None)?,
             run,
+            workspace_identity,
         })
     }
 
@@ -728,6 +722,7 @@ impl ForegroundUpgradeProviderRun {
 struct MarkdownBoundAdapter<'a, A: ResolvedModelAdapter> {
     inner: A,
     config: &'a BoundedMarkdownRunConfig,
+    paths: MarkdownRuntimePathCheck,
 }
 
 impl<A: ResolvedModelAdapter> ResolvedModelAdapter for MarkdownBoundAdapter<'_, A> {
@@ -736,7 +731,21 @@ impl<A: ResolvedModelAdapter> ResolvedModelAdapter for MarkdownBoundAdapter<'_, 
         request: ModelRequest,
         pack: &ResolvedPromptPack,
     ) -> Result<ResolvedModelResponseWithAction, ResolvedCallFailure> {
-        let response = self.inner.complete_resolved_with_action(request, pack)?;
+        self.paths
+            .revalidate()
+            .map_err(|_| ResolvedCallFailure::new(ModelAdapterError::ProviderTextUnmappable))?;
+        let result = self.inner.complete_resolved_with_action(request, pack);
+        if self.paths.revalidate().is_err() {
+            return Err(match result {
+                Ok(response) => ResolvedCallFailure::after_response(
+                    ModelAdapterError::ProviderTextUnmappable,
+                    &response.input_context_hash,
+                    &response.provider_response,
+                ),
+                Err(failure) => failure,
+            });
+        }
+        let response = result?;
         if response.response.decision != ModelDecision::CompleteLoop {
             return Err(ResolvedCallFailure::after_response(
                 ModelAdapterError::ProviderTextUnmappable,
@@ -782,6 +791,32 @@ impl<A: ResolvedModelAdapter> ResolvedModelAdapter for MarkdownBoundAdapter<'_, 
 }
 
 impl BoundedMarkdownProviderRun {
+    /// Resolve credentials only at the existing HTTPS transport boundary.
+    /// This does not enable retries, fallback or a different approval policy.
+    pub fn run_with_resolver<R: CredentialResolver, S: ProgressSink + 'static>(
+        self,
+        resolver: R,
+        events: EventLog,
+        model_calls: ModelCallStore,
+        sink: S,
+    ) -> Result<ProviderRunOutcome, ProviderRunError> {
+        self.validate_runtime_paths(events.path(), &model_calls.storage_paths()[0], None)?;
+        reject_reused_run_identity(&events, &model_calls, &self.inner.request)?;
+        match self.inner.profile.endpoint_protocol.as_str() {
+            OPENAI_COMPATIBLE_CHAT_PROTOCOL => {
+                let transport = HttpProviderTransport::new(resolver)
+                    .map_err(|_| ProviderRunError::TransportBuild)?;
+                self.run_with_transport(transport, events, model_calls, sink)
+            }
+            ANTHROPIC_MESSAGES_PROTOCOL => {
+                let transport = crate::http_transport::HttpAnthropicTransport::new(resolver)
+                    .map_err(|_| ProviderRunError::TransportBuild)?;
+                self.run_with_anthropic_transport(transport, events, model_calls, sink)
+            }
+            _ => Err(ProviderRunError::UnsupportedProtocol),
+        }
+    }
+
     pub fn run_with_transport<T: ProviderTransport, S: ProgressSink + 'static>(
         self,
         transport: T,
@@ -789,12 +824,12 @@ impl BoundedMarkdownProviderRun {
         model_calls: ModelCallStore,
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
-        let Self { inner, run } = self;
-        if inner.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
+        self.validate_runtime_paths(events.path(), &model_calls.storage_paths()[0], None)?;
+        if self.inner.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
-        let adapter = inner.profile.build_openai_adapter(transport)?;
-        Self::run_with_resolved_adapter(inner, run, adapter, events, model_calls, sink)
+        let adapter = self.inner.profile.build_openai_adapter(transport)?;
+        self.run_with_resolved_adapter(adapter, events, model_calls, sink)
     }
 
     pub fn run_with_anthropic_transport<T: AnthropicTransport, S: ProgressSink + 'static>(
@@ -804,31 +839,32 @@ impl BoundedMarkdownProviderRun {
         model_calls: ModelCallStore,
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
-        let Self { inner, run } = self;
-        if inner.profile.endpoint_protocol != ANTHROPIC_MESSAGES_PROTOCOL {
+        self.validate_runtime_paths(events.path(), &model_calls.storage_paths()[0], None)?;
+        if self.inner.profile.endpoint_protocol != ANTHROPIC_MESSAGES_PROTOCOL {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
         let adapter = AnthropicAdapter::new(
-            inner.profile.provider.clone(),
-            inner.profile.endpoint.clone(),
+            self.inner.profile.provider.clone(),
+            self.inner.profile.endpoint.clone(),
             transport,
-            inner.profile.auth_ref.clone(),
+            self.inner.profile.auth_ref.clone(),
         )
-        .with_model_id(&inner.request.model_id);
-        Self::run_with_resolved_adapter(inner, run, adapter, events, model_calls, sink)
+        .with_model_id(&self.inner.request.model_id);
+        self.run_with_resolved_adapter(adapter, events, model_calls, sink)
     }
 
     fn run_with_resolved_adapter<A: ResolvedModelAdapter, S: ProgressSink + 'static>(
-        inner: ForegroundProviderRun,
-        run: BoundedMarkdownRunConfig,
+        self,
         adapter: A,
         events: EventLog,
         model_calls: ModelCallStore,
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
+        let paths =
+            self.validate_runtime_paths(events.path(), &model_calls.storage_paths()[0], None)?;
+        let Self { inner, run, .. } = self;
         let tool_calls_path = tool_call_store_path(events.path());
-        validate_markdown_storage_paths(&run, events.path(), &model_calls)?;
-        validate_storage_path(&tool_calls_path)?;
+        paths.revalidate()?;
         reject_reused_run_identity(&events, &model_calls, &inner.request)?;
         let tool_calls = ToolCallRecordStore::open(&tool_calls_path)?;
         let request = inner.request;
@@ -858,6 +894,7 @@ impl BoundedMarkdownProviderRun {
         let adapter = MarkdownBoundAdapter {
             inner: adapter,
             config: &run,
+            paths,
         };
         let registry = ToolRegistry::baseline().map_err(|_| ProviderRunError::InvalidRequest)?;
         let gate = PolicyGate::new();
@@ -933,72 +970,6 @@ fn configure_reported_token_budget(
     if let Some(limit) = limit {
         controller.enable_reported_token_budget(limit)?;
     }
-    Ok(())
-}
-
-fn validate_markdown_storage_paths(
-    run: &BoundedMarkdownRunConfig,
-    event_path: &std::path::Path,
-    model_calls: &ModelCallStore,
-) -> Result<(), ProviderRunError> {
-    let mut protected = vec![event_path.to_path_buf()];
-    protected.extend([
-        run.checkpoint_path.clone(),
-        run.trace_path.clone(),
-        run.side_effect_path.clone(),
-    ]);
-    protected.extend(model_calls.storage_paths());
-
-    for path in &protected {
-        validate_storage_path(path)?;
-    }
-    for allowed in &run.allowed_paths {
-        let target = run.workspace.join(allowed);
-        validate_workspace_target(&target)?;
-        let target_key = normalized_path_key(&target)?;
-        if protected
-            .iter()
-            .any(|path| normalized_path_key(path).ok().as_ref() == Some(&target_key))
-        {
-            return Err(ProviderRunError::InvalidRequest);
-        }
-    }
-
-    let mut normalized = Vec::with_capacity(protected.len());
-    for path in &protected {
-        let key = normalized_path_key(path)?;
-        if normalized.iter().any(|existing| existing == &key) {
-            return Err(ProviderRunError::InvalidRequest);
-        }
-        normalized.push(key);
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let mut identities = Vec::new();
-        for path in protected.iter().filter(|path| path.exists()) {
-            let metadata = fs::metadata(path).map_err(|_| ProviderRunError::InvalidRequest)?;
-            let identity = (metadata.dev(), metadata.ino());
-            if identities.contains(&identity) {
-                return Err(ProviderRunError::InvalidRequest);
-            }
-            identities.push(identity);
-        }
-        for allowed in &run.allowed_paths {
-            let target = run.workspace.join(allowed);
-            if !target.exists() {
-                continue;
-            }
-            let metadata = fs::metadata(&target).map_err(|_| ProviderRunError::InvalidRequest)?;
-            let identity = (metadata.dev(), metadata.ino());
-            if identities.contains(&identity) {
-                return Err(ProviderRunError::InvalidRequest);
-            }
-            identities.push(identity);
-        }
-    }
-
     Ok(())
 }
 

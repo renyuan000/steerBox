@@ -265,6 +265,7 @@ Memory 最小实现：
 - [x] 将既有resolved多步只读循环接入双协议provider库入口：显式workspace/Markdown授权、action/verifier预检、同TaskRun次数/token预算、语义验证失败停止、真实StateStore/ExecutionQuery投影证据；只读范围不等于通用coding agent，Unix以外fail-closed，契约见`BOUNDED_READONLY_PROVIDER_LOOP_CONTRACT.md`
 - [x] 新增该bounded只读runner的独立CLI：打开store前校验七条runtime路径及state路径、协议自动分派、保留原执行错误、输出真实停止原因；合成双协议与路径/状态回归已通过，见`BOUNDED_READONLY_PROVIDER_CLI.md`；获准live验收仍待完成，不放开HTTPS门禁
 - [x] 新增 `loop preflight-readonly` 离线本地准备检查：复用上述参数、profile/scope 和八目的地门禁；不解析凭据、不联网、不打开 stores、不预留身份。9 项合成回归通过；可写性、transport、历史内容/身份及实际工具语义均不在预检范围，不能据此勾选 live 或完整 Agent E2E
+- [x] 验收 bounded Markdown library 的纯 pre-open 十路径/可选 state 检查、冻结 workspace 身份、模型前后复核及双协议 resolver；14 项新增及既有 15 项定向、全量 907 项通过，契约见 `BOUNDED_MARKDOWN_RUNTIME_GATES.md`。用户写入 CLI/live 前须先解决共享审计写入端的路径替换边界；本地 metadata 检查不等于原子保护或零审计副作用
 - [x] 接入 secret-free `LocalFixtureModelAdapter`，并记录结构化 model decision 事件
 - [x] 配置 cheap/fast、strong/slow、specialized、evaluator 和 local profile fixture（`tests/fixtures/model_roles.json`；`tests/model_role_fixtures.rs` 验证角色/能力、风险、预算/延迟、隐私及 fallback 候选过滤；均为虚构配置，非实测模型能力/价格或 live provider 验收）
 - [x] 实现按 task type、agent role、能力、风险、成本和延迟过滤与排序的规则式路由，并通过 `ModelAdapterRegistry` 接入 LoopController（需审批时 fail-closed；审批恢复尚未实现）

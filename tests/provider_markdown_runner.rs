@@ -735,6 +735,7 @@ fn no_action_response_is_rejected_without_workspace_mutation() {
 fn audit_store_collisions_are_rejected_before_provider_invocation() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
+    fs::write(root.join("README.md"), "before\n").unwrap();
     let config = RuntimeConfig::from_json_str(&json!({
         "schema_version":1,"project_ref":"markdown-fixture","data_root":"/temp/steerbox/markdown-fixture",
         "model_profiles":[{"model_id":"test-model","provider":"openai-compatible",
@@ -924,14 +925,15 @@ fn hardlinked_audit_store_is_rejected_before_provider_invocation() {
         decision: "complete_loop",
         calls: Cell::new(0),
     };
-    let result = ForegroundProviderRun::prepare_markdown(&config, request, run)
-        .unwrap()
-        .run_with_transport(
-            &transport,
-            EventLog::open(root.join("events.jsonl")).unwrap(),
-            ModelCallStore::open(root.join("calls.jsonl")).unwrap(),
-            StreamReporter::new(Vec::new()),
-        );
+    let result =
+        ForegroundProviderRun::prepare_markdown(&config, request, run).and_then(|prepared| {
+            prepared.run_with_transport(
+                &transport,
+                EventLog::open(root.join("events.jsonl")).unwrap(),
+                ModelCallStore::open(root.join("calls.jsonl")).unwrap(),
+                StreamReporter::new(Vec::new()),
+            )
+        });
     assert!(result.is_err());
     assert_eq!(transport.calls.get(), 0);
     assert_eq!(
