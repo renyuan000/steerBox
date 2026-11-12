@@ -66,5 +66,7 @@ SIGKILL 测试仅杀自建子进程，不证明 OS/VM/磁盘掉电。
 阻塞 I/O/线程调度可能超过 1s；provider 已执行却本地未记录的窗口仍不能盲重试。
 
 后续：整流敏感处理、受保护 reader/引用、轮转/去重、明确 opt-in 的真实入口接线。
-现有 runtime 安全 I/O、checkpoint/ledger 同步、持久 TaskRun/预算/授权与对账恢复仍独立待办；
+2026-11-12 共享 audit 追加已补齐 checkpoint/ledger/trace 的同文件同步屏障，见
+`CRASH_RECOVERY_BOUNDARIES.md`；目录项/路径安全及跨 store 原子性仍待完成。
+现有 runtime 安全 I/O、持久 TaskRun/预算/授权与对账恢复仍独立待办；
 本片不授权 live 写 CLI、不代表 Phase 1 完成。

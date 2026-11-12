@@ -350,6 +350,10 @@ impl SideEffectLedger {
     }
 }
 
+/// Appends a complete record and synchronizes the same open file before success.
+/// Errors may leave partial or complete bytes: callers must not blindly retry.
+/// This does not sync directory entries, harden path traversal or make multiple
+/// stores/workspace mutations atomic. Concurrent writers remain unsupported.
 pub fn append_jsonl<T: Serialize>(
     path: impl AsRef<Path>,
     record: &T,
@@ -367,7 +371,29 @@ pub fn append_jsonl<T: Serialize>(
         .append(true)
         .open(path)
         .map_err(io_error)?;
-    writeln!(file, "{encoded}").map_err(io_error)
+    append_encoded(&mut file, &encoded)
+}
+
+trait AuditAppendFile: Write {
+    fn sync_data(&mut self) -> std::io::Result<()>;
+}
+
+impl AuditAppendFile for File {
+    fn sync_data(&mut self) -> std::io::Result<()> {
+        File::sync_data(self)
+    }
+}
+
+fn append_encoded(file: &mut impl AuditAppendFile, encoded: &str) -> Result<(), AuditStoreError> {
+    writeln!(file, "{encoded}").map_err(|error| append_io_error("write", error))?;
+    file.sync_data()
+        .map_err(|error| append_io_error("sync", error))
+}
+
+fn append_io_error(stage: &str, error: std::io::Error) -> AuditStoreError {
+    AuditStoreError::Io {
+        message: format!("audit append {stage} failed: {:?}", error.kind()),
+    }
 }
 
 pub fn read_jsonl<T: for<'de> Deserialize<'de>>(
@@ -416,6 +442,88 @@ fn io_error(error: std::io::Error) -> AuditStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct AppendProbe {
+        bytes: Vec<u8>,
+        bytes_at_sync: Vec<u8>,
+        sync_count: usize,
+        fail_sync: bool,
+        write_limit: Option<usize>,
+    }
+
+    impl Write for AppendProbe {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let count = match self.write_limit {
+                Some(limit) if self.bytes.len() >= limit => {
+                    return Err(std::io::Error::other("synthetic private write detail"));
+                }
+                Some(limit) => bytes.len().min(limit - self.bytes.len()),
+                None => bytes.len(),
+            };
+            self.bytes.extend_from_slice(&bytes[..count]);
+            Ok(count)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl AuditAppendFile for AppendProbe {
+        fn sync_data(&mut self) -> std::io::Result<()> {
+            self.sync_count += 1;
+            self.bytes_at_sync = self.bytes.clone();
+            if self.fail_sync {
+                return Err(std::io::Error::other("synthetic private sync detail"));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn audit_append_syncs_complete_record_and_newline_before_success() {
+        let mut probe = AppendProbe::default();
+        let encoded = r#"{"summary":"你好 🦀"}"#;
+        append_encoded(&mut probe, encoded).unwrap();
+        assert_eq!(probe.bytes, format!("{encoded}\n").as_bytes());
+        assert_eq!(probe.sync_count, 1);
+        assert_eq!(probe.bytes_at_sync, probe.bytes);
+    }
+
+    #[test]
+    fn audit_append_sync_failure_is_reported_without_private_error_text() {
+        let mut probe = AppendProbe {
+            fail_sync: true,
+            ..AppendProbe::default()
+        };
+        let error = append_encoded(&mut probe, "{}").expect_err("sync failure must fail append");
+        assert!(matches!(error, AuditStoreError::Io { .. }));
+        assert_eq!(probe.bytes, b"{}\n"); // Failure does not roll back a completed write.
+        assert_eq!(probe.sync_count, 1);
+        assert!(!format!("{error:?} {error}").contains("synthetic private"));
+    }
+
+    #[test]
+    fn audit_append_partial_write_failure_never_syncs_or_reports_success() {
+        let mut probe = AppendProbe {
+            write_limit: Some(2),
+            ..AppendProbe::default()
+        };
+        let error = append_encoded(&mut probe, "{\"record\":1}").unwrap_err();
+        assert!(matches!(error, AuditStoreError::Io { .. }));
+        assert_eq!(probe.bytes, b"{\"");
+        assert_eq!(probe.sync_count, 0);
+        assert!(!format!("{error:?} {error}").contains("synthetic private"));
+    }
+
+    #[test]
+    fn audit_append_syncs_each_record_including_prior_successful_bytes() {
+        let mut probe = AppendProbe::default();
+        append_encoded(&mut probe, "1").unwrap();
+        append_encoded(&mut probe, "2").unwrap();
+        assert_eq!(probe.bytes_at_sync, b"1\n2\n");
+        assert_eq!(probe.sync_count, 2);
+    }
 
     #[test]
     fn jsonl_records_are_visited_before_a_later_decode_error() {

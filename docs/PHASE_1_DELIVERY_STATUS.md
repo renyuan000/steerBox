@@ -2,6 +2,18 @@
 
 ## 定位与证据边界
 
+2026-11-12 审计文件同步增量（基线 `904606a`）：checkpoint、side-effect、trace 共享追加路径
+在完整记录和换行写入后，对同一打开文件 `sync_data` 成功才返回；错误按阶段/类型收敛。
+新增 4 条单测、真实同步失败与三 store 传播、自建子进程 ACK 后 SIGKILL，以及 controller
+三处写前同步失败阻止编辑的回归；定向为单测 5 项、集成 3 + 14 + 17 项通过。
+master 全量 959 项、严格 all-targets Clippy、lib/bin 构建及 fmt/diff 检查通过；独立复审无
+剩余 Critical/Important。提交态和合入后证据以
+`/temp/codex/steerbox-validation/audit-sync-20261112/` 交付收据为准。
+**未解决目录项持久性、路径安全、并发写者、坏尾/失败后重试、跨 store 原子性或自动恢复**；
+trace 逐条同步有尚未测量的延迟成本。本片不放开 live 写 CLI，Phase 1 仍未完成。
+下方日期段保留各片当时状态；其中旧称 checkpoint/ledger 缺文件同步已由本片替代，
+其他 runtime I/O 与恢复阻塞保留。当前边界见 `CRASH_RECOVERY_BOUNDARIES.md`。
+
 2026-11-09 私有 transcript 库基础：新增独立 write-only fresh-session 存储，默认首次未同步写起 1s 或累计 64KiB 同步；用户消息、请求正文及完整响应在同步成功后 ACK。私有目录/独占 fd 创建、精确正文、序号/持久化水位、容量/敏感检查、定时与故障注入、受控 SIGKILL 已有专项测试。**尚未接入实际 provider、controller、CLI 或自动聊天采集**；无 reader/轮转/完整恢复，不能消除原有 runtime I/O 与 checkpoint 阻塞。具体契约及最终验收证据见 `PRIVATE_TRANSCRIPT_STORE.md`；Phase 1 仍未完成。
 
 2026-11-09 EventLog 重开尾部门禁：拒绝完整 JSON 无末尾换行、截断和未封口空白，不改写/截断原始历史；新增公开错误 `UnterminatedRecord { line }`。最终定向 event 10、state 6、audit 14 项通过，包含已确认 append 后真实 SIGKILL/重开续号、CRLF/空行和 UTF-8 正反例；master 全量 72 个 harness/916 项、严格 clippy、lib/bin build、fmt/diff 通过。这不是写入中途强杀、OS/VM 掉电或完整 controller resume 验收。实际 runtime 安全 I/O、checkpoint/ledger 同步和对账式恢复仍待完成；不得据此放开 live 写 CLI。当前能力、已做未记账风险及后续顺序见 `CRASH_RECOVERY_BOUNDARIES.md`；Phase 1 仍未完成。

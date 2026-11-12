@@ -281,6 +281,42 @@ fn pre_write_checkpoint_append_failure_prevents_mutation() {
     assert!(matches!(result, Err(LoopControllerError::AuditStore(_))));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn pre_write_checkpoint_sync_failure_prevents_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut controller =
+        controller(dir.path(), true, true, true).with_checkpoint_store("/dev/null");
+    let result = edit(&mut controller, dir.path(), false);
+    assert_original(dir.path());
+    assert_no_mutation_events(&dir.path().join("events.jsonl"), true);
+    assert!(matches!(result, Err(LoopControllerError::AuditStore(_))));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pre_mutation_trace_sync_failure_prevents_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut controller = controller(dir.path(), true, true, true)
+        .with_audit_stores("/dev/null", dir.path().join("side-effects.jsonl"));
+    let result = edit(&mut controller, dir.path(), false);
+    assert_original(dir.path());
+    assert_no_mutation_events(&dir.path().join("events.jsonl"), false);
+    assert!(matches!(result, Err(LoopControllerError::AuditStore(_))));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pre_mutation_side_effect_sync_failure_prevents_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut controller = controller(dir.path(), true, true, true)
+        .with_audit_stores(dir.path().join("traces.jsonl"), "/dev/null");
+    let result = edit(&mut controller, dir.path(), false);
+    assert_original(dir.path());
+    assert_no_mutation_events(&dir.path().join("events.jsonl"), false);
+    assert!(matches!(result, Err(LoopControllerError::AuditStore(_))));
+}
+
 #[test]
 fn pre_mutation_trace_append_failure_prevents_mutation() {
     let dir = tempfile::tempdir().unwrap();
