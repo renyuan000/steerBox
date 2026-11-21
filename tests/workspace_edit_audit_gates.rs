@@ -283,7 +283,7 @@ fn pre_write_checkpoint_append_failure_prevents_mutation() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn pre_write_checkpoint_sync_failure_prevents_mutation() {
+fn pre_write_checkpoint_device_rejection_prevents_mutation() {
     let dir = tempfile::tempdir().unwrap();
     let mut controller =
         controller(dir.path(), true, true, true).with_checkpoint_store("/dev/null");
@@ -295,7 +295,7 @@ fn pre_write_checkpoint_sync_failure_prevents_mutation() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn pre_mutation_trace_sync_failure_prevents_mutation() {
+fn pre_mutation_trace_device_rejection_prevents_mutation() {
     let dir = tempfile::tempdir().unwrap();
     let mut controller = controller(dir.path(), true, true, true)
         .with_audit_stores("/dev/null", dir.path().join("side-effects.jsonl"));
@@ -307,7 +307,7 @@ fn pre_mutation_trace_sync_failure_prevents_mutation() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn pre_mutation_side_effect_sync_failure_prevents_mutation() {
+fn pre_mutation_side_effect_device_rejection_prevents_mutation() {
     let dir = tempfile::tempdir().unwrap();
     let mut controller = controller(dir.path(), true, true, true)
         .with_audit_stores(dir.path().join("traces.jsonl"), "/dev/null");

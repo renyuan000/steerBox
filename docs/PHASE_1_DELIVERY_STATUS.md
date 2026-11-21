@@ -2,6 +2,25 @@
 
 ## 定位与证据边界
 
+2026-11-22 checkpoint/side-effect/trace 安全 I/O 增量（基线 `bc17025`）：限定切片已验收。
+三 store 共享 JSONL 追加与历史读取使用 dirfd-relative 逐组件 NOFOLLOW 打开，
+同一 fd 验证 regular file 与 nlink=1；每次追加写前同步遍历目录链（含既有目录），
+完整追加后同文件 `sync_data` 再最终父目录同步才返回成功。目录屏障随深度增加，
+性能成本尚未测量。缺失读取不创建文件或目录；拒绝 symlink、
+hardlink、device、FIFO、`..` 和无 basename 路径，非 Unix fail-closed。
+每次访问独立 pin，不是 store 生命周期的目录/文件身份绑定。
+event/model/tool、真实锁文件、State/workspace 替换端及 RunSummary 普通 JSON I/O 不在本片；
+坏尾/失败后重试、并发写者、跨 store 原子性及持久续跑仍未解决。
+模块 13 项、集成 54 项、全量 987 项通过，严格 all-targets Clippy、build、fmt/diff 通过；
+两名独立生产/规格复审无剩余阻断问题。Linux 验收不等于其他平台已实测。
+本片不放开 live 写 CLI，Phase 1 仍未完成。
+
+本轮主仓 `bc17025` baseline 补跑为 959 passed / 0 failed / 0 ignored，退出码 0；
+证据为 `/temp/codex/steerbox-validation/runtime-recovery-20261122/baseline-dev-tests.log`
+及同目录 `baseline-dev-tests.exit`。这是新片实现前的 baseline，不是本片专项或最终验收，
+本片最终验证见同目录 `full-test.log/.exit`、`clippy.log/.exit`、`build.log/.exit`、
+`fmt.log` 与 `RECEIPT.md`，不把旧片未完成的 dev 收据倒填为历史完成。
+
 2026-11-12 审计文件同步增量（基线 `904606a`）：checkpoint、side-effect、trace 共享追加路径
 在完整记录和换行写入后，对同一打开文件 `sync_data` 成功才返回；错误按阶段/类型收敛。
 新增 4 条单测、真实同步失败与三 store 传播、自建子进程 ACK 后 SIGKILL，以及 controller
@@ -11,7 +30,8 @@ master 全量 959 项、严格 all-targets Clippy、lib/bin 构建及 fmt/diff �
 `/temp/codex/steerbox-validation/audit-sync-20261112/` 交付收据为准。
 **未解决目录项持久性、路径安全、并发写者、坏尾/失败后重试、跨 store 原子性或自动恢复**；
 trace 逐条同步有尚未测量的延迟成本。本片不放开 live 写 CLI，Phase 1 仍未完成。
-下方日期段保留各片当时状态；其中旧称 checkpoint/ledger 缺文件同步已由本片替代，
+下方日期段保留各片当时状态；其中旧称 checkpoint/ledger 缺文件同步已由 2026-11-12 片替代。
+三 store 共享 JSONL 目录/路径/历史读取的旧缺口由 2026-11-22 片限定替代；
 其他 runtime I/O 与恢复阻塞保留。当前边界见 `CRASH_RECOVERY_BOUNDARIES.md`。
 
 2026-11-09 私有 transcript 库基础：新增独立 write-only fresh-session 存储，默认首次未同步写起 1s 或累计 64KiB 同步；用户消息、请求正文及完整响应在同步成功后 ACK。私有目录/独占 fd 创建、精确正文、序号/持久化水位、容量/敏感检查、定时与故障注入、受控 SIGKILL 已有专项测试。**尚未接入实际 provider、controller、CLI 或自动聊天采集**；无 reader/轮转/完整恢复，不能消除原有 runtime I/O 与 checkpoint 阻塞。具体契约及最终验收证据见 `PRIVATE_TRANSCRIPT_STORE.md`；Phase 1 仍未完成。

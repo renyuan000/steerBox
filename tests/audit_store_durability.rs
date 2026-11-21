@@ -44,21 +44,21 @@ fn trace() -> TraceRecord {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn actual_append_reports_sync_failure_after_successful_device_write() {
-    // /dev/null discards this synthetic record and accepts writes, but does not
-    // implement file syncing. No ordinary user/system file is modified.
+fn actual_append_rejects_device_before_writing() {
+    // Devices must be rejected before record I/O. File sync failure remains
+    // covered by the injected same-descriptor tests in audit_store.
     let error = append_jsonl("/dev/null", &serde_json::json!({"synthetic": true}))
-        .expect_err("a successful write without a successful sync must not be acknowledged");
+        .expect_err("devices must not be opened as audit records");
     assert!(matches!(
         error,
         steerbox::audit_store::AuditStoreError::Io { ref message }
-            if message.starts_with("audit append sync failed:")
+            if message.starts_with("audit file validation failed:")
     ));
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn all_three_public_audit_stores_propagate_the_real_sync_failure() {
+fn all_three_public_audit_stores_propagate_device_rejection() {
     let results = [
         CheckpointStore::open("/dev/null").append(&checkpoint()),
         SideEffectLedger::open("/dev/null").append(&side_effect()),
@@ -68,7 +68,7 @@ fn all_three_public_audit_stores_propagate_the_real_sync_failure() {
         assert!(matches!(
             result,
             Err(steerbox::audit_store::AuditStoreError::Io { ref message })
-                if message.starts_with("audit append sync failed:")
+                if message.starts_with("audit file validation failed:")
         ));
     }
 }

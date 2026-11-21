@@ -1,10 +1,13 @@
 use crate::redaction::Redactor;
 use crate::tool_registry::{SideEffectClass, SideEffectDisposition};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use thiserror::Error;
+
+mod safe_file;
+use safe_file::AuditParent;
 
 #[derive(Debug, Error)]
 pub enum AuditStoreError {
@@ -350,28 +353,24 @@ impl SideEffectLedger {
     }
 }
 
-/// Appends a complete record and synchronizes the same open file before success.
+/// Appends through a per-access pinned parent and validates the opened file.
+/// Success requires the complete record, same-file sync and parent-directory sync.
 /// Errors may leave partial or complete bytes: callers must not blindly retry.
-/// This does not sync directory entries, harden path traversal or make multiple
-/// stores/workspace mutations atomic. Concurrent writers remain unsupported.
+/// Unix only; rejects symlinks, non-regular files, multiple links and parent traversal.
+/// It does not bind identity across accesses or make stores/workspace mutations
+/// atomic. Concurrent writers and arbitrary same-UID modification remain unsupported.
 pub fn append_jsonl<T: Serialize>(
     path: impl AsRef<Path>,
     record: &T,
 ) -> Result<(), AuditStoreError> {
-    let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(io_error)?;
-    }
     let encoded = serde_json::to_string(record).map_err(|error| AuditStoreError::InvalidJson {
         line: 0,
         message: error.to_string(),
     })?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(io_error)?;
-    append_encoded(&mut file, &encoded)
+    let parent = AuditParent::open(path.as_ref(), true)?
+        .ok_or_else(|| append_io_error("parent open", std::io::ErrorKind::NotFound.into()))?;
+    let mut file = parent.open_append()?;
+    append_with_directory(&mut file, &encoded, || parent.sync_directory())
 }
 
 trait AuditAppendFile: Write {
@@ -388,6 +387,15 @@ fn append_encoded(file: &mut impl AuditAppendFile, encoded: &str) -> Result<(), 
     writeln!(file, "{encoded}").map_err(|error| append_io_error("write", error))?;
     file.sync_data()
         .map_err(|error| append_io_error("sync", error))
+}
+
+fn append_with_directory(
+    file: &mut impl AuditAppendFile,
+    encoded: &str,
+    sync_directory: impl FnOnce() -> std::io::Result<()>,
+) -> Result<(), AuditStoreError> {
+    append_encoded(file, encoded)?;
+    sync_directory().map_err(|error| append_io_error("directory sync", error))
 }
 
 fn append_io_error(stage: &str, error: std::io::Error) -> AuditStoreError {
@@ -408,10 +416,13 @@ fn for_each_jsonl<T: for<'de> Deserialize<'de>>(
     path: impl AsRef<Path>,
     mut visit: impl FnMut(T),
 ) -> Result<(), AuditStoreError> {
-    if !path.as_ref().exists() {
+    let Some(parent) = AuditParent::open(path.as_ref(), false)? else {
         return Ok(());
-    }
-    let reader = BufReader::new(File::open(path).map_err(io_error)?);
+    };
+    let Some(file) = parent.open_read()? else {
+        return Ok(());
+    };
+    let reader = BufReader::new(file);
     reader
         .lines()
         .enumerate()
@@ -425,7 +436,9 @@ fn for_each_jsonl<T: for<'de> Deserialize<'de>>(
                     }),
                 )
             }
-            Err(error) => Some(Err(io_error(error))),
+            Err(error) => Some(Err(AuditStoreError::Io {
+                message: format!("audit read failed: {:?}", error.kind()),
+            })),
         })
         .try_for_each(|record| {
             visit(record?);
@@ -523,6 +536,56 @@ mod tests {
         append_encoded(&mut probe, "2").unwrap();
         assert_eq!(probe.bytes_at_sync, b"1\n2\n");
         assert_eq!(probe.sync_count, 2);
+    }
+
+    #[test]
+    fn audit_append_requires_directory_sync_after_file_sync() {
+        let mut probe = AppendProbe::default();
+        let directory_sync_count = std::cell::Cell::new(0);
+        append_with_directory(&mut probe, "{}", || {
+            directory_sync_count.set(directory_sync_count.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(probe.bytes_at_sync, b"{}\n");
+        assert_eq!(probe.sync_count, 1);
+        assert_eq!(directory_sync_count.get(), 1);
+    }
+
+    #[test]
+    fn audit_append_directory_sync_failure_reports_uncertain_completed_bytes() {
+        let mut probe = AppendProbe::default();
+        let error = append_with_directory(&mut probe, "{}", || {
+            Err(std::io::Error::other("synthetic private directory detail"))
+        })
+        .unwrap_err();
+        assert_eq!(probe.bytes_at_sync, b"{}\n");
+        assert_eq!(probe.sync_count, 1);
+        assert!(matches!(error, AuditStoreError::Io { ref message }
+            if message == "audit append directory sync failed: Other"));
+        assert!(!format!("{error:?} {error}").contains("synthetic private"));
+    }
+
+    #[test]
+    fn audit_append_write_or_file_sync_failure_skips_directory_sync() {
+        for mut probe in [
+            AppendProbe {
+                fail_sync: true,
+                ..AppendProbe::default()
+            },
+            AppendProbe {
+                write_limit: Some(1),
+                ..AppendProbe::default()
+            },
+        ] {
+            let directory_called = std::cell::Cell::new(false);
+            let result = append_with_directory(&mut probe, "{}", || {
+                directory_called.set(true);
+                Ok(())
+            });
+            assert!(result.is_err());
+            assert!(!directory_called.get());
+        }
     }
 
     #[test]

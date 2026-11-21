@@ -15,11 +15,20 @@
 并用软件开发智能体垂直切片验证 goal、loop、event、checkpoint、policy、side-effect、trace 是否能协同工作。
 ```
 
-## 当前收口顺序（2026-10-31）
+## 当前收口依赖顺序（2026-11-22）
 
-Phase 1 尚未完成。以下按既有 Scope、TODO 和 Validation Plan 整理交付任务包，不是“仅剩六个功能”，也不以未勾选行数计算完成百分比；每包内部仍须按实现证据逐项验收。
+Phase 1 尚未完成。当前先逐片补齐实际 runtime I/O，再实现只读恢复检查器，
+最后交付持久恢复输入与对账式受控续跑；supervisor/fencing 及故障演练在合法恢复判定之后。
+本片只覆盖 checkpoint/side-effect/trace 的共享 JSONL 追加与历史读取，限定切片已验收；
+不代表 event、model、tool、真实锁文件或 State/workspace 替换端已完成加固，
+也不放开 live 写 CLI。具体检查点见 `CRASH_RECOVERY_BOUNDARIES.md`。
 
-| 顺序 | 任务包 | 收口检查点 |
+### 既有交付任务包（2026-10-31）
+
+下列编号用于验收归并，不表示执行顺序、剩余工时或完成百分比；
+不是“仅剩六个功能”，各包仍须逐项验收，不能替代上述安全与恢复依赖。
+
+| 编号 | 任务包 | 收口检查点 |
 |---|---|---|
 | 1 | 模型连接型开发与自适应审计 | 显式 opt-in 单次相邻升档的库入口与纯观察 foreground 接线已实现；安全拒绝不重调、预算不重置；后续补齐统一测量、预留式硬上限、金额约束、生产调度入口和获准 live 验收 |
 | 2 | Task 命令与投影 | 合法迁移、版本冲突、幂等及 retry/resume/fork 父链；BoardProjection 可由事实事件重建 |
@@ -94,8 +103,9 @@ Phase 1 尚未完成。以下按既有 Scope、TODO 和 Validation Plan 整理�
 - [x] 私有 transcript 存储库基础：fresh-session JSONL、逐条写入、默认 1s/64KiB 批量同步、关键正文同步后 ACK、容量/敏感信息门禁及进程 SIGKILL 回归；仅库接口，详见 `PRIVATE_TRANSCRIPT_STORE.md`
 - [ ] 安全 transcript 运行时接线：获准正文来源、整流敏感检查、受保护 reader/引用、轮转和 opt-in provider/CLI 采集；目前不会自动保存实际聊天或模型正文
 - [x] EventLog 重开拒绝未换行封口的尾行，保留异常历史原字节；合成坏尾/UTF-8/CRLF 及已确认 append 后 SIGKILL 重开回归通过。仅检测拒绝，不自动修复、不证明 OS 掉电恢复，见 `CRASH_RECOVERY_BOUNDARIES.md`
-- [x] checkpoint/ledger/trace 共用追加路径在完整记录及换行写入后，同一文件 `sync_data` 成功才返回；同步失败传播并阻止写前编辑，定向回归通过。仅文件屏障，无目录/路径/跨 store 事务/完整恢复保证，详见 `CRASH_RECOVERY_BOUNDARIES.md`
-- [ ] 加固实际 runtime I/O 与关键审计同步：覆盖读历史、成败追加、锁、目录项及替换端；当前路径预检与 EventLog 尾部门禁均不能解除 live 写 CLI 的安全阻断
+- [x] 2026-11-12 审计文件同步片：checkpoint/ledger/trace 共用追加路径在完整记录及换行写入后，同一文件 `sync_data` 成功才返回；同步失败传播并阻止写前编辑，定向回归通过。该片本身不包含目录/路径加固、跨 store 事务或完整恢复，详见 `CRASH_RECOVERY_BOUNDARIES.md`
+- [x] checkpoint/ledger/trace 共享 JSONL 安全 I/O 片：逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；每次追加写前同步遍历目录链（含既有目录），完整追加后文件 `sync_data` 再父目录同步。缺失读取不创建，拒绝 symlink/hardlink/device/FIFO/`..`/无 basename 路径，非 Unix fail-closed；每次访问独立 pin，不是生命周期绑定。Linux 模块13/集成54/全量987通过；目录同步性能成本未测，详见 `CRASH_RECOVERY_BOUNDARIES.md`
+- [ ] 补齐其余实际 runtime I/O：event、model 成败记录、tool、真实锁文件、RunSummary 普通 JSON I/O 及 State/workspace 替换端仍须独立验收；本片不能单独解除 live 写 CLI 的安全阻断
 - [ ] 只读崩溃恢复检查、持久 TaskRun/Attempt/预算/授权输入与对账式受控续跑；不以 inbox Resume、顺序 reopen 或显式单文件 restore 冒充进程重启恢复
 - [x] 实现从 EventLog 重建 loop/step current state 的最小 StateStore fixture
 - [x] 实现 StateStore JSON 持久化与 reopen 恢复测试
