@@ -1,17 +1,18 @@
 # 崩溃恢复：当前证据与实施边界
 
-核查日期：2026-11-22。三 store 安全 I/O 增量基线 `bc17025`，限定切片已验收；
+核查日期：2026-11-22。EventLog 安全 I/O 增量基线 `76f31dc`；
+三 store 安全 I/O 增量基线 `bc17025`，限定切片已验收；
 历史审计文件同步增量基线 `904606a`，EventLog 尾部门禁基线 `5923dad`，
 私有 transcript 库增量基线 `7998508`。
 本文的“当前”不是完整 Phase 1 验收，也不把设计目标标为已实现。
 
 ## 现在能恢复什么
 
-下表仅列已验证能力；三 store 安全 I/O 的范围及兼容性变化见下方。
+下表仅列已验证能力；EventLog 与三 store 安全 I/O 的范围及兼容性变化见下方。
 
 | 对象 | 已实现 | 不代表什么 |
 |---|---|---|
-| EventLog | 事件与换行一起 `write_all`，随后 `sync_data`；重开完整历史后接续序号 | 没有跨进程单写者锁、事务或完整自动恢复 |
+| EventLog | 五个实际 I/O 入口逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；完整追加后文件与父目录均同步，再推进序号与 ACK；重开完整历史后接续序号 | 每次访问独立 pin，不是生命周期身份绑定；没有跨进程单写者锁、事务或完整自动恢复；MAX 序号仍有写后溢出边界 |
 | StateStore | 从合法事件重建 loop/step 投影；临时文件同步、rename、Unix 父目录同步 | 不包含完整 TaskRun/Attempt、模型上下文、预算和租约 |
 | checkpoint / side-effect / trace | 共享 JSONL 追加/历史读取逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；目录链屏障、完整追加后文件同步再父目录同步；可查询及标记 `uncertain` | 每次访问独立 pin，不是生命周期身份绑定；无跨 store 事务、并发写者协调或完整恢复，不承诺抗 OS 掉电 |
 | workspace snapshot | 可选单文件原文快照；文件及目录同步；显式授权 restore | controller 的 snapshot binding 仍在内存，重启后不能据此直接 resume |
@@ -20,6 +21,31 @@
 源码依据：`src/event_log.rs`、`src/state_store.rs`、`src/audit_store.rs`、
 `src/workspace_snapshot.rs`、`src/loop_controller.rs`、`src/provider_runner.rs`。
 CLI 的 execution 查询和运行中 inbox Resume 不是进程重启后的恢复入口。
+
+## EventLog 安全 I/O（2026-11-22，限定切片）
+
+覆盖 `open`、`append`、`read_all`、`contains_run_identity`、`read_page`，
+复用 crate-private 安全目录 fd 原语，而非复制路径检查或 unsafe 打开逻辑。
+完整路径先验证；逐组件 NOFOLLOW、dirfd-relative 打开；同 fd 验证 regular/nlink=1。
+拒绝 symlink、hardlink、device、FIFO、`..`、NUL 和非法 basename，缺失查询不创建节点。
+`open` 允许已有只读历史；缺失才创建，并在文件和父目录同步后经同一 parent 读取扫描。
+`open` 与 append 的父目录准备均同步完整遍历链，包括既有目录；成本尚未测量。
+追加顺序为完整 JSON+LF → 同文件 `sync_data` → pinned parent 同步 → 更新序号 → ACK。
+写入或同步失败可能已有字节留下，内存序号不推进，不自动回滚或盲重试。
+
+保留原解析差异：只有 `open` 拒绝未封口尾行；三个查询仍接受可解析的无 LF 尾行。
+身份查询即使命中也扫描全部历史；分页 offset 按非空行计数，页前不解析 JSON，
+但不跳过 UTF-8 错误，取满 limit 即停止取行/解析；不承诺 BufReader 完全不预读。
+所有错误保留物理行号/类别。零 limit 在任何 I/O 前返回空；非 Unix 的实际 I/O
+返回 `Unsupported`，不使用较弱路径回退。新文件 0600、新目录 0700，
+不强制改动既有普通历史权限。Linux 验证不等于 Windows/macOS 实机验证。
+新 I/O 错误仅含阶段与 ErrorKind；目录叶节点保留 `IsADirectory`。
+共享 audit 读取目录的错误 kind 文本也由 `InvalidInput` 变为 `IsADirectory`，拒绝行为不变。
+
+本片不增加每次 append 的全历史复验、生命周期身份固定、多写者锁、事务、sticky 失败
+或安全重试。已有 MAX 序号边界仅加特征测试：历史最大为 MAX−1 时，追加可能写出并同步
+MAX 记录后返回 `SequenceOverflow`，重新 open 也拒绝；未前移溢出检查，不称为已修复。
+不放开 live 写 CLI，也不构成 TaskRun/Attempt、预算、授权或 OS/VM 掉电恢复验收。
 
 ## 三 store 安全 I/O（2026-11-22，限定切片已验收）
 
@@ -36,7 +62,8 @@ Linux 本轮已验收，不能外推为 Windows/macOS 实机验证通过。目�
 每次访问独立 pin，不提供 store 生命周期的目录/文件身份绑定，也不承诺抵御任意同 UID
 恶意进程。文件或父目录同步失败时可能已有字节写出，不代表追加完全未发生；
 sticky 失败状态、坏尾恢复、安全重试、并发写者协调及跨 store 原子性不在本片。
-event/model/tool、真实锁文件及 State/workspace 替换端仍须独立验收；
+该历史切片不包含 EventLog（其后续范围见上节）；model/tool、真实锁文件及
+State/workspace 替换端仍须独立验收；
 `RunSummary::write_json/read_json` 的普通路径 JSON I/O 也不在本片，不能据此称整个
 `audit_store.rs` 或全部 audit 错误均已加固/脱敏。
 本片不放开 live 写 CLI，不恢复 TaskRun/Attempt、预算或授权。
@@ -86,8 +113,9 @@ ledger 门禁因此会阻止该次实际编辑。trace/ledger 前可能已有 `m
 - `tests/event_log_recovery.rs` 的强杀回归在子进程完成 append、报告成功后发送 SIGKILL，
   确认非正常退出，再由父进程重开历史并从下一序号追加。它不依赖正常析构。
 - 这证明受控的 **进程死亡后重开**，不是杀内核、WSL VM 掉电、磁盘掉电或 VHDX 损坏测试。
-- 文件同步与目录条目的持久性是不同屏障。三 audit store 的共享 JSONL 追加已增加目录
-  屏障；event/model/tool 等路径仍须分别验收，多 store 之间没有统一提交事务。
+- 文件同步与目录条目的持久性是不同屏障。三 audit store 的共享 JSONL 追加和后续
+  EventLog 五入口片已增加并测试目录屏障；model/tool 等其余路径仍须分别验收，
+  多 store 之间没有统一提交事务。
 - `sync_*` 失败时可能已有部分数据写出；不能把错误解释为“完全没发生”。同一磁盘上的日志
   也不是该磁盘损坏后的备份。WSL 数据盘损坏等故障需要另一故障域的备份与恢复演练。
 
@@ -116,7 +144,7 @@ controller 在写前记录 checkpoint，执行文件编辑后再记录完成事�
 1. **实际 runtime I/O 加固与关键审计同步**：固定可信目录 fd、dirfd-relative 打开及
    打开后文件身份/类型校验；覆盖 event、model 成败记录、tool、checkpoint/trace/ledger
    及真实锁文件，不能遗漏失败追加和历史读取。共享审计 helper 的文件同步已补齐；
-   本轮三 store 安全打开、历史读取及目录同步限定切片已验收，不能替代其余路径验收。
+   三 store 与 EventLog 的安全打开、历史读取及目录同步已逐片实现并测试，不能替代其余路径验收。
    State/实际 workspace edit 的替换端也要独立验收。
    仅末级 NOFOLLOW 或 metadata 预检不等于父路径安全，更不等于抵御任意同 UID 恶意进程。
 2. **只读恢复检查器**：识别完整前缀/坏尾、stale state、未闭合请求/工具/副作用、缺失快照；
@@ -138,6 +166,19 @@ controller 在写前记录 checkpoint，执行文件编辑后再记录完成事�
 没有实现可放宽 trace 持久性的模式或批量提交调优。
 
 ## 验证入口与证据
+
+2026-11-22 EventLog 片（基线 `76f31dc`）：路径 RED 为 8 passed / 12 failed，
+identity RED 为 3 passed / 1 failed；第一版接线后定向 209 passed，
+全量 1022 passed / 0 failed / 0 ignored，严格 all-targets Clippy、lib/bin build、fmt/diff 通过。
+定点跳过追加后的目录同步时，相关测试 1 passed / 2 failed；精确恢复后 3 passed，
+源码哈希与此前规格审核快照一致。降权子进程验证只读历史可打开和查询、追加被拒绝。
+证据目录 `/temp/codex/steerbox-validation/event-path-20261122/`：
+`identity-red.log`、`paths-red.log`、`focused-green.log`、`full-test.log`、
+`directory-sync-mutant-red.log`、`directory-sync-restored-green.log`、
+`clippy.log`、`build.log` 及 `RECEIPT.md`；审核和提交/合入状态以收据为准。
+该目录 `baseline.log` 实际含 helper 增量，991 passed，不冒称纯基线结果。
+
+以下为先前三 store 安全 I/O 片的验收：
 
 2026-11-22 主仓 `bc17025` baseline 补跑：959 passed / 0 failed / 0 ignored，退出码 0；
 证据为 `/temp/codex/steerbox-validation/runtime-recovery-20261122/baseline-dev-tests.log`

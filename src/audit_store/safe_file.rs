@@ -1,4 +1,3 @@
-use super::AuditStoreError;
 use std::fs::File;
 use std::io;
 use std::path::Path;
@@ -12,7 +11,7 @@ use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
 #[cfg(unix)]
 use std::path::Component;
 
-pub(super) struct AuditParent {
+pub(crate) struct AuditParent {
     #[cfg(unix)]
     directory: File,
     #[cfg(unix)]
@@ -27,7 +26,7 @@ struct ParsedPath {
 }
 
 #[cfg(unix)]
-fn parse_path(path: &Path) -> Result<ParsedPath, AuditStoreError> {
+fn parse_path(path: &Path) -> io::Result<ParsedPath> {
     let bytes = path.as_os_str().as_bytes();
     let basename = bytes
         .rsplit(|byte| *byte == b'/')
@@ -67,7 +66,7 @@ fn parse_path(path: &Path) -> Result<ParsedPath, AuditStoreError> {
 
 #[cfg(unix)]
 impl AuditParent {
-    pub(super) fn open(path: &Path, create: bool) -> Result<Option<Self>, AuditStoreError> {
+    pub(crate) fn open(path: &Path, create: bool) -> io::Result<Option<Self>> {
         Self::open_with_sync(path, create, File::sync_all)
     }
 
@@ -75,7 +74,7 @@ impl AuditParent {
         path: &Path,
         create: bool,
         mut sync: impl FnMut(&File) -> io::Result<()>,
-    ) -> Result<Option<Self>, AuditStoreError> {
+    ) -> io::Result<Option<Self>> {
         let parsed = parse_path(path)?;
         let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
         let anchor = if parsed.absolute { c"/" } else { c"." };
@@ -124,7 +123,7 @@ impl AuditParent {
         }))
     }
 
-    pub(super) fn open_append(&self) -> Result<File, AuditStoreError> {
+    pub(crate) fn open_append(&self) -> io::Result<File> {
         let flags = libc::O_WRONLY
             | libc::O_CREAT
             | libc::O_APPEND
@@ -137,7 +136,7 @@ impl AuditParent {
         Ok(file)
     }
 
-    pub(super) fn open_read(&self) -> Result<Option<File>, AuditStoreError> {
+    pub(crate) fn open_read(&self) -> io::Result<Option<File>> {
         let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
         let file = match open_at(&self.directory, &self.name, flags, 0) {
             Ok(file) => file,
@@ -148,8 +147,10 @@ impl AuditParent {
         Ok(Some(file))
     }
 
-    pub(super) fn sync_directory(&self) -> io::Result<()> {
-        self.directory.sync_all()
+    pub(crate) fn sync_directory(&self) -> io::Result<()> {
+        self.directory
+            .sync_all()
+            .map_err(|error| io_error("parent directory sync", error))
     }
 }
 
@@ -173,10 +174,16 @@ fn open_at(
 }
 
 #[cfg(unix)]
-fn validate_file(file: &File) -> Result<(), AuditStoreError> {
+fn validate_file(file: &File) -> io::Result<()> {
     let metadata = file
         .metadata()
         .map_err(|error| io_error("file metadata", error))?;
+    if metadata.is_dir() {
+        return Err(io_error(
+            "file validation",
+            io::ErrorKind::IsADirectory.into(),
+        ));
+    }
     if !metadata.is_file() || metadata.nlink() != 1 {
         return Err(io_error(
             "file validation",
@@ -188,27 +195,31 @@ fn validate_file(file: &File) -> Result<(), AuditStoreError> {
 
 #[cfg(not(unix))]
 impl AuditParent {
-    pub(super) fn open(_: &Path, _: bool) -> Result<Option<Self>, AuditStoreError> {
+    pub(crate) fn open(_: &Path, _: bool) -> io::Result<Option<Self>> {
         Err(io_error("parent open", io::ErrorKind::Unsupported.into()))
     }
 
-    pub(super) fn open_append(&self) -> Result<File, AuditStoreError> {
+    pub(crate) fn open_append(&self) -> io::Result<File> {
         Err(io_error("file open", io::ErrorKind::Unsupported.into()))
     }
 
-    pub(super) fn open_read(&self) -> Result<Option<File>, AuditStoreError> {
+    pub(crate) fn open_read(&self) -> io::Result<Option<File>> {
         Err(io_error("file open", io::ErrorKind::Unsupported.into()))
     }
 
-    pub(super) fn sync_directory(&self) -> io::Result<()> {
-        Err(io::ErrorKind::Unsupported.into())
+    pub(crate) fn sync_directory(&self) -> io::Result<()> {
+        Err(io_error(
+            "parent directory sync",
+            io::ErrorKind::Unsupported.into(),
+        ))
     }
 }
 
-fn io_error(stage: &str, error: io::Error) -> AuditStoreError {
-    AuditStoreError::Io {
-        message: format!("audit {stage} failed: {:?}", error.kind()),
-    }
+fn io_error(stage: &str, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("audit {stage} failed: {:?}", error.kind()),
+    )
 }
 
 #[cfg(all(test, unix))]
@@ -218,6 +229,41 @@ mod tests {
     use std::io::Write;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn directory_leaf_rejection_preserves_is_a_directory_kind() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("directory");
+        fs::create_dir(&path).unwrap();
+        let parent = AuditParent::open(&path, false).unwrap().unwrap();
+        assert_eq!(
+            parent.open_read().unwrap_err().kind(),
+            io::ErrorKind::IsADirectory
+        );
+        assert_eq!(
+            parent.open_append().unwrap_err().kind(),
+            io::ErrorKind::IsADirectory
+        );
+    }
+
+    #[test]
+    fn parent_sync_failure_preserves_kind_without_original_detail() {
+        let root = tempfile::tempdir().unwrap();
+        let error = AuditParent::open_with_sync(&root.path().join("log"), true, |_| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "synthetic private sync detail",
+            ))
+        })
+        .err()
+        .expect("directory sync error must propagate");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "audit parent directory sync failed: PermissionDenied"
+        );
+        assert!(!format!("{error:?}").contains("synthetic private sync detail"));
+    }
 
     #[test]
     fn pinned_parent_rename_does_not_redirect_leaf_access() {
@@ -333,5 +379,31 @@ mod tests {
         );
         parent.open_append().unwrap();
         parent.sync_directory().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn sanitized_io_errors_preserve_kind_and_stage_only() {
+        for kind in [
+            io::ErrorKind::InvalidInput,
+            io::ErrorKind::IsADirectory,
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::Unsupported,
+        ] {
+            let error = io_error(
+                "file open",
+                io::Error::new(kind, "synthetic private path detail"),
+            );
+            assert_eq!(error.kind(), kind);
+            assert_eq!(
+                error.to_string(),
+                format!("audit file open failed: {kind:?}")
+            );
+            assert!(!format!("{error:?}").contains("synthetic private path detail"));
+        }
     }
 }

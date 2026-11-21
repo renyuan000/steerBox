@@ -7,7 +7,7 @@ use std::path::Path;
 use thiserror::Error;
 
 mod safe_file;
-use safe_file::AuditParent;
+pub(crate) use safe_file::AuditParent;
 
 #[derive(Debug, Error)]
 pub enum AuditStoreError {
@@ -367,9 +367,10 @@ pub fn append_jsonl<T: Serialize>(
         line: 0,
         message: error.to_string(),
     })?;
-    let parent = AuditParent::open(path.as_ref(), true)?
+    let parent = AuditParent::open(path.as_ref(), true)
+        .map_err(io_error)?
         .ok_or_else(|| append_io_error("parent open", std::io::ErrorKind::NotFound.into()))?;
-    let mut file = parent.open_append()?;
+    let mut file = parent.open_append().map_err(io_error)?;
     append_with_directory(&mut file, &encoded, || parent.sync_directory())
 }
 
@@ -416,10 +417,10 @@ fn for_each_jsonl<T: for<'de> Deserialize<'de>>(
     path: impl AsRef<Path>,
     mut visit: impl FnMut(T),
 ) -> Result<(), AuditStoreError> {
-    let Some(parent) = AuditParent::open(path.as_ref(), false)? else {
+    let Some(parent) = AuditParent::open(path.as_ref(), false).map_err(io_error)? else {
         return Ok(());
     };
-    let Some(file) = parent.open_read()? else {
+    let Some(file) = parent.open_read().map_err(io_error)? else {
         return Ok(());
     };
     let reader = BufReader::new(file);
@@ -455,6 +456,21 @@ fn io_error(error: std::io::Error) -> AuditStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_file_error_adapter_preserves_existing_audit_stage_text() {
+        let error = AuditParent::open(Path::new("../synthetic-private-path/log"), false)
+            .err()
+            .expect("parent traversal must be rejected");
+        let adapted = io_error(error);
+        assert!(matches!(
+            adapted,
+            AuditStoreError::Io { ref message }
+                if message == "audit path validation failed: InvalidInput"
+        ));
+        assert!(!format!("{adapted:?}").contains("synthetic-private-path"));
+    }
 
     #[derive(Default)]
     struct AppendProbe {

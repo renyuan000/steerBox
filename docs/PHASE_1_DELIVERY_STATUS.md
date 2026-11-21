@@ -2,6 +2,22 @@
 
 ## 定位与证据边界
 
+2026-11-22 EventLog 安全 I/O 增量（基线 `76f31dc`）：五入口实现及回归通过。
+`open`、append、全量/分页查询、run identity 查询均接安全目录 fd 原语；
+逐组件 NOFOLLOW、同 fd regular/nlink 校验，缺失查询不创建节点。
+追加须完整记录与 LF、文件同步、pinned parent 同步均成功后才推进序号并 ACK；
+失败可能已写出字节，不自动回滚或盲重试。保留只读历史、UTF-8、尾行、
+identity 全扫描及分页短路语义；零 limit 无 I/O，非 Unix 实际 I/O fail-closed。
+`open`/append 同步整条既有目录链，成本未测。MAX 写后溢出仅特征测试，未修复；
+共享 audit 读取目录的错误文本 kind 改为 `IsADirectory`，拒绝行为不变。
+定向 209、全量 1022 项通过，严格 all-targets Clippy、lib/bin build、fmt/diff 通过；
+目录同步缺失的定点 mutant 2 项失败，精确恢复后通过。独立审核、提交与合入复验
+见 `/temp/codex/steerbox-validation/event-path-20261122/RECEIPT.md`。
+此片不提供生命周期身份固定、多写者协调、跨 store 事务或持久续跑；model/tool、
+真实锁文件、RunSummary、State/workspace 替换端仍须独立验收。Phase 1 未完成，不放开 live 写 CLI。
+
+以下三 store 条目保留其独立历史范围，不将其测试数字外推至 EventLog 增量：
+
 2026-11-22 checkpoint/side-effect/trace 安全 I/O 增量（基线 `bc17025`）：限定切片已验收。
 三 store 共享 JSONL 追加与历史读取使用 dirfd-relative 逐组件 NOFOLLOW 打开，
 同一 fd 验证 regular file 与 nlink=1；每次追加写前同步遍历目录链（含既有目录），
