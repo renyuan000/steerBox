@@ -1,5 +1,27 @@
 # Phase 1 Validation Plan
 
+## 2026-11-22 ApprovalStore A1（限定增量，验证受限）
+
+基线 `ee87518`。普通文件兼容、真实进程锁竞争/锁内重载与私有 FD 故障测试
+分别记录结果，不把测试已编写或共享 helper 已通过外推为审批入口已完整验收。
+故障范围为 partial write、完整写入后报错、文件同步失败、parent 同步失败；
+检查短路顺序、缓存不提前推进，以及完整 Consumed 可读后的同实例/重开重试
+不再授权、不再追加。成功路径检查真实 inode/fd 和临时 parent rename+witness。
+这些只覆盖当前可读字节的判定，不证明 OS 掉电持久性或跨 store 事务。
+
+最终定向48项、真实FD5项通过；process4项默认并行连续30轮通过。
+省略真实锁与锁内重载的mutant各0通过/1失败，省略parent同步为3通过/2失败；
+三处精确恢复后复验通过。一次持锁测试在drop后收到BUSY，测试最小修正为
+显式unlock后再RETRY，不增加延时或业务重试，不改变生产锁行为。
+全量85个harness/1164项通过，0失败/跳过；严格all-targets Clippy、
+实际lib/bin build、fmt/diff通过。限定规格、安全及文档审核无剩余阻断。
+
+扩展特殊路径矩阵、FIFO、真实降权权限验证被审批层拒绝，尚未实施和验收；
+不以既有 symlink 回归或共享 helper 测试替代。最终专项、mutant 恢复复验、
+全量、Clippy/build/fmt/diff 与审核状态分别以实际证据为准，详见
+`/temp/codex/steerbox-validation/approval-path-20261122/RECEIPT.md`。
+不开放 live mutation，不验收完整恢复或 Phase 1。
+
 ## 2026-11-22 恢复检查 RDI1（限定诊断切片已验收）
 
 基线 `75cdb2e`。首批黑盒旧 CLI RED 为0通过/6失败，均为 unsupported command；

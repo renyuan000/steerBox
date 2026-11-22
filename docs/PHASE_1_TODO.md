@@ -32,7 +32,10 @@ RDI1（基线 `75cdb2e`）：`recovery inspect` 有界安全读取、坏尾/sche
 内存 loop/step 重建及可选 State 比较已实现；无修复/续跑，验证/审核见 `PHASE_1_VALIDATION_PLAN.md`
 及外置 `recovery-inspect-20261122/RECEIPT.md`。独立审核、全量82个harness/1148项、
 严格Clippy/build/fmt/diff通过。后续补请求/工具/副作用/快照对账与完整恢复输入。
-不代表审批及其余真实锁文件或 State/workspace 替换端已完成验收，
+ApprovalStore A1（基线 `ee87518`）限定 I/O 增量已实现，验证范围受限；
+特殊路径/FIFO/真实降权权限专项仍未获准验收，不能勾选为完整收口。
+实际结果见 `APPROVAL_STORE_IO.md`、验证计划及外置 A1 收据。
+不代表审批完整专项、其余真实锁文件或 State/workspace 替换端已完成验收，
 也不放开 live 写 CLI。具体检查点见 `CRASH_RECOVERY_BOUNDARIES.md`。
 
 ### 既有交付任务包（2026-10-31）
@@ -122,7 +125,7 @@ RDI1（基线 `75cdb2e`）：`recovery inspect` 有界安全读取、坏尾/sche
 - [x] ToolCallRecordStore T1（基线 `4fe81d9`）：tool JSONL/真实锁安全 I/O、实际fd owner/mode与持锁file/parent ACK已通过独立审核、全量1079项及严格Clippy/build/fmt；metadata-only构造不构成anchored身份保证，O_WRONLY变化已明确，不扫历史/不去重，无尾修/事务/fencing/完整恢复；提交/合入状态见交付收据
 - [x] RunSummary R1（基线 `d78fa6f`）：普通JSON安全原位覆盖/读取限定切片已验收，79个harness/1097项及严格Clippy/build/fmt/diff通过；保留inode/owner/mode、pretty无LF、缺失Io与InvalidJson line0，不做UID/owner-only拒绝；验证fd后才截断，file/parent同步后ACK。非atomic/无锁/重试/恢复，parent可读与整链同步成本边界已记录；提交/合入及后续复验状态见交付收据
 - [x] UserCommandInbox I1（基线 `d271f7c`）：安全读取/完整JSON+LF追加、同fd与pinned parent ACK；独立审核及全量1122项、严格Clippy/build/fmt/diff通过，提交/合入见交付收据；不新增锁/并发原子判重/尾修，同intent公开重试不重新sync，不保证Applied事务或完整恢复
-- [ ] 补齐其余实际 runtime I/O：审批及其余真实锁文件、State/workspace 替换端仍须独立验收；M1/T1/R1/I1 不能单独解除 live 写 CLI 的安全阻断
+- [ ] 补齐其余实际 runtime I/O：审批 A1 仅完成限定实现/验证范围，扩展特殊路径、FIFO 与真实降权权限专项仍未验收；其余真实锁及 State/workspace 替换端仍须独立验收，各已交付切片不能单独解除 live 写 CLI 的安全阻断
 - [ ] 只读崩溃恢复检查、持久 TaskRun/Attempt/预算/授权输入与对账式受控续跑；不以 inbox Resume、顺序 reopen 或显式单文件 restore 冒充进程重启恢复
 - [x] 实现从 EventLog 重建 loop/step current state 的最小 StateStore fixture
 - [x] 实现 StateStore JSON 持久化与 reopen 恢复测试

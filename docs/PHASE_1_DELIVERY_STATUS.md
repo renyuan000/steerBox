@@ -2,6 +2,17 @@
 
 ## 定位与证据边界
 
+2026-11-22 ApprovalStore A1（基线 `ee87518`）：审批历史及真实 `.lock` 的限定
+安全 I/O 增量已实现。单次操作在同一 pinned parent 下 try-lock、全量重载并追加，
+新记录经完整 JSON+LF、同 fd 文件同步和 parent 同步后确认；保留审批范围、
+消费、幂等及历史兼容语义，不扩展授权。扩展特殊路径/FIFO/真实降权权限专项
+被拒绝、未验收，不称完整 A1。合同见 `APPROVAL_STORE_IO.md`。
+本轮验证：全量85个harness/1164项、0失败/跳过，严格all-targets Clippy、
+实际lib/bin build、fmt/diff通过；限定规格、安全与文档审核无剩余阻断。
+提交及合入状态见 `PHASE_1_VALIDATION_PLAN.md` 与外置
+`approval-path-20261122/RECEIPT.md`。不解除 live mutation 门禁，
+不代表 State/workspace 写端或完整恢复已完成；Phase 1 未完成。
+
 2026-11-22 恢复检查 RDI1（基线 `75cdb2e`）：限定诊断切片已通过独立审核与全量验证，独立零写入入口
 `recovery inspect <events.jsonl> [--state <state.json>]` 已实现，只诊断事件封口、schema、
 连续序号与 loop/step 投影，并在完整重建后可选比较 State。固定状态/计数/位置报告不回显正文、

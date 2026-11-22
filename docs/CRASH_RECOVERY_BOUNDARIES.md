@@ -1,6 +1,7 @@
 # 崩溃恢复：当前证据与实施边界
 
 核查日期：2026-11-22。只读恢复检查 RDI1 基线 `75cdb2e`，事件/State 诊断切片已实现；
+ApprovalStore A1 基线 `ee87518`，限定 I/O 增量已实现，验证受限，非完整收口；
 UserCommandInbox I1 基线 `d271f7c`，限定切片已验收；
 RunSummary R1 基线 `d78fa6f`，限定切片已验收；
 ToolCallRecordStore T1 基线 `4fe81d9`，限定切片已通过独立审核与全量验证；
@@ -30,6 +31,18 @@ EventLog 安全 I/O 增量基线 `76f31dc`；
 源码依据：`src/event_log.rs`、`src/model_call_store.rs`、`src/tool_call_store.rs`、`src/state_store.rs`、`src/audit_store.rs`、
 `src/workspace_snapshot.rs`、`src/loop_controller.rs`、`src/provider_runner.rs`、`src/user_command_inbox.rs`。
 CLI 的 execution 查询和运行中 inbox Resume 不是进程重启后的恢复入口。
+
+## ApprovalStore A1（限定增量，验证受限）
+
+审批数据与真实 `.lock` 使用同一 pinned parent；try-lock 后重载完整历史，
+新记录经 JSON+LF、同 fd 文件及 parent 同步后确认。Once 消费失败可能已留下
+完整 Consumed；后续必须重新读取，不得凭旧内存 Approved 再次授权或自动回滚。
+审批范围、幂等与 controller 写前审计/preflight 顺序不变。
+
+本轮特殊路径/FIFO/真实降权权限专项被拒绝、未验收，普通文件故障结果另见
+`APPROVAL_STORE_IO.md`、验证计划与 A1 收据。此片不构成授权恢复、fencing、
+跨 store 事务或任务续跑，不防非合作写者替换数据/锁条目，不解除 live mutation
+门禁；Phase 1 未完成。
 
 ## 零写入恢复诊断 RDI1（2026-11-22）
 
@@ -270,7 +283,7 @@ controller 在写前记录 checkpoint，执行文件编辑后再记录完成事�
    三 store 与 EventLog 的安全打开、历史读取及目录同步已逐片实现并测试，不能替代其余路径验收。
    ModelCallStore 成败记录及两锁的 M1 已通过独立审核与全量验证；其余门禁不因此解除。
    ToolCallRecordStore T1 已通过独立审核与全量验证，不能代替剩余路径验收。
-   RunSummary R1 限定切片已验收；Inbox I1 范围及验收见上节，审批及其余真实锁仍须独立核查。
+   RunSummary R1 限定切片已验收；Inbox I1 范围及验收见上节，审批 A1 仅完成限定增量，未覆盖专项及其余真实锁仍须独立核查。
    State/实际 workspace edit 的替换端也要独立验收。
    仅末级 NOFOLLOW 或 metadata 预检不等于父路径安全，更不等于抵御任意同 UID 恶意进程。
 2. **只读恢复检查器**：RDI1 已实现有界 events/State 投影诊断，见上节；
