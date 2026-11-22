@@ -2,6 +2,23 @@
 
 ## 定位与证据边界
 
+2026-11-22 ModelCallStore M1（基线 `0a1ca50`）：限定切片已通过独立审核与全量验证。
+成功/failure JSONL 及两实际锁接安全目录 fd，逐组件 NOFOLLOW、同 fd regular/nlink 校验；
+同一 pinned parent 派生锁与数据，持锁至完整追加、文件同步与最终 parent 同步后 ACK。
+identical retry 完整扫描后同步原 history read fd 与 parent，不新增记录、不改字节。
+`open` 的父目录准备同步整条既有目录链；后续操作不重做整链，只做最终 parent 屏障。
+查询仍建 RW lock，零页先锁后跳过数据；保留页前解析/contract 校验与双历史 identity 全扫描。
+新目录 0700、新数据/锁 0600；非 Unix 实际 I/O fail-closed，性能未测。
+不防锁 sidecar 替换、锁无 timeout，不修尾行、不提供事务或完整恢复；其他 runtime I/O、
+恢复器、真实 provider/live 写与 Phase 1 门禁不变。完整无 LF 尾行后追加不同记录仍可拼接损坏，
+本片仅刻画而未修复。最终全量 77 个 harness、1061 项通过，0 失败/跳过，严格 all-targets
+Clippy、lib/bin build、fmt/diff 通过；新增 helper 6 项、模型库 12 项、路径专项 21 个入口
+（含 3 个子进程 probe）。两个定点 mutant 均被回归拦截，精确恢复后通过；独立规格、质量和
+文档审核无剩余阻断。日志与提交/合入复验以
+`/temp/codex/steerbox-validation/model-store-path-20261122/RECEIPT.md` 为准。Phase 1 未完成。
+
+以下保留 EventLog 和三 store 的独立历史范围与计数，不外推为 M1 验收结果：
+
 2026-11-22 EventLog 安全 I/O 增量（基线 `76f31dc`）：五入口实现及回归通过。
 `open`、append、全量/分页查询、run identity 查询均接安全目录 fd 原语；
 逐组件 NOFOLLOW、同 fd regular/nlink 校验，缺失查询不创建节点。

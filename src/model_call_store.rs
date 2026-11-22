@@ -1,7 +1,8 @@
+use crate::audit_store::AuditParent;
 use crate::model_contracts::{ModelCallFailureRecord, ModelCallRecord, ModelContractError};
 use serde_json::Error as JsonError;
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -33,9 +34,8 @@ pub struct ModelCallStore {
 impl ModelCallStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ModelCallStoreError> {
         let path = path.as_ref().to_path_buf();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        AuditParent::open(&path, true)?
+            .ok_or_else(|| model_io_error("parent open", io::ErrorKind::NotFound.into()))?;
         let failure_path = Self::storage_paths_for(&path)[1].clone();
         Ok(Self { path, failure_path })
     }
@@ -67,10 +67,21 @@ impl ModelCallStore {
     /// Validate identifiers, cost and field schema before serialization or log
     /// creation. This does not scan arbitrary string values for credentials.
     pub fn append(&self, record: &ModelCallRecord) -> Result<(), ModelCallStoreError> {
+        self.append_with_io(record, &mut ModelStoreDisk)
+    }
+
+    fn append_with_io(
+        &self,
+        record: &ModelCallRecord,
+        io: &mut impl ModelStoreIo,
+    ) -> Result<(), ModelCallStoreError> {
         record.validate()?;
-        let _lock = self.acquire_lock()?;
+        let (parent, _lock) = self.acquire_lock(false)?;
+        io.after_lock()
+            .map_err(|error| model_io_error("locked operation", error))?;
+        let history = parent.open_read()?;
         let mut identical_match = false;
-        for existing in self.read_all_unlocked()? {
+        for existing in Self::read_all_unlocked(history.as_ref())? {
             if existing.model_call_id == record.model_call_id {
                 if existing == *record {
                     identical_match = true;
@@ -80,21 +91,26 @@ impl ModelCallStore {
             }
         }
         if identical_match {
-            return Ok(());
+            // Sync the exact history fd that was validated, including on a
+            // retry after readable bytes were left by an uncertain append.
+            return confirm_durable(
+                history.as_ref().expect("matching history was opened"),
+                &parent,
+                io,
+            );
         }
-        let encoded = serde_json::to_string(record)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        writeln!(file, "{encoded}")?;
-        file.sync_data()?;
-        Ok(())
+        let mut encoded = serde_json::to_vec(record)?;
+        encoded.push(b'\n');
+        let mut file = parent.open_append()?;
+        io.write(&mut file, &encoded)
+            .map_err(|error| model_io_error("append write", error))?;
+        confirm_durable(&file, &parent, io)
     }
 
     pub fn read_all(&self) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
-        let _lock = self.acquire_lock()?;
-        self.read_all_unlocked()
+        let (parent, _lock) = self.acquire_lock(false)?;
+        let file = parent.open_read()?;
+        Self::read_all_unlocked(file.as_ref())
     }
 
     /// Append a provider invocation failure without inventing unavailable
@@ -103,10 +119,21 @@ impl ModelCallStore {
         &self,
         record: &ModelCallFailureRecord,
     ) -> Result<(), ModelCallStoreError> {
+        self.append_failure_with_io(record, &mut ModelStoreDisk)
+    }
+
+    fn append_failure_with_io(
+        &self,
+        record: &ModelCallFailureRecord,
+        io: &mut impl ModelStoreIo,
+    ) -> Result<(), ModelCallStoreError> {
         record.validate()?;
-        let _lock = self.acquire_failure_lock()?;
+        let (parent, _lock) = self.acquire_lock(true)?;
+        io.after_lock()
+            .map_err(|error| model_io_error("locked operation", error))?;
+        let history = parent.open_read()?;
         let mut identical_match = false;
-        for existing in self.read_failures_unlocked()? {
+        for existing in Self::read_failures_unlocked(history.as_ref())? {
             if existing.model_call_id == record.model_call_id {
                 if existing == *record {
                     identical_match = true;
@@ -116,28 +143,33 @@ impl ModelCallStore {
             }
         }
         if identical_match {
-            return Ok(());
+            return confirm_durable(
+                history.as_ref().expect("matching history was opened"),
+                &parent,
+                io,
+            );
         }
-        let encoded = serde_json::to_string(record)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.failure_path)?;
-        writeln!(file, "{encoded}")?;
-        file.sync_data()?;
-        Ok(())
+        let mut encoded = serde_json::to_vec(record)?;
+        encoded.push(b'\n');
+        let mut file = parent.open_append()?;
+        io.write(&mut file, &encoded)
+            .map_err(|error| model_io_error("append write", error))?;
+        confirm_durable(&file, &parent, io)
     }
 
     pub fn read_failures(&self) -> Result<Vec<ModelCallFailureRecord>, ModelCallStoreError> {
-        let _lock = self.acquire_failure_lock()?;
-        self.read_failures_unlocked()
+        let (parent, _lock) = self.acquire_lock(true)?;
+        let file = parent.open_read()?;
+        Self::read_failures_unlocked(file.as_ref())
     }
 
-    fn read_failures_unlocked(&self) -> Result<Vec<ModelCallFailureRecord>, ModelCallStoreError> {
-        if !self.failure_path.exists() {
+    fn read_failures_unlocked(
+        file: Option<&File>,
+    ) -> Result<Vec<ModelCallFailureRecord>, ModelCallStoreError> {
+        let Some(file) = file else {
             return Ok(Vec::new());
-        }
-        let reader = BufReader::new(File::open(&self.failure_path)?);
+        };
+        let reader = BufReader::new(file);
         reader
             .lines()
             .enumerate()
@@ -159,16 +191,16 @@ impl ModelCallStore {
                             Ok(record)
                         }),
                 ),
-                Err(error) => Some(Err(ModelCallStoreError::Io(error))),
+                Err(error) => Some(Err(model_io_error("history read", error).into())),
             })
             .collect()
     }
 
-    fn read_all_unlocked(&self) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
-        if !self.path.exists() {
+    fn read_all_unlocked(file: Option<&File>) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
+        let Some(file) = file else {
             return Ok(Vec::new());
-        }
-        let reader = BufReader::new(File::open(&self.path)?);
+        };
+        let reader = BufReader::new(file);
         reader
             .lines()
             .enumerate()
@@ -190,7 +222,7 @@ impl ModelCallStore {
                             Ok(record)
                         }),
                 ),
-                Err(error) => Some(Err(ModelCallStoreError::Io(error))),
+                Err(error) => Some(Err(model_io_error("history read", error).into())),
             })
             .collect()
     }
@@ -202,19 +234,14 @@ impl ModelCallStore {
     ) -> Result<bool, ModelCallStoreError> {
         // Per-file read locks are not an atomic claim across the run history set.
         let mut found = false;
-        for (path, failure) in [(&self.path, false), (&self.failure_path, true)] {
-            let _lock = if failure {
-                self.acquire_failure_lock()?
-            } else {
-                self.acquire_lock()?
-            };
-            let file = match File::open(path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error.into()),
+        for failure in [false, true] {
+            let (parent, _lock) = self.acquire_lock(failure)?;
+            let file = match parent.open_read()? {
+                Some(file) => file,
+                None => continue,
             };
             for (index, line) in BufReader::new(file).lines().enumerate() {
-                let line = line?;
+                let line = line.map_err(|error| model_io_error("history read", error))?;
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -249,24 +276,20 @@ impl ModelCallStore {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
-        let _lock = self.acquire_lock()?;
-        self.read_page_unlocked(offset, limit)
-    }
-
-    fn read_page_unlocked(
-        &self,
-        offset: usize,
-        limit: usize,
-    ) -> Result<Vec<ModelCallRecord>, ModelCallStoreError> {
+        let (parent, _lock) = self.acquire_lock(false)?;
         let mut records = Vec::new();
-        if limit == 0 || !self.path.exists() {
+        // Query locks are intentional, even for a zero page. Do not open the
+        // data leaf after that short circuit.
+        if limit == 0 {
             return Ok(records);
         }
-
-        let reader = BufReader::new(File::open(&self.path)?);
+        let Some(file) = parent.open_read()? else {
+            return Ok(records);
+        };
+        let reader = BufReader::new(file);
         let mut record_index = 0usize;
         for (line_index, line) in reader.lines().enumerate() {
-            let line = line.map_err(ModelCallStoreError::Io)?;
+            let line = line.map_err(|error| model_io_error("history read", error))?;
             if line.trim().is_empty() {
                 continue;
             }
@@ -296,29 +319,78 @@ impl ModelCallStore {
         Ok(records)
     }
 
-    fn acquire_lock(&self) -> Result<File, ModelCallStoreError> {
-        let mut lock_path = self.path.as_os_str().to_os_string();
-        lock_path.push(".lock");
-        let lock_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(PathBuf::from(lock_path))?;
-        lock_file.lock()?;
-        Ok(lock_file)
-    }
-
-    fn acquire_failure_lock(&self) -> Result<File, ModelCallStoreError> {
-        let mut lock_path = self.failure_path.as_os_str().to_os_string();
-        lock_path.push(".lock");
-        let lock_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(PathBuf::from(lock_path))?;
-        lock_file.lock()?;
-        Ok(lock_file)
+    fn acquire_lock(&self, failure: bool) -> Result<(AuditParent, File), ModelCallStoreError> {
+        // Missing parents remain errors after construction. Each operation
+        // pins once, then opens both the real lock and its data as siblings.
+        let mut parent = AuditParent::open(&self.path, false)?
+            .ok_or_else(|| model_io_error("parent open", io::ErrorKind::NotFound.into()))?;
+        if failure {
+            parent = parent.sibling(self.failure_path.file_name().ok_or_else(|| {
+                model_io_error("path validation", io::ErrorKind::InvalidInput.into())
+            })?)?;
+        }
+        let paths = self.storage_paths();
+        let lock_parent = parent.sibling(
+            paths[if failure { 3 } else { 2 }]
+                .file_name()
+                .ok_or_else(|| {
+                    model_io_error("path validation", io::ErrorKind::InvalidInput.into())
+                })?,
+        )?;
+        let lock = lock_parent.open_lock()?;
+        lock.lock()
+            .map_err(|error| model_io_error("lock acquire", error))?;
+        Ok((parent, lock))
     }
 }
+
+fn confirm_durable(
+    file: &File,
+    parent: &AuditParent,
+    io: &mut impl ModelStoreIo,
+) -> Result<(), ModelCallStoreError> {
+    io.sync_file(file)
+        .map_err(|error| model_io_error("append file sync", error))?;
+    io.sync_directory(parent)
+        .map_err(|error| model_io_error("append directory sync", error))?;
+    Ok(())
+}
+
+fn model_io_error(stage: &str, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("model call store {stage} failed: {:?}", error.kind()),
+    )
+}
+
+// Per-call seam: fault tests exercise the real validation/dedup/ACK control
+// flow using real files and locks, without process-wide injection settings.
+trait ModelStoreIo {
+    fn after_lock(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn write(&mut self, file: &mut File, encoded: &[u8]) -> io::Result<()>;
+    fn sync_file(&mut self, file: &File) -> io::Result<()>;
+    fn sync_directory(&mut self, parent: &AuditParent) -> io::Result<()>;
+}
+
+struct ModelStoreDisk;
+
+impl ModelStoreIo for ModelStoreDisk {
+    fn write(&mut self, file: &mut File, encoded: &[u8]) -> io::Result<()> {
+        file.write_all(encoded)
+    }
+
+    fn sync_file(&mut self, file: &File) -> io::Result<()> {
+        file.sync_data()
+    }
+
+    fn sync_directory(&mut self, parent: &AuditParent) -> io::Result<()> {
+        parent.sync_directory()
+    }
+}
+
+#[cfg(all(test, unix))]
+#[path = "model_call_store/tests.rs"]
+mod tests;

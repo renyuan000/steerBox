@@ -457,7 +457,12 @@ fn invalid_model_contracts_and_unreadable_audit_paths_fail_closed() {
                 assert_eq!(fixture.snapshot(), snapshot);
             }
         }
-        for name in ["calls.jsonl", "calls.failures.jsonl", "calls.jsonl.lock"] {
+        for name in [
+            "calls.jsonl",
+            "calls.failures.jsonl",
+            "calls.jsonl.lock",
+            "calls.failures.jsonl.lock",
+        ] {
             let fixture = Fixture::new();
             fs::create_dir(fixture.directory.path().join(name)).unwrap();
             let snapshot = fixture.snapshot();

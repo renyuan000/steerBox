@@ -70,6 +70,35 @@ impl AuditParent {
         Self::open_with_sync(path, create, File::sync_all)
     }
 
+    /// Bind another raw basename to the same pinned directory without opening it.
+    pub(crate) fn sibling(&self, name: &std::ffi::OsStr) -> io::Result<Self> {
+        let bytes = name.as_bytes();
+        if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
+            return Err(io_error(
+                "sibling validation",
+                io::ErrorKind::InvalidInput.into(),
+            ));
+        }
+        let name = CString::new(bytes)
+            .map_err(|_| io_error("sibling validation", io::ErrorKind::InvalidInput.into()))?;
+        let directory = self
+            .directory
+            .try_clone()
+            .map_err(|error| io_error("parent clone", error))?;
+        Ok(Self { directory, name })
+    }
+
+    /// Open a lock candidate without truncation; the caller acquires the lock.
+    /// This does not prevent later unlink/recreation of the directory entry.
+    pub(crate) fn open_lock(&self) -> io::Result<File> {
+        let flags =
+            libc::O_RDWR | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+        let file = open_at(&self.directory, &self.name, flags, 0o600)
+            .map_err(|error| io_error("lock file open", error))?;
+        validate_file(&file)?;
+        Ok(file)
+    }
+
     fn open_with_sync(
         path: &Path,
         create: bool,
@@ -199,6 +228,17 @@ impl AuditParent {
         Err(io_error("parent open", io::ErrorKind::Unsupported.into()))
     }
 
+    pub(crate) fn sibling(&self, _: &std::ffi::OsStr) -> io::Result<Self> {
+        Err(io_error("sibling open", io::ErrorKind::Unsupported.into()))
+    }
+
+    pub(crate) fn open_lock(&self) -> io::Result<File> {
+        Err(io_error(
+            "lock file open",
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+
     pub(crate) fn open_append(&self) -> io::Result<File> {
         Err(io_error("file open", io::ErrorKind::Unsupported.into()))
     }
@@ -226,9 +266,136 @@ fn io_error(stage: &str, error: io::Error) -> io::Error {
 mod tests {
     use super::*;
     use std::fs;
-    use std::io::Write;
+    use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+
+    #[test]
+    fn sibling_rejects_non_basename_without_creating_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = AuditParent::open(&root.path().join("log"), false)
+            .unwrap()
+            .unwrap();
+        for bytes in [
+            b"".as_slice(),
+            b".",
+            b"..",
+            b"/absolute",
+            b"nested/file",
+            b"file/",
+            b"bad\0name",
+        ] {
+            let error = parent
+                .sibling(std::ffi::OsStr::from_bytes(bytes))
+                .err()
+                .expect("only a single raw basename is allowed");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(!error.to_string().contains("bad"));
+        }
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn sibling_keeps_pinned_parent_after_original_directory_is_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("original");
+        fs::create_dir(&original).unwrap();
+        let parent = AuditParent::open(&original.join("log.jsonl"), false)
+            .unwrap()
+            .unwrap();
+        let moved = root.path().join("moved");
+        fs::rename(&original, &moved).unwrap();
+        fs::create_dir(&original).unwrap();
+        let lock_parent = parent.sibling(std::ffi::OsStr::new("log.lock")).unwrap();
+        let failure_parent = parent
+            .sibling(std::ffi::OsStr::new("log.failures.jsonl"))
+            .unwrap();
+        drop(parent);
+        lock_parent.open_lock().unwrap();
+        failure_parent.open_append().unwrap();
+        assert!(moved.join("log.lock").is_file());
+        assert!(moved.join("log.failures.jsonl").is_file());
+        assert_eq!(fs::read_dir(&original).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn sibling_preserves_non_utf8_basename_without_creating_it() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = AuditParent::open(&root.path().join("log"), false)
+            .unwrap()
+            .unwrap();
+        let name = std::ffi::OsStr::from_bytes(b".lock-\xff");
+        let sibling = parent.sibling(name).unwrap();
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+        sibling.open_lock().unwrap();
+        assert!(root.path().join(name).is_file());
+    }
+
+    #[test]
+    fn lock_open_creates_private_read_write_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("log.lock");
+        let parent = AuditParent::open(&path, false).unwrap().unwrap();
+        let mut file = parent.open_lock().unwrap();
+        assert_eq!(file.metadata().unwrap().mode() & 0o177, 0);
+        file.write_all(b"lock fixture").unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"lock fixture");
+    }
+
+    #[test]
+    fn lock_open_preserves_existing_inode_owner_mode_and_bytes_without_append() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("log.lock");
+        fs::write(&path, b"original lock").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        let before = path.metadata().unwrap();
+        let parent = AuditParent::open(&path, false).unwrap().unwrap();
+        let mut file = parent.open_lock().unwrap();
+        let after = file.metadata().unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
+        assert_eq!(after.mode(), before.mode());
+        assert_eq!(fs::read(&path).unwrap(), b"original lock");
+        file.write_all(b"X").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"Xriginal lock");
+    }
+
+    #[test]
+    fn lock_open_rejects_symlinks_hardlinks_and_directories_without_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        fs::write(&target, b"synthetic private lock fixture").unwrap();
+        let target_before = target.metadata().unwrap();
+        let linked = root.path().join("symlink.lock");
+        symlink(&target, &linked).unwrap();
+        let dangling = root.path().join("dangling.lock");
+        let missing = root.path().join("missing");
+        symlink(&missing, &dangling).unwrap();
+        let hardlink = root.path().join("hardlink.lock");
+        fs::hard_link(&target, &hardlink).unwrap();
+        let directory = root.path().join("directory.lock");
+        fs::create_dir(&directory).unwrap();
+        for path in [&linked, &dangling, &hardlink, &directory] {
+            let parent = AuditParent::open(path, false).unwrap().unwrap();
+            let error = parent.open_lock().unwrap_err();
+            assert_ne!(error.kind(), io::ErrorKind::Unsupported);
+            assert!(!error.to_string().contains("synthetic private"));
+        }
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            b"synthetic private lock fixture"
+        );
+        let target_after = target.metadata().unwrap();
+        assert_eq!(target_after.ino(), target_before.ino());
+        assert_eq!(target_after.mode(), target_before.mode());
+        assert_eq!(target_after.nlink(), 2);
+        assert!(!missing.exists());
+        assert!(fs::symlink_metadata(&linked).unwrap().is_symlink());
+        assert!(directory.is_dir());
+    }
 
     #[test]
     fn directory_leaf_rejection_preserves_is_a_directory_kind() {

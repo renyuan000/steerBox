@@ -21,7 +21,9 @@ Phase 1 尚未完成。当前先逐片补齐实际 runtime I/O，再实现只读
 最后交付持久恢复输入与对账式受控续跑；supervisor/fencing 及故障演练在合法恢复判定之后。
 checkpoint/side-effect/trace 共享 JSONL 片已验收；后续 EventLog 五入口安全 I/O
 片已实现并通过专项及全量测试，审核/提交状态见交付收据。
-不代表 model、tool、真实锁文件、RunSummary 或 State/workspace 替换端已完成加固，
+ModelCallStore 成败 JSONL 及两实际锁的 M1 已通过独立审核与全量验证（1061 项）；
+最终提交/合入复验状态见交付收据。
+不代表 tool、其余真实锁文件、RunSummary 或 State/workspace 替换端已完成加固，
 也不放开 live 写 CLI。具体检查点见 `CRASH_RECOVERY_BOUNDARIES.md`。
 
 ### 既有交付任务包（2026-10-31）
@@ -107,7 +109,8 @@ checkpoint/side-effect/trace 共享 JSONL 片已验收；后续 EventLog 五入�
 - [x] 2026-11-12 审计文件同步片：checkpoint/ledger/trace 共用追加路径在完整记录及换行写入后，同一文件 `sync_data` 成功才返回；同步失败传播并阻止写前编辑，定向回归通过。该片本身不包含目录/路径加固、跨 store 事务或完整恢复，详见 `CRASH_RECOVERY_BOUNDARIES.md`
 - [x] checkpoint/ledger/trace 共享 JSONL 安全 I/O 片：逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；每次追加写前同步遍历目录链（含既有目录），完整追加后文件 `sync_data` 再父目录同步。缺失读取不创建，拒绝 symlink/hardlink/device/FIFO/`..`/无 basename 路径，非 Unix fail-closed；每次访问独立 pin，不是生命周期绑定。Linux 模块13/集成54/全量987通过；目录同步性能成本未测，详见 `CRASH_RECOVERY_BOUNDARIES.md`
 - [x] EventLog 五入口安全 I/O（基线 `76f31dc`）：安全目录 fd、同 fd regular/nlink 校验，缺失查询不创建；完整追加后文件及父目录同步，再推进序号/ACK；保留只读历史、UTF-8/尾行、identity 全扫描及分页短路。定向209/全量1022与严格Clippy/build/fmt通过；失同步不自动重试，MAX写后溢出仅记录未修复，详见 `CRASH_RECOVERY_BOUNDARIES.md`
-- [ ] 补齐其余实际 runtime I/O：model 成败记录、tool、真实锁文件、RunSummary 普通 JSON I/O 及 State/workspace 替换端仍须独立验收；本片不能单独解除 live 写 CLI 的安全阻断
+- [x] ModelCallStore M1（基线 `0a1ca50`）：成败 JSONL 与两实际锁安全 I/O 已通过独立审核、全量1061项与严格Clippy/build/fmt；同 parent 持锁至 file/parent ACK，identical retry 同步原 history read fd、不改字节。open 准备整链，操作仅最终 parent；查询仍建 RW lock，无尾修/事务/完整恢复，不防 sidecar 替换，锁无 timeout，非 Unix fail-closed，性能未测；详见交付收据
+- [ ] 补齐其余实际 runtime I/O：tool、其余真实锁文件、RunSummary 普通 JSON I/O 及 State/workspace 替换端仍须独立验收；ModelCallStore M1 不能单独解除 live 写 CLI 的安全阻断
 - [ ] 只读崩溃恢复检查、持久 TaskRun/Attempt/预算/授权输入与对账式受控续跑；不以 inbox Resume、顺序 reopen 或显式单文件 restore 冒充进程重启恢复
 - [x] 实现从 EventLog 重建 loop/step current state 的最小 StateStore fixture
 - [x] 实现 StateStore JSON 持久化与 reopen 恢复测试

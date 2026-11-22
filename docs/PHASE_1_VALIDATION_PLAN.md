@@ -1,5 +1,38 @@
 # Phase 1 Validation Plan
 
+## 2026-11-22 ModelCallStore M1（限定切片已验收）
+
+基线 `0a1ca50`。本片仅为成功/failure JSONL 与两实际 advisory lock 的安全 I/O；
+最终 `cargo test --locked --offline --all-targets` 为 77 个 harness、1061 项通过，0 失败/跳过；
+`cargo clippy --locked --offline --all-targets -- -D warnings`、
+`cargo build --locked --offline --lib --bins`、`cargo fmt --all -- --check` 和 diff 检查通过。
+Cargo 使用外置 target、`CARGO_BUILD_JOBS=1` 串行运行；独立规格/质量审核无剩余阻断。
+日志与提交/合入复验见 `/temp/codex/steerbox-validation/model-store-path-20261122/RECEIPT.md`。
+以下检查点限定于本片，不复用下方历史切片计数，也不将源码审查当作测试通过。
+
+- 实现复用逐组件 NOFOLLOW、dirfd-relative、同 fd regular/nlink=1 及非法路径守卫。
+  新增四路径专项矩阵覆盖 leaf symlink/dangling/hardlink/FIFO/directory；不把共享守卫的
+  源码审查称为四路径各自 device 或父路径全矩阵测试通过。新目录 0700、新数据/锁 0600，
+  非 Unix 实际 I/O fail-closed。
+- 同一 pinned parent 内获取真实 RW lock、扫描历史、判重并追加；锁持有至 file/parent
+  屏障返回。重命名原父目录后，用数据 inode 与目录 witness 检查没有转向 replacement。
+- 新追加为完整 JSON+LF、同 fd 文件同步、最终 pinned parent 同步后 ACK；注入部分写入、
+  文件同步和目录同步失败，检查阶段、类型、短路顺序及不自动删除/回滚留下字节。
+- 两类 identical retry 均须完整校验历史，原 history read fd 的 file/parent 屏障成功才 ACK，
+  无 write、无字节/记录变化；屏障仍失败不得提前成功。相同记录后的坏历史/冲突仍报错。
+- 保留 `open(directory)` 成功而实际数据访问报错、缺父目录操作报错、只读数据查询与
+  identical retry 可用；查询仍要求 RW lock，可创建锁 sidecar，缺失业务记录不创建 JSONL。
+  权限测试须确认执行身份实际无写权限，不能仅用 root 下 chmod 推断。
+- 分页零 limit 先锁后跳过数据；offset 前仍解析并校验，保留 UTF-8/物理行号、blank 计数及
+  页满停止。identity 完整扫描成功与失败历史，成功命中不掩盖后续 failure 损坏。
+- `open` 父目录准备同步完整链（含既有目录），后续操作不重做整链，仅最终 parent 屏障；
+  性能与锁等待成本未测。锁无 timeout，不防 sidecar unlink/替换，不宣称跨文件原子身份认领。
+
+retry 目录屏障与锁 NOFOLLOW 两个定点 mutant 均被测试拦截，精确恢复后通过。
+不新增严格 LF 尾部门禁或尾修；完整无 LF 尾 JSON 后再追加不同记录仍会拼接损坏，
+本片只加特征测试，未修复；相同记录补屏障不代表任意失败均可安全重试。
+不验收真实 provider、live 写 CLI、事务、恢复检查器或持久 TaskRun/Attempt/预算续跑。
+
 ## 2026-11-08 受限只读 provider CLI 验收
 
 基线 `034967f` 的独立 CLI 切片：master 已收取会话 82191 退出 0，

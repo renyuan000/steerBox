@@ -1,6 +1,7 @@
 # 崩溃恢复：当前证据与实施边界
 
-核查日期：2026-11-22。EventLog 安全 I/O 增量基线 `76f31dc`；
+核查日期：2026-11-22。ModelCallStore M1 增量基线 `0a1ca50`，限定切片已通过独立审核与全量验证；
+EventLog 安全 I/O 增量基线 `76f31dc`；
 三 store 安全 I/O 增量基线 `bc17025`，限定切片已验收；
 历史审计文件同步增量基线 `904606a`，EventLog 尾部门禁基线 `5923dad`，
 私有 transcript 库增量基线 `7998508`。
@@ -13,14 +14,46 @@
 | 对象 | 已实现 | 不代表什么 |
 |---|---|---|
 | EventLog | 五个实际 I/O 入口逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；完整追加后文件与父目录均同步，再推进序号与 ACK；重开完整历史后接续序号 | 每次访问独立 pin，不是生命周期身份绑定；没有跨进程单写者锁、事务或完整自动恢复；MAX 序号仍有写后溢出边界 |
+| ModelCallStore | 成败 JSONL 与两实际锁安全打开；持锁完成历史校验、判重和文件/父目录同步后 ACK；相同记录 retry 同步原历史 fd、不改字节 | 查询可创建 RW sidecar；不防锁替换，无跨文件事务、坏尾修复或完整恢复 |
 | StateStore | 从合法事件重建 loop/step 投影；临时文件同步、rename、Unix 父目录同步 | 不包含完整 TaskRun/Attempt、模型上下文、预算和租约 |
 | checkpoint / side-effect / trace | 共享 JSONL 追加/历史读取逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；目录链屏障、完整追加后文件同步再父目录同步；可查询及标记 `uncertain` | 每次访问独立 pin，不是生命周期身份绑定；无跨 store 事务、并发写者协调或完整恢复，不承诺抗 OS 掉电 |
 | workspace snapshot | 可选单文件原文快照；文件及目录同步；显式授权 restore | controller 的 snapshot binding 仍在内存，重启后不能据此直接 resume |
 | provider 身份门禁 | 拒绝顺序复用已有 run 身份 | 不证明旧请求没发送，也不证明旧动作没执行 |
 
-源码依据：`src/event_log.rs`、`src/state_store.rs`、`src/audit_store.rs`、
+源码依据：`src/event_log.rs`、`src/model_call_store.rs`、`src/state_store.rs`、`src/audit_store.rs`、
 `src/workspace_snapshot.rs`、`src/loop_controller.rs`、`src/provider_runner.rs`。
 CLI 的 execution 查询和运行中 inbox Resume 不是进程重启后的恢复入口。
+
+## ModelCallStore M1 安全 I/O（2026-11-22，限定切片已验收）
+
+范围为成功 JSONL、failure JSONL 及二者的真实 advisory lock；覆盖构造、两类追加、
+全量/分页查询与 run identity 扫描。逐组件 NOFOLLOW、dirfd-relative 打开，在同 fd
+验证 regular/nlink=1；新目录 0700、新数据和锁 0600，不强制迁移既有普通文件权限。
+`open` 只准备父目录，不打开数据或锁；保留目录 leaf 在实际读写时才报错的行为。
+每次 `open` 的父目录准备同步完整遍历链，包括既有目录；后续操作不重做整链屏障，
+而是在一次 pinned parent 内派生锁与数据 sibling，持锁完成扫描、判重和文件/父目录屏障。
+实际新追加为完整 JSON+LF → 同 fd `sync_data` → pinned parent 同步 → ACK。
+相同记录 retry 完整校验历史后，同步原 history read fd 和 pinned parent 才 ACK；
+不重新打开数据、不新增记录、不改字节。任一屏障失败均报错，可能已留下部分或完整字节。
+
+查询仍需可读写锁，可创建 sidecar；缺失业务 JSONL 返回空/false，不创建业务记录。
+零 limit 先获取安全锁，再跳过数据打开；不是 EventLog 的无 I/O 短路。
+分页仍解析并校验 offset 前的非空记录，取满 limit 后停止；identity 命中后仍扫描
+两份成败历史。保留 UTF-8、物理 JSON/contract 行号和 `.lines()` 的无 LF 尾行语义。
+已有只读数据可查询并做 identical retry，但锁仍要求 RW，新记录追加仍可能被权限拒绝。
+非 Unix 实际 I/O fail-closed，不宣称 Windows/macOS 实机验证；同步及锁等待成本未测。
+
+锁只在单次、单文件操作内有效，无 timeout；不防 sidecar 被 unlink/替换后形成不同锁，
+不提供生命周期身份绑定、跨成败/store 事务或任意同 UID 恶意修改防护。
+retry 屏障不是尾行修复，也不是自动安全重试；不补 LF、不截断、不恢复坏尾。
+完整无 LF 尾 JSON 后再追加不同记录仍会拼接损坏；本片仅用特征测试记录，未修复。
+本片不新增 provider 请求、正文采集、live 写 CLI、恢复检查器或 TaskRun/Attempt/预算续跑。
+最终库 67 项（含共享 helper 新增 6 项、模型新增 12 项），路径专项 21 个入口（含 3 个子进程
+probe），已有模型/审计/身份回归及全量 77 个 harness、1061 项通过，0 失败、0 跳过；严格
+all-targets Clippy、lib/bin build、fmt/diff 通过。retry 目录屏障 mutant 两项失败，锁 NOFOLLOW
+mutant 路径矩阵失败，精确恢复后通过；独立规格/质量与文档审核无剩余阻断。
+最终日志、提交及合入复验见 `/temp/codex/steerbox-validation/model-store-path-20261122/RECEIPT.md`。
+不外推为 Phase 1 完成或 OS/VM 掉电恢复验收。
 
 ## EventLog 安全 I/O（2026-11-22，限定切片）
 
@@ -145,6 +178,7 @@ controller 在写前记录 checkpoint，执行文件编辑后再记录完成事�
    打开后文件身份/类型校验；覆盖 event、model 成败记录、tool、checkpoint/trace/ledger
    及真实锁文件，不能遗漏失败追加和历史读取。共享审计 helper 的文件同步已补齐；
    三 store 与 EventLog 的安全打开、历史读取及目录同步已逐片实现并测试，不能替代其余路径验收。
+   ModelCallStore 成败记录及两锁的 M1 已通过独立审核与全量验证；其余门禁不因此解除。
    State/实际 workspace edit 的替换端也要独立验收。
    仅末级 NOFOLLOW 或 metadata 预检不等于父路径安全，更不等于抵御任意同 UID 恶意进程。
 2. **只读恢复检查器**：识别完整前缀/坏尾、stale state、未闭合请求/工具/副作用、缺失快照；
