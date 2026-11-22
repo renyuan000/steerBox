@@ -230,6 +230,24 @@ impl AuditParent {
         Ok(Some(file))
     }
 
+    /// Read an existing regular source for replacement, without audit's
+    /// single-link policy: publishing replaces only the selected entry.
+    pub(crate) fn open_read_for_replacement(&self) -> io::Result<File> {
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+        let file = open_at(&self.directory, &self.name, flags, 0)
+            .map_err(|error| io_error("replacement file open", error))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| io_error("replacement file metadata", error))?;
+        if !metadata.is_file() {
+            return Err(io_error(
+                "replacement file validation",
+                io::ErrorKind::InvalidInput.into(),
+            ));
+        }
+        Ok(file)
+    }
+
     pub(crate) fn sync_directory(&self) -> io::Result<()> {
         self.directory
             .sync_all()
@@ -318,6 +336,13 @@ impl AuditParent {
 
     pub(crate) fn open_read(&self) -> io::Result<Option<File>> {
         Err(io_error("file open", io::ErrorKind::Unsupported.into()))
+    }
+
+    pub(crate) fn open_read_for_replacement(&self) -> io::Result<File> {
+        Err(io_error(
+            "replacement file open",
+            io::ErrorKind::Unsupported.into(),
+        ))
     }
 
     pub(crate) fn sync_directory(&self) -> io::Result<()> {

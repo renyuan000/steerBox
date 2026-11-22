@@ -1,6 +1,8 @@
+use crate::audit_store::AuditParent;
 use crate::domain::GoalContract;
+use std::ffi::OsStr;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
@@ -41,6 +43,38 @@ pub struct LinkVerification {
     pub missing_links: Vec<String>,
 }
 
+trait WorkspaceEditIo {
+    fn read(&mut self, file: &mut fs::File, limit: u64) -> io::Result<String> {
+        let mut contents = String::new();
+        file.take(limit).read_to_string(&mut contents)?;
+        Ok(contents)
+    }
+
+    fn write(&mut self, file: &mut fs::File, bytes: &[u8]) -> io::Result<()> {
+        file.write_all(bytes)
+    }
+
+    fn set_permissions(&mut self, file: &fs::File, permissions: fs::Permissions) -> io::Result<()> {
+        file.set_permissions(permissions)
+    }
+
+    fn sync_file(&mut self, file: &fs::File) -> io::Result<()> {
+        file.sync_all()
+    }
+
+    fn publish(&mut self, parent: &AuditParent, temp_name: &OsStr) -> io::Result<()> {
+        parent.rename_from(temp_name)
+    }
+
+    fn sync_directory(&mut self, parent: &AuditParent) -> io::Result<()> {
+        parent.sync_directory()
+    }
+}
+
+struct RealWorkspaceEditIo;
+
+impl WorkspaceEditIo for RealWorkspaceEditIo {}
+
 pub fn edit_markdown(
     workspace: &Path,
     goal: &GoalContract,
@@ -48,6 +82,26 @@ pub fn edit_markdown(
     expected: &str,
     replacement: &str,
     approved: bool,
+) -> Result<EditResult, WorkspaceEditError> {
+    edit_markdown_with_io(
+        workspace,
+        goal,
+        relative_path,
+        expected,
+        replacement,
+        approved,
+        &mut RealWorkspaceEditIo,
+    )
+}
+
+fn edit_markdown_with_io(
+    workspace: &Path,
+    goal: &GoalContract,
+    relative_path: &str,
+    expected: &str,
+    replacement: &str,
+    approved: bool,
+    io: &mut impl WorkspaceEditIo,
 ) -> Result<EditResult, WorkspaceEditError> {
     if !approved {
         return Err(WorkspaceEditError::ApprovalRequired);
@@ -60,12 +114,18 @@ pub fn edit_markdown(
     if !relative.ends_with(".md") && !relative.ends_with(".markdown") {
         return Err(WorkspaceEditError::NotMarkdown(relative));
     }
-    let target = checked_existing_file(workspace, &relative)?;
-    let mut before = String::new();
-    fs::File::open(&target)
+    checked_existing_file(workspace, &relative)?;
+    // Preserve workspace-root aliases, then keep every edit operation on the
+    // same parent FD. Preflight and expected comparison are not a writer CAS.
+    let target = fs::canonicalize(workspace)
         .map_err(io_error)?
-        .take(expected.len() as u64 + 1)
-        .read_to_string(&mut before)
+        .join(&relative);
+    let parent = AuditParent::open(&target, false)
+        .map_err(io_error)?
+        .ok_or_else(|| io_error(io::ErrorKind::NotFound.into()))?;
+    let mut source = parent.open_read_for_replacement().map_err(io_error)?;
+    let before = io
+        .read(&mut source, expected.len() as u64 + 1)
         .map_err(io_error)?;
     if before != expected {
         return Err(WorkspaceEditError::ExpectedContentMismatch);
@@ -86,37 +146,29 @@ pub fn edit_markdown(
             .unwrap_or("md"),
         std::process::id()
     ));
-    let permissions = fs::metadata(&target).map_err(io_error)?.permissions();
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut temporary_file = options.open(&temporary).map_err(io_error)?;
+    let permissions = source.metadata().map_err(io_error)?.permissions();
+    let temporary_name = temporary
+        .file_name()
+        .ok_or_else(|| WorkspaceEditError::InvalidPath(relative.clone()))?;
+    let temporary_entry = parent.sibling(temporary_name).map_err(io_error)?;
+    let mut temporary_file = temporary_entry.open_create_new().map_err(io_error)?;
     let staged = (|| {
-        temporary_file.write_all(replacement.as_bytes())?;
-        temporary_file.set_permissions(permissions)?;
-        temporary_file.sync_all()
+        io.write(&mut temporary_file, replacement.as_bytes())?;
+        io.set_permissions(&temporary_file, permissions)?;
+        io.sync_file(&temporary_file)
     })();
     drop(temporary_file);
     if let Err(error) = staged {
-        let _ = fs::remove_file(&temporary);
+        let _ = temporary_entry.remove_file();
         return Err(io_error(error));
     }
-    if let Err(error) = fs::rename(&temporary, &target) {
-        let _ = fs::remove_file(&temporary);
+    if let Err(error) = io.publish(&parent, temporary_name) {
+        let _ = temporary_entry.remove_file();
         return Err(io_error(error));
     }
-    #[cfg(unix)]
-    fs::File::open(
-        target
-            .parent()
-            .ok_or_else(|| WorkspaceEditError::InvalidPath(relative.clone()))?,
-    )
-    .and_then(|directory| directory.sync_all())
-    .map_err(io_error)?;
+    // Publication has happened; sync failure must report uncertainty without
+    // rolling back or unlinking the now-published target.
+    io.sync_directory(&parent).map_err(io_error)?;
     Ok(EditResult {
         relative_path: relative,
         changed: true,
@@ -245,3 +297,11 @@ fn io_error(error: std::io::Error) -> WorkspaceEditError {
         message: error.to_string(),
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "workspace_edit_path_tests.rs"]
+mod path_tests;
+
+#[cfg(all(test, unix))]
+#[path = "workspace_edit_io_tests.rs"]
+mod io_tests;
