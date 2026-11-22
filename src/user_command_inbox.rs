@@ -1,8 +1,9 @@
+use crate::audit_store::AuditParent;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use thiserror::Error;
@@ -531,10 +532,17 @@ impl UserCommandInbox {
     }
 
     fn read_records(&self) -> Result<Vec<UserCommandEntry>, UserCommandInboxError> {
-        if !self.path.exists() {
+        let Some(parent) = AuditParent::open(&self.path, false)
+            .map_err(|error| inbox_io_error("read parent", error))?
+        else {
             return Ok(Vec::new());
-        }
-        let file = fs::File::open(&self.path).map_err(io_error)?;
+        };
+        let Some(file) = parent
+            .open_read()
+            .map_err(|error| inbox_io_error("read open", error))?
+        else {
+            return Ok(Vec::new());
+        };
         let reader = BufReader::new(file);
         reader
             .lines()
@@ -543,7 +551,7 @@ impl UserCommandInbox {
                 let line = match line {
                     Ok(line) if !line.trim().is_empty() => line,
                     Ok(_) => return None,
-                    Err(error) => return Some(Err(io_error(error))),
+                    Err(error) => return Some(Err(inbox_io_error("read", error))),
                 };
                 Some(serde_json::from_str(&line).map_err(|error| {
                     UserCommandInboxError::InvalidJson {
@@ -556,24 +564,72 @@ impl UserCommandInbox {
     }
 
     fn append_record(&self, record: &UserCommandEntry) -> Result<(), UserCommandInboxError> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(io_error)?;
-        }
-        let encoded =
+        self.append_record_with_io(record, &mut InboxDisk)
+    }
+
+    // No lock or atomic read/compare/append transaction. A failure can leave
+    // partial or complete bytes; neither this layer nor its callers roll back.
+    fn append_record_with_io(
+        &self,
+        record: &UserCommandEntry,
+        io: &mut impl InboxIo,
+    ) -> Result<(), UserCommandInboxError> {
+        let mut encoded =
             serde_json::to_vec(record).map_err(|error| UserCommandInboxError::InvalidJson {
                 line: 0,
                 message: error.to_string(),
             })?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(io_error)?;
-        file.write_all(&encoded).map_err(io_error)?;
-        file.write_all(b"\n").map_err(io_error)?;
-        file.sync_data().map_err(io_error)
+        encoded.push(b'\n');
+        let parent = AuditParent::open(&self.path, true)
+            .map_err(|error| inbox_io_error("append parent", error))?
+            .ok_or_else(|| inbox_io_error("append parent", std::io::ErrorKind::NotFound.into()))?;
+        let mut file = parent
+            .open_append()
+            .map_err(|error| inbox_io_error("append open", error))?;
+        #[cfg(test)]
+        io.after_open(&file)
+            .map_err(|error| inbox_io_error("append opened hook", error))?;
+        io.write(&mut file, &encoded)
+            .map_err(|error| inbox_io_error("append write", error))?;
+        io.sync_file(&file)
+            .map_err(|error| inbox_io_error("append file sync", error))?;
+        io.sync_directory(&parent)
+            .map_err(|error| inbox_io_error("append directory sync", error))?;
+        Ok(())
     }
 }
+
+trait InboxIo {
+    #[cfg(test)]
+    fn after_open(&mut self, _file: &File) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn write(&mut self, file: &mut File, encoded: &[u8]) -> std::io::Result<()> {
+        file.write_all(encoded)
+    }
+
+    fn sync_file(&mut self, file: &File) -> std::io::Result<()> {
+        file.sync_data()
+    }
+
+    fn sync_directory(&mut self, parent: &AuditParent) -> std::io::Result<()> {
+        parent.sync_directory()
+    }
+}
+
+struct InboxDisk;
+
+impl InboxIo for InboxDisk {}
+
+fn inbox_io_error(stage: &str, error: std::io::Error) -> UserCommandInboxError {
+    UserCommandInboxError::Io {
+        message: format!("inbox {stage} failed: {:?}", error.kind()),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod io_tests;
 
 fn latest_record<'a>(
     records: &'a [UserCommandEntry],

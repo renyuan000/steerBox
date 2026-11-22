@@ -2,6 +2,17 @@
 
 ## 定位与证据边界
 
+2026-11-22 UserCommandInbox I1（基线 `d271f7c`）：安全磁盘读取与追加限定切片已验收。
+缺失查询零创建；NOFOLLOW/regular/nlink 后完整 JSON+LF、同 fd 文件及 pinned parent 同步，
+再返回追加 ACK。既有权限不改，新建请求0700/0600；parent 可读与目录整链同步带来收窄/成本，
+成本未测，非 Unix 实际 I/O fail-closed。保留全历史解析、物理行号、幂等及无LF读取语义。
+同 intent 公开重试直接返回最新历史，不再同步；前次目录 ACK 失败留下完整记录时亦可能成功，
+不能称 identical-retry re-ACK。无锁、原子判重、尾修、controller Applied事务或完整恢复；
+读/追加分别 pin，失败字节不回滚，不解除 live 写门禁。审批/其余真实锁、State/workspace 替换端仍待验收。
+独立审核无剩余阻断，全量80个harness/1122项通过、0失败/跳过；严格Clippy、lib/bin构建、fmt/diff通过。
+专项结果、提交/合入及后续复验以
+`/temp/codex/steerbox-validation/inbox-path-20261122/RECEIPT.md` 为准；Phase 1 未完成。
+
 2026-11-22 RunSummary R1（基线 `d78fa6f`）：普通 JSON 安全读写限定切片已验收。
 NOFOLLOW/regular/nlink 及完整路径校验后，以 O_WRONLY 原位覆盖，不提前截断；文件及 pinned parent
 同步后 ACK。保留 inode/owner/mode（含0644）、pretty 无末尾LF、缺失读取 Io无创建、UTF-8 Io
@@ -11,7 +22,7 @@ parent 现在需可读，写入同步完整目录链，性能未测；失败可�
 真实unit5通过；目录屏障mutant2通过/3失败，恢复后5通过。最终全量79个harness、1097通过、0失败/跳过，
 严格all-targets Clippy、lib/bin build、fmt/diff通过；提交/合入及后续复验状态见
 `/temp/codex/steerbox-validation/run-summary-path-20261122/RECEIPT.md`。
-State/workspace替换端、inbox/审批及其余真实锁仍未完成验收，Phase 1未完成。
+上述是 R1 当时范围；Inbox I1 状态见本文开头。State/workspace替换端、审批及其余真实锁仍待验收，Phase 1未完成。
 
 2026-11-22 ToolCallRecordStore T1（基线 `4fe81d9`）：限定切片已通过独立审核与全量验证。
 只覆盖 tool JSONL 及一个真实锁；同 pinned parent、安全打开与实际 fd regular/nlink/UID/mode

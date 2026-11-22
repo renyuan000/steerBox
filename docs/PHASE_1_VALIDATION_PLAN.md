@@ -1,5 +1,25 @@
 # Phase 1 Validation Plan
 
+## 2026-11-22 UserCommandInbox I1（限定切片已验收）
+
+基线 `d271f7c`。旧实现公开路径 RED 为2通过/5失败，证明不安全读取被接受和非法路径被当空历史，
+不是误写实证。GREEN 为既有22项、新路径19项（含一个子进程探针入口）、真实fd unit6项。
+省略最终目录 ACK 的 mutant 为1通过/5失败，精确恢复并补历史前缀/Debug脱敏断言后6项通过。
+最终全量80个harness/1122项通过、0失败/跳过，严格Clippy、实际lib/bin构建、fmt/diff通过；
+独立审核无剩余阻断。初轮Clippy的测试多余clone已精确修正，最终门禁全量重跑通过。
+完整门禁日志、提交/合入及后续复验状态见
+`/temp/codex/steerbox-validation/inbox-path-20261122/RECEIPT.md`。
+
+- 公开路径覆盖 parent/leaf symlink、dangling、hardlink、directory、非法全路径、missing零创建；
+  FIFO有界子进程；实际降权验证0200读失败、0400读取及幂等可用但新写拒绝、0644保持身份/权限。
+- 保留 requested_at 忽略、最新状态/pending顺序、重复状态追加、blank/物理行号/UTF-8 Io、
+  无LF JSON可读及后续拼接风险；全历史坏尾不被重复ID的提前返回绕过。
+- 私有append单独覆盖四类不安全leaf；JSON+LF、同fd、父目录rename+witness、write/file/parent
+  失败短路及原历史前缀保留。open注入为安全打开后的hook；sync错误为seam，不是实际断电实验。
+- 公开同intent在完整记录可读时返回历史且不追加、不重新sync；不是持久re-ACK保证。
+  无sidecar/原子判重/尾修/Applied事务，读与追加分别pin；parent可读、整链同步成本未测，
+  非Unix实际I/O fail-closed，未跨平台实测。live写、审批/State/workspace与完整恢复门禁不变。
+
 ## 2026-11-22 RunSummary R1（限定切片已验收）
 
 基线 `d78fa6f`，仅普通JSON读写及最小安全helper；不复用历史切片数字。

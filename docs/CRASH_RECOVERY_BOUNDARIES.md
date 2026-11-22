@@ -1,6 +1,7 @@
 # 崩溃恢复：当前证据与实施边界
 
-核查日期：2026-11-22。RunSummary R1 基线 `d78fa6f`，限定切片已验收；
+核查日期：2026-11-22。UserCommandInbox I1 基线 `d271f7c`，限定切片已验收；
+RunSummary R1 基线 `d78fa6f`，限定切片已验收；
 ToolCallRecordStore T1 基线 `4fe81d9`，限定切片已通过独立审核与全量验证；
 ModelCallStore M1 增量基线 `0a1ca50`，限定切片已通过独立审核与全量验证；
 EventLog 安全 I/O 增量基线 `76f31dc`；
@@ -19,14 +20,34 @@ EventLog 安全 I/O 增量基线 `76f31dc`；
 | ModelCallStore | 成败 JSONL 与两实际锁安全打开；持锁完成历史校验、判重和文件/父目录同步后 ACK；相同记录 retry 同步原历史 fd、不改字节 | 查询可创建 RW sidecar；不防锁替换，无跨文件事务、坏尾修复或完整恢复 |
 | ToolCallRecordStore | tool JSONL/真实锁同 parent 安全打开，实际 fd 检查 regular/nlink/UID/mode；持锁至 JSON+LF、文件/parent 同步后 ACK | constructor 预检非 anchored 身份保证；不判重、不防锁替换，无尾修/事务/完整恢复 |
 | RunSummary | R1 限定切片已验收：安全打开并检查 regular/nlink 后原位覆盖，同 fd 文件及 pinned parent 同步 | 不做 UID/owner-only 拒绝；非 atomic，无锁、自动重试或完整恢复；失败可留下空/部分/完整新正文 |
+| UserCommandInbox | I1：安全只读查询；完整 JSON+LF 追加、同 fd 文件同步及 pinned parent 同步后追加 ACK | 无锁；同 intent 公开重试不重新同步；读与追加分别 pin；不保证原子判重、Applied 事务或完整恢复 |
 | StateStore | 从合法事件重建 loop/step 投影；临时文件同步、rename、Unix 父目录同步 | 不包含完整 TaskRun/Attempt、模型上下文、预算和租约 |
 | checkpoint / side-effect / trace | 共享 JSONL 追加/历史读取逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；目录链屏障、完整追加后文件同步再父目录同步；可查询及标记 `uncertain` | 每次访问独立 pin，不是生命周期身份绑定；无跨 store 事务、并发写者协调或完整恢复，不承诺抗 OS 掉电 |
 | workspace snapshot | 可选单文件原文快照；文件及目录同步；显式授权 restore | controller 的 snapshot binding 仍在内存，重启后不能据此直接 resume |
 | provider 身份门禁 | 拒绝顺序复用已有 run 身份 | 不证明旧请求没发送，也不证明旧动作没执行 |
 
 源码依据：`src/event_log.rs`、`src/model_call_store.rs`、`src/tool_call_store.rs`、`src/state_store.rs`、`src/audit_store.rs`、
-`src/workspace_snapshot.rs`、`src/loop_controller.rs`、`src/provider_runner.rs`。
+`src/workspace_snapshot.rs`、`src/loop_controller.rs`、`src/provider_runner.rs`、`src/user_command_inbox.rs`。
 CLI 的 execution 查询和运行中 inbox Resume 不是进程重启后的恢复入口。
+
+## UserCommandInbox I1 安全 I/O（2026-11-22，限定切片已验收）
+
+基线 `d271f7c`，只改 inbox 磁盘读写，不改 stdin/poller、controller 或审批。
+逐组件 NOFOLLOW、dirfd-relative 打开，实际 fd 检查 regular/nlink=1；缺失查询不创建节点。
+追加先编码完整 JSON+LF，再安全打开，以同 fd write_all/sync_data、同 pinned parent 同步后返回；
+write_all 不承诺单 syscall 原子性。失败可留下部分或完整新记录，不自动回滚、重试或修尾。
+公开 submit/update 仍先读全历史；其中 submit 的同 intent 重试忽略 requested_at、返回最后状态，不新增行且
+不重新同步文件/目录。前次目录 ACK 失败但完整记录可读时，公开重试可能直接成功，
+不是 M1 的 identical-retry re-ACK 保证；私有 append 再调用仍追加。
+
+保留 blank/物理行号、UTF-8 Io、完整无 LF 尾 JSON 可读；无 LF 后追加拼接风险未修复。
+既有 mode/owner 不改、不新增 UID/owner-only 拒绝；新目录/文件请求0700/0600，受 umask 收窄。
+parent 需可读，追加准备同步整条目录链，成本未测；非 Unix 实际 I/O fail-closed，未跨平台实测。
+没有 sidecar/并发原子判重；读取和追加分别 pin，不是整次 submit 身份绑定；controller 状态、
+Applied 和事件非原子提交。审批/State/workspace 替换端、live 写和完整恢复门禁保持。
+独立审核无剩余阻断，全量80个harness/1122项通过、0失败/跳过；严格Clippy、lib/bin构建、fmt/diff通过。
+本片日志及提交/合入和后续复验状态见
+`/temp/codex/steerbox-validation/inbox-path-20261122/RECEIPT.md`。
 
 ## RunSummary R1 安全 I/O（2026-11-22，限定切片已验收）
 
@@ -233,7 +254,7 @@ controller 在写前记录 checkpoint，执行文件编辑后再记录完成事�
    三 store 与 EventLog 的安全打开、历史读取及目录同步已逐片实现并测试，不能替代其余路径验收。
    ModelCallStore 成败记录及两锁的 M1 已通过独立审核与全量验证；其余门禁不因此解除。
    ToolCallRecordStore T1 已通过独立审核与全量验证，不能代替剩余路径验收。
-   RunSummary R1 限定切片已验收；inbox/审批及其余真实锁仍须独立核查。
+   RunSummary R1 限定切片已验收；Inbox I1 范围及验收见上节，审批及其余真实锁仍须独立核查。
    State/实际 workspace edit 的替换端也要独立验收。
    仅末级 NOFOLLOW 或 metadata 预检不等于父路径安全，更不等于抵御任意同 UID 恶意进程。
 2. **只读恢复检查器**：识别完整前缀/坏尾、stale state、未闭合请求/工具/副作用、缺失快照；
