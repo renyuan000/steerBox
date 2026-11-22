@@ -6,16 +6,21 @@
 //! snapshots by `request_id` and therefore preserves the latest state without
 //! requiring an in-memory database.
 
+use crate::audit_store::AuditParent;
 use crate::redaction::Redactor;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use thiserror::Error;
+
+#[cfg(all(test, unix))]
+#[path = "approval_io_tests.rs"]
+mod io_tests;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApprovalRequest {
@@ -204,6 +209,7 @@ struct ApprovalState {
 
 struct ApprovalStateGuard<'a> {
     state: std::sync::MutexGuard<'a, ApprovalState>,
+    parent: AuditParent,
     // Dropping the file releases the OS lock, including after a crash. Keep the
     // lock file itself: unlinking it permits parallel processes to lock two inodes.
     _lock_file: File,
@@ -256,7 +262,7 @@ impl ApprovalStore {
             return Ok(existing.clone());
         }
         let record = ApprovalRecord::pending(request);
-        append_snapshot(&self.path, &record)?;
+        append_snapshot(&state.parent, &record)?;
         state
             .records
             .insert(record.request.request_id.clone(), record.clone());
@@ -281,7 +287,7 @@ impl ApprovalStore {
                 if current.request.expires_at <= Utc::now() {
                     let mut expired = current;
                     expired.status = ApprovalStatus::Expired;
-                    append_snapshot(&self.path, &expired)?;
+                    append_snapshot(&state.parent, &expired)?;
                     state.records.insert(request_id.to_owned(), expired);
                     return Err(ApprovalError::Terminal);
                 }
@@ -289,7 +295,7 @@ impl ApprovalStore {
                 approved.status = ApprovalStatus::Approved;
                 approved.scope = Some(scope);
                 approved.resolved_at = Some(Utc::now());
-                append_snapshot(&self.path, &approved)?;
+                append_snapshot(&state.parent, &approved)?;
                 state
                     .records
                     .insert(request_id.to_owned(), approved.clone());
@@ -299,7 +305,7 @@ impl ApprovalStore {
                 let mut rejected = current;
                 rejected.status = ApprovalStatus::Rejected;
                 rejected.resolved_at = Some(Utc::now());
-                append_snapshot(&self.path, &rejected)?;
+                append_snapshot(&state.parent, &rejected)?;
                 state
                     .records
                     .insert(request_id.to_owned(), rejected.clone());
@@ -318,6 +324,14 @@ impl ApprovalStore {
     }
 
     pub fn consume(&self, request: &ApprovalRequest) -> Result<bool, ApprovalError> {
+        self.consume_with_io(request, &mut FileApprovalIo)
+    }
+
+    fn consume_with_io(
+        &self,
+        request: &ApprovalRequest,
+        io: &mut impl ApprovalIo,
+    ) -> Result<bool, ApprovalError> {
         request.validate()?;
         let mut state = self.lock_state()?;
         self.ensure_initialized(&state)?;
@@ -358,14 +372,14 @@ impl ApprovalStore {
         if current.request.expires_at <= Utc::now() {
             let mut expired = current;
             expired.status = ApprovalStatus::Expired;
-            append_snapshot(&self.path, &expired)?;
+            append_snapshot_with_io(&state.parent, &expired, io)?;
             state.records.insert(matching_id, expired);
             return Ok(false);
         }
         if current.scope == Some(ApprovalScope::Once) {
             let mut consumed = current;
             consumed.status = ApprovalStatus::Consumed;
-            append_snapshot(&self.path, &consumed)?;
+            append_snapshot_with_io(&state.parent, &consumed, io)?;
             state.records.insert(matching_id, consumed);
         }
         Ok(true)
@@ -387,26 +401,24 @@ impl ApprovalStore {
             .state
             .lock()
             .map_err(|_| ApprovalError::Initialization("approval store mutex poisoned".into()))?;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut lock_path = self.path.as_os_str().to_os_string();
-        lock_path.push(".lock");
-        let lock_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(PathBuf::from(lock_path))?;
+        let parent = approval_parent(&self.path)?;
+        let mut lock_name = self
+            .path
+            .file_name()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?
+            .to_os_string();
+        lock_name.push(".lock");
+        let lock_file = parent.sibling(&lock_name)?.open_lock()?;
         lock_file.try_lock().map_err(|_| {
             ApprovalError::Initialization("approval store is busy or locking is unsupported".into())
         })?;
         // Refresh under the same OS lock as submit/resolve/consume, so separate
         // stores and restarted workers cannot consume a stale approved snapshot.
-        state.records = load_records(&self.path)?;
+        state.records = load_records_at(&parent)?;
         state.initialization_error = None;
         Ok(ApprovalStateGuard {
             state,
+            parent,
             _lock_file: lock_file,
         })
     }
@@ -421,14 +433,24 @@ impl ApprovalStore {
 }
 
 fn load_records(path: &Path) -> Result<BTreeMap<String, ApprovalRecord>, ApprovalError> {
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        OpenOptions::new().create(true).append(true).open(path)?;
+    load_records_at(&approval_parent(path)?)
+}
+
+fn approval_parent(path: &Path) -> Result<AuditParent, ApprovalError> {
+    AuditParent::open(path, true)?.ok_or_else(|| io::Error::from(io::ErrorKind::NotFound).into())
+}
+
+fn load_records_at(
+    parent: &AuditParent,
+) -> Result<BTreeMap<String, ApprovalRecord>, ApprovalError> {
+    let Some(file) = parent.open_read()? else {
+        // Preserve constructor missing-file creation, but acknowledge it only
+        // after syncing this actual fd and the same pinned directory.
+        let file = parent.open_append()?;
+        file.sync_data()?;
+        parent.sync_directory()?;
         return Ok(BTreeMap::new());
-    }
-    let file = File::open(path)?;
+    };
     let reader = BufReader::new(file);
     let mut records = BTreeMap::new();
     for (line_index, line) in reader.lines().enumerate() {
@@ -453,15 +475,39 @@ fn load_records(path: &Path) -> Result<BTreeMap<String, ApprovalRecord>, Approva
     Ok(records)
 }
 
-fn append_snapshot(path: &Path, record: &ApprovalRecord) -> Result<(), ApprovalError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+fn append_snapshot(parent: &AuditParent, record: &ApprovalRecord) -> Result<(), ApprovalError> {
+    append_snapshot_with_io(parent, record, &mut FileApprovalIo)
+}
+
+trait ApprovalIo {
+    fn write_line(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+        file.write_all(bytes)
     }
-    let encoded = serde_json::to_vec(record).map_err(|_| ApprovalError::InvalidJson { line: 0 })?;
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.write_all(&encoded)?;
-    file.write_all(b"\n")?;
-    file.sync_data()?;
+
+    fn sync_file(&mut self, file: &File) -> io::Result<()> {
+        file.sync_data()
+    }
+
+    fn sync_directory(&mut self, parent: &AuditParent) -> io::Result<()> {
+        parent.sync_directory()
+    }
+}
+
+struct FileApprovalIo;
+impl ApprovalIo for FileApprovalIo {}
+
+fn append_snapshot_with_io(
+    parent: &AuditParent,
+    record: &ApprovalRecord,
+    io: &mut impl ApprovalIo,
+) -> Result<(), ApprovalError> {
+    let mut encoded =
+        serde_json::to_vec(record).map_err(|_| ApprovalError::InvalidJson { line: 0 })?;
+    encoded.push(b'\n');
+    let mut file = parent.open_append()?;
+    io.write_line(&mut file, &encoded)?;
+    io.sync_file(&file)?;
+    io.sync_directory(parent)?;
     Ok(())
 }
 
