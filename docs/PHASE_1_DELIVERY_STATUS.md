@@ -2,6 +2,18 @@
 
 ## 定位与证据边界
 
+2026-11-22 恢复检查 RDI1（基线 `75cdb2e`）：限定诊断切片已通过独立审核与全量验证，独立零写入入口
+`recovery inspect <events.jsonl> [--state <state.json>]` 已实现，只诊断事件封口、schema、
+连续序号与 loop/step 投影，并在完整重建后可选比较 State。固定状态/计数/位置报告不回显正文、
+身份或路径；安全只读打开、实际 fd 前后检查及各类读取上限，不创建 sidecar 或 runtime。
+exit 0 仅表示本片覆盖内无 finding，不表示可安全续跑；2 为异常/不完整，1 为参数/输出错误。
+未知事件计数但未对账，不把 mismatch 称 stale，不自动截断、修复、重放或消费授权。
+未闭合请求/工具/副作用、快照关联、持久 TaskRun/Attempt/预算及 fencing 仍未收口；
+审批/State/workspace 写端门禁不变，Phase 1 未完成。合同及验证见
+`RECOVERY_INSPECTOR.md`、`PHASE_1_VALIDATION_PLAN.md`。全量82个harness/1148项通过，
+0失败/跳过；严格Clippy、lib/bin构建、fmt/diff通过。最终审核/提交/复验状态以
+`/temp/codex/steerbox-validation/recovery-inspect-20261122/RECEIPT.md` 为准。
+
 2026-11-22 UserCommandInbox I1（基线 `d271f7c`）：安全磁盘读取与追加限定切片已验收。
 缺失查询零创建；NOFOLLOW/regular/nlink 后完整 JSON+LF、同 fd 文件及 pinned parent 同步，
 再返回追加 ACK。既有权限不改，新建请求0700/0600；parent 可读与目录整链同步带来收窄/成本，

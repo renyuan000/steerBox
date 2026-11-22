@@ -1,6 +1,7 @@
 # 崩溃恢复：当前证据与实施边界
 
-核查日期：2026-11-22。UserCommandInbox I1 基线 `d271f7c`，限定切片已验收；
+核查日期：2026-11-22。只读恢复检查 RDI1 基线 `75cdb2e`，事件/State 诊断切片已实现；
+UserCommandInbox I1 基线 `d271f7c`，限定切片已验收；
 RunSummary R1 基线 `d78fa6f`，限定切片已验收；
 ToolCallRecordStore T1 基线 `4fe81d9`，限定切片已通过独立审核与全量验证；
 ModelCallStore M1 增量基线 `0a1ca50`，限定切片已通过独立审核与全量验证；
@@ -29,6 +30,21 @@ EventLog 安全 I/O 增量基线 `76f31dc`；
 源码依据：`src/event_log.rs`、`src/model_call_store.rs`、`src/tool_call_store.rs`、`src/state_store.rs`、`src/audit_store.rs`、
 `src/workspace_snapshot.rs`、`src/loop_controller.rs`、`src/provider_runner.rs`、`src/user_command_inbox.rs`。
 CLI 的 execution 查询和运行中 inbox Resume 不是进程重启后的恢复入口。
+
+## 零写入恢复诊断 RDI1（2026-11-22）
+
+独立 `recovery inspect <events.jsonl> [--state <state.json>]` 不加载 config、不创建 runtime，
+仅安全只读打开显式路径。最多读取事件16MiB、State2MiB；行1MiB含LF、事件10000条。
+满 byte cap 未观察到 EOF 就报不完整，不额外越界探针；实际 fd 前后元数据变化报 unstable。
+报告仅固定状态、计数和位置，无正文/ID/路径/raw错误；exit0 不是可续跑证明。
+仅 schema1、从1连续序号且 LF封口的支持历史才整体内存重建 loop/step；
+否则不打开 State。不把 mismatch 直接判 stale，unknown 事件仅计数，未完成其恢复对账。
+unstable/read-error 不确认前缀；限额内观察到的封口前缀也不是恢复许可。
+不截断、不写入、不重发、不执行工具、不消费授权；应用零写入不承诺内核 atime 不变。
+这是独立诊断，不必等待全部写端加固；实际修复/续跑仍依赖其余门禁。
+请求/工具/副作用/快照对账、TaskRun/Attempt/预算/授权恢复、单写者 fencing 均未由本片完成。
+详见 `RECOVERY_INSPECTOR.md`；验证、审核与交付状态见 `PHASE_1_VALIDATION_PLAN.md`
+和外置 `recovery-inspect-20261122/RECEIPT.md`。
 
 ## UserCommandInbox I1 安全 I/O（2026-11-22，限定切片已验收）
 
@@ -257,7 +273,9 @@ controller 在写前记录 checkpoint，执行文件编辑后再记录完成事�
    RunSummary R1 限定切片已验收；Inbox I1 范围及验收见上节，审批及其余真实锁仍须独立核查。
    State/实际 workspace edit 的替换端也要独立验收。
    仅末级 NOFOLLOW 或 metadata 预检不等于父路径安全，更不等于抵御任意同 UID 恶意进程。
-2. **只读恢复检查器**：识别完整前缀/坏尾、stale state、未闭合请求/工具/副作用、缺失快照；
+2. **只读恢复检查器**：RDI1 已实现有界 events/State 投影诊断，见上节；
+   仅比较 mismatch，不推断 stale。后续补未闭合请求/工具/副作用与缺失快照对账。
+   只读诊断可独立于剩余写端加固推进；实际修复/续跑不能跳过写端验收。
    不解析凭据、不联网、不重发模型请求、不重做工具、不消耗 approval、不自动截断。
 3. **持久恢复输入与受控续跑**：外化 TaskRun/Attempt、预算/请求 reservation、目标/计划修订、
    授权有效期、snapshot binding 和单写者租约；校验后才能从已验证边界续跑，不能重置预算。

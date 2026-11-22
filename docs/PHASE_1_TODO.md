@@ -17,8 +17,10 @@
 
 ## 当前收口依赖顺序（2026-11-22）
 
-Phase 1 尚未完成。当前先逐片补齐实际 runtime I/O，再实现只读恢复检查器，
-最后交付持久恢复输入与对账式受控续跑；supervisor/fencing 及故障演练在合法恢复判定之后。
+Phase 1 尚未完成。实际 runtime I/O 继续逐片验收；零写入检查不依赖全部写端完成。
+RDI1 已实现事件/State 投影诊断入口，不包含请求/工具/副作用/快照对账。
+实际修复与续跑仍须先交付安全写端、持久恢复输入及对账协调；supervisor/fencing
+及故障演练在合法恢复判定之后，不能拿只读检查成功当恢复许可。
 checkpoint/side-effect/trace 共享 JSONL 片已验收；后续 EventLog 五入口安全 I/O
 片已实现并通过专项及全量测试，审核/提交状态见交付收据。
 ModelCallStore 成败 JSONL 及两实际锁的 M1 已通过独立审核与全量验证（1061 项）；
@@ -26,6 +28,10 @@ ModelCallStore 成败 JSONL 及两实际锁的 M1 已通过独立审核与全量
 ToolCallRecordStore T1 已通过独立审核及全量1079项、严格Clippy/build/fmt；提交/合入状态见交付收据。
 RunSummary R1 限定切片已验收（基线 `d78fa6f`）：79个harness/1097项、严格Clippy/build/fmt/diff通过；提交/合入状态详见交付收据。
 Inbox I1（基线 `d271f7c`）限定切片已验收：80个harness/1122项及严格Clippy/build/fmt/diff通过；提交/合入见交付收据。
+RDI1（基线 `75cdb2e`）：`recovery inspect` 有界安全读取、坏尾/schema/序号诊断、
+内存 loop/step 重建及可选 State 比较已实现；无修复/续跑，验证/审核见 `PHASE_1_VALIDATION_PLAN.md`
+及外置 `recovery-inspect-20261122/RECEIPT.md`。独立审核、全量82个harness/1148项、
+严格Clippy/build/fmt/diff通过。后续补请求/工具/副作用/快照对账与完整恢复输入。
 不代表审批及其余真实锁文件或 State/workspace 替换端已完成验收，
 也不放开 live 写 CLI。具体检查点见 `CRASH_RECOVERY_BOUNDARIES.md`。
 

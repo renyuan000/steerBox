@@ -23,6 +23,7 @@ pub mod prompt_registry;
 pub mod provider_adapter;
 pub mod provider_model_adapter;
 pub mod provider_runner;
+pub mod recovery_inspector;
 pub mod redaction;
 pub mod reported_token_budget;
 pub mod resolved_prompt;

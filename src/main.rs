@@ -29,9 +29,13 @@ use steerbox::user_command_inbox::{UserCommand, UserCommandEntry, UserCommandInb
 use steerbox::workspace_edit::{edit_markdown, verify_markdown_links};
 
 mod provider_readonly_cli;
+mod recovery_inspect_cli;
 
 fn main() {
     if let Err(error) = run(env::args().skip(1)) {
+        if error.is::<recovery_inspect_cli::FindingsReported>() {
+            process::exit(2);
+        }
         eprintln!("steerbox: {error}");
         eprintln!();
         print_usage();
@@ -41,6 +45,7 @@ fn main() {
 
 fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
     match (args.next().as_deref(), args.next().as_deref()) {
+        (Some("recovery"), Some("inspect")) => recovery_inspect_cli::run(args)?,
         (Some("runtime"), Some("init")) => {
             let project_ref = args.next().ok_or("missing project_ref")?;
             let config = RuntimeConfig::default_for_project(project_ref)?;
@@ -790,6 +795,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
 
 fn print_usage() {
     eprintln!("Usage:");
+    eprintln!("  steerbox recovery inspect <events.jsonl> [--state <state.json>]");
     eprintln!("  steerbox runtime init <project_ref>");
     eprintln!("  steerbox config validate <config.json>");
     eprintln!("  steerbox tool list");

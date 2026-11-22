@@ -1,5 +1,25 @@
 # Phase 1 Validation Plan
 
+## 2026-11-22 恢复检查 RDI1（限定诊断切片已验收）
+
+基线 `75cdb2e`。首批黑盒旧 CLI RED 为0通过/6失败，均为 unsupported command；
+另外 API 测试首次编译确认尚无模块（E0432），不冒充运行时失败。
+最终全量82个harness/1148项通过，0失败/跳过，严格all-targets Clippy、实际lib/bin构建、
+fmt/diff通过；专项CLI18入口（含一个子进程probe）、API5、真实fd unit3通过。
+省略metadata变化判断的mutant为0通过/1失败，精确恢复后unit3通过；两轮独立源码及文档审核
+无剩余阻断，采纳停止位置措辞澄清。代码审核快照与最终核心指纹一致。
+专项覆盖 events/state 缺失与零创建、完整/空日志、坏尾、内部损坏、schema/序号、
+unknown 计数、非零 step 投影、投影错误、State match/mismatch/invalid、
+symlink/dangling/hardlink/FIFO/directory/父目录陷阱、实际降权只读目录，
+默认及缩小 byte/line/record 上限、参数先拒绝、报告/Debug 无正文身份路径、stdout 关闭管道。
+真实 fd 单测检查不越过 cap 读探针、EOF、读取后长度/权限/nlink 变化；
+禁止把检测不到变化称一致性快照或任意同 UID 防护。FIFO 测试不阻塞和 not_compared
+不单独证明未 open；该保证另由源码提前返回分支核查。
+完整门禁、定点 mutant、独立审核及最终提交/合入复验以
+`/temp/codex/steerbox-validation/recovery-inspect-20261122/RECEIPT.md` 为准。
+验收不覆盖 OS 掉电、跨 store 一致性、请求/副作用对账、修复或跨进程续跑；
+未连接真实 provider，不读取凭据，不解除 live 写门禁。
+
 ## 2026-11-22 UserCommandInbox I1（限定切片已验收）
 
 基线 `d271f7c`。旧实现公开路径 RED 为2通过/5失败，证明不安全读取被接受和非法路径被当空历史，
