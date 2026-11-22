@@ -1,5 +1,8 @@
 //! Bounded, diagnostic-only inspection. Never persists, repairs or resumes a run.
 
+mod audits;
+pub use audits::{inspect_files_with_audits, AuditInspectLimits, AuditRecoveryInspectionReport};
+
 use crate::{audit_store::AuditParent, domain::EventEnvelope, state_store::StateStore};
 use serde::Serialize;
 use std::{
