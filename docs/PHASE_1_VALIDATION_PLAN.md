@@ -1,5 +1,23 @@
 # Phase 1 Validation Plan
 
+## 2026-11-22 RDI2（显式工具/副作用日志观察）
+
+基线 `73886fe`。原有 API/CLI 基线23项通过；新库测试先确认缺API编译错误，
+不冒充运行时RED。新CLI首次真实RED为2通过/6失败，均因新选项不受支持；
+接线后新CLI8、库7及旧API/CLI23项通过；补强后新库9项、实际FD变化传播unit1项通过。
+最终隔离树全量89个harness/1219项、0失败/跳过，严格all-targets Clippy、实际lib/bin构建、
+fmt/diff通过。三路独立规格、I/O/CLI及覆盖审核无剩余阻断；主代理已审核实际diff。
+首次异常位置、固定finding词汇、跨loop同ID和真实FD变化的覆盖均已补齐。
+覆盖普通文件缺失/空/省略、坏events仍观察辅助源、辅助源独立失败、旧JSON逐字节兼容、
+参数先拒绝、记录状态/class别名、completed-only与verification_failed、隐私输出、
+封口/UTF-8/类型/byte/line/record限制、同路径分别计费及aggregate等号/超限。
+合同见 `RECOVERY_AUDIT_OBSERVATIONS.md`；最终审核、门禁与提交/合入复验以
+`/temp/codex/steerbox-validation/recovery-audits-20261122/RECEIPT.md` 为准。
+不覆盖跨store一致快照/关联对账、model-call/checkpoint/snapshot、持久任务恢复或OS掉电，
+不读取真实配置/凭据、不连接provider、不消耗审批、不放开live写。
+新wrapper输出失败沿用共用write/flush分支，故障专项仍仅旧报告分支有直接pipe测试，
+不将该静态复用依据称作新wrapper故障E2E；非Unix未实测。提交和主树复验状态见收据。
+
 ## 2026-11-22 Workspace editor W1（限定普通文件切片已验证）
 
 基线 `c7df098`；旧 edit/audit-gates/snapshot 基线70项通过。仅接read seam后，普通父目录

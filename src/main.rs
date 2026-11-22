@@ -795,7 +795,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
 
 fn print_usage() {
     eprintln!("Usage:");
-    eprintln!("  steerbox recovery inspect <events.jsonl> [--state <state.json>]");
+    eprintln!("  steerbox recovery inspect <events.jsonl> [--state <state.json>] [--tools <tools.jsonl>] [--side-effects <side-effects.jsonl>]");
     eprintln!("  steerbox runtime init <project_ref>");
     eprintln!("  steerbox config validate <config.json>");
     eprintln!("  steerbox tool list");

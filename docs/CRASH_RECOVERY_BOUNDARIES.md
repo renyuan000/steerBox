@@ -3,6 +3,7 @@
 核查日期：2026-11-22。Workspace editor W1 基线 `c7df098`，限定普通文件安全替换切片已验证；
 StateStore S1 基线 `ac0070c`，限定普通文件安全读/原子替换切片已验证；
 只读恢复检查 RDI1 基线 `75cdb2e`，事件/State 诊断切片已实现；
+RDI2 基线 `73886fe`，显式工具/副作用日志观察已实现，非跨 store 对账；验证状态见验证计划；
 ApprovalStore A1 基线 `ee87518`，限定 I/O 增量已实现，验证受限，非完整收口；
 UserCommandInbox I1 基线 `d271f7c`，限定切片已验收；
 RunSummary R1 基线 `d78fa6f`，限定切片已验收；
@@ -71,6 +72,12 @@ workspace替换端限定范围见W1；未获准A1专项、live写及完整恢复
 门禁；Phase 1 未完成。
 
 ## 零写入恢复诊断 RDI1（2026-11-22）
+
+后续 RDI2 增加显式 `--tools` / `--side-effects` 有界观察：每源完整性、固定状态/class计数、
+异常首次位置；不做身份join、缺终态推断或恢复。全部请求源cap总和先验<=26MiB，
+缺省不推导路径，events失败仍独立观察请求的辅助源。旧API/无新选项JSON不变。
+合同与限制见 `RECOVERY_AUDIT_OBSERVATIONS.md`，最终门禁/审核见验证计划和RDI2外置收据。
+下列 RDI1 段落保留其独立原始合同，不把 RDI2 观察称作完整对账。
 
 独立 `recovery inspect <events.jsonl> [--state <state.json>]` 不加载 config、不创建 runtime，
 仅安全只读打开显式路径。最多读取事件16MiB、State2MiB；行1MiB含LF、事件10000条。
@@ -312,7 +319,8 @@ controller 在写前记录 checkpoint，执行文件编辑后再记录完成事�
    RunSummary R1 限定切片已验收；Inbox I1 范围及验收见上节，审批 A1 仅完成限定增量，未覆盖专项及其余真实锁仍须独立核查。
    State S1、实际workspace edit W1的限定替换端已逐片验收，不能替代snapshot存储/关联或完整恢复验收。
    仅末级 NOFOLLOW 或 metadata 预检不等于父路径安全，更不等于抵御任意同 UID 恶意进程。
-2. **只读恢复检查器**：RDI1 已实现有界 events/State 投影诊断，见上节；
+2. **只读恢复检查器**：RDI1 已实现有界 events/State 投影诊断，RDI2 补显式工具/副作用
+   日志观察，均见上节；
    仅比较 mismatch，不推断 stale。后续补未闭合请求/工具/副作用与缺失快照对账。
    只读诊断可独立于剩余写端加固推进；实际修复/续跑不能跳过写端验收。
    不解析凭据、不联网、不重发模型请求、不重做工具、不消耗 approval、不自动截断。

@@ -3,6 +3,10 @@
 2026-11-22，基线 `75cdb2e`。本片只回答显式事件文件与 loop/step State 投影是否可比较，
 不回答任务是否可恢复，不提供 repair/resume。Phase 1 仍未完成。
 
+后续 RDI2（基线 `73886fe`）增加可选 `--tools` / `--side-effects` 独立观察，
+不改变本文无新选项时的 API/JSON 合同；新入口、预算与未覆盖边界见
+`RECOVERY_AUDIT_OBSERVATIONS.md`。RDI2 仍不是跨 store 对账或恢复。
+
 ## 使用与退出码
 
 ```text

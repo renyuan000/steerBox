@@ -2,6 +2,15 @@
 
 ## 定位与证据边界
 
+2026-11-22 RDI2（基线 `73886fe`）：显式 tool/side-effect 日志观察已实现，
+隔离树全量89个harness/1219项、0失败/跳过，严格Clippy、实际lib/bin build、fmt/diff通过；
+三路独立审核无剩余阻断。提交及合入复验状态见验证计划和外置 `recovery-audits-20261122/RECEIPT.md`。
+旧 API/JSON 保持；新入口逐源有界 no-create 读取，预校验全部请求源 cap 总和<=26MiB；
+固定 status/class 记录计数与异常首次位置，不关联身份、不推断动作闭合或执行成功。
+events 失败不跳过请求的辅助源；completed-only 不误报，verification_failed 独立保留。
+合同见 `RECOVERY_AUDIT_OBSERVATIONS.md`。不代替请求/工具/副作用/快照对账、
+持久恢复输入、fencing、live验收；Phase 1 未完成，不解除 live 写门禁。
+
 2026-11-22 Workspace editor W1（基线 `c7df098`）：限定 Unix 普通文件替换切片已实现并验证。
 保留审批/scope/Markdown、bounded expected 比较、noop、PID-temp 冲突与权限复制；
 读取/权限来自同一 source FD，临时创建/写入/同步/发布/清理/目录同步绑定同一 pinned parent。

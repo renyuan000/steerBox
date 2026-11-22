@@ -17,6 +17,13 @@
 
 ## 当前收口依赖顺序（2026-11-22）
 
+RDI2（基线 `73886fe`）显式 tool/side-effect 日志观察已实现，隔离树全量1219项及严格
+Clippy/build/fmt/diff通过，三路独立审核无剩余阻断；提交/合入复验见收据，细项见验证计划。
+新增可选文件的有界、零写入独立扫描，固定 status/class 计数与异常位置；
+这不是请求/工具/副作用/快照对账，也不推断缺失终态或允许续跑。
+后续仍须补 snapshot 存储/关联审查、完整对账、持久恢复输入及 fenced 恢复；
+获准 live 验收仍是独立门禁。合同见 `RECOVERY_AUDIT_OBSERVATIONS.md`，Phase 1 未完成。
+
 Workspace editor W1（基线 `c7df098`）限定 Unix 普通文件替换切片已验证：
 source FD读/权限及同pinned parent的exclusive temp、文件同步、发布、清理和目录同步；
 保留审批/expected/noop/PID-temp语义，发布后同步失败不回滚、不自动重试。
@@ -32,7 +39,8 @@ workspace实际替换端限定W1范围见上方；后续仍须完成持久恢复
 A1 未获准专项及 live provider/live mutation 门禁不由本片解除，不能把 State 投影持久化当完整续跑。
 
 Phase 1 尚未完成。实际 runtime I/O 继续逐片验收；零写入检查不依赖全部写端完成。
-RDI1 已实现事件/State 投影诊断入口，不包含请求/工具/副作用/快照对账。
+RDI1 已实现事件/State 投影诊断入口，RDI2 补显式工具/副作用日志的逐记录观察；
+两者均不包含请求/工具/副作用/快照对账。
 实际修复与续跑仍须先交付安全写端、持久恢复输入及对账协调；supervisor/fencing
 及故障演练在合法恢复判定之后，不能拿只读检查成功当恢复许可。
 checkpoint/side-effect/trace 共享 JSONL 片已验收；后续 EventLog 五入口安全 I/O
