@@ -1,5 +1,27 @@
 # Phase 1 Validation Plan
 
+## 2026-11-22 RunSummary R1（限定切片已验收）
+
+基线 `d78fa6f`，仅普通JSON读写及最小安全helper；不复用历史切片数字。
+公共API真实RED为6通过/7失败；GREEN为R1路径13、audit14/既有路径20、CLI16通过。
+真实故障unit5通过；省略目录ACK屏障的mutant为2通过/3失败，精确恢复后5通过。
+最终 `cargo test --locked --offline --all-targets` 为79个harness、1097通过、0失败/跳过；
+严格all-targets Clippy、lib/bin build、fmt/diff通过。提交/合入及后续复验状态与日志见
+`/temp/codex/steerbox-validation/run-summary-path-20261122/RECEIPT.md`。
+
+- exact pretty字节、无末尾LF、长转短无尾留、直接覆盖保持dev/inode/UID/GID/mode；既有0644不拒绝，
+  不引入UID/owner-only策略。缺失leaf/parent读取Io且不创建；无效UTF-8为Io，非法JSON为line0。
+- 完整路径在mkdir前验证；parent symlink不跟随，leaf symlink/dangling/hardlink/FIFO/directory
+  双读写拒绝且sentinel无损，FIFO用有界子进程和Drop回收；不外推为设备或父类型全矩阵。
+- 新目录/文件请求0700/0600（umask可收窄）；实际降权核验0200可写不可读、0400相反、0000拒绝，
+  只读parent区分既有/缺失leaf，既有对象不chmod。parent需可读是安全遍历带来的权限收窄。
+- O_WRONLY安全打开不含提前truncate，regular/nlink验证后截断；测试truncate/部分write/file sync/
+  parent sync失败短路、不误ACK及残留字节，同fd和重命名后的pinned parent目标保持。
+
+写入同步完整遍历目录链，性能未测；非Unix实际I/O fail-closed，不称跨平台实测。
+失败为uncertain，可留空/部分/完整新正文；无atomic替换、旧正文保全、锁、自动重试/恢复，
+不解除live写或State/workspace/inbox/审批及其余真实锁验收门禁。
+
 ## 2026-11-22 ToolCallRecordStore T1（限定切片已验收）
 
 基线 `4fe81d9`，仅 tool JSONL 与一个实际 `.lock`。最终

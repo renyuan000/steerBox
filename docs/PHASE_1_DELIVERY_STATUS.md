@@ -2,6 +2,17 @@
 
 ## 定位与证据边界
 
+2026-11-22 RunSummary R1（基线 `d78fa6f`）：普通 JSON 安全读写限定切片已验收。
+NOFOLLOW/regular/nlink 及完整路径校验后，以 O_WRONLY 原位覆盖，不提前截断；文件及 pinned parent
+同步后 ACK。保留 inode/owner/mode（含0644）、pretty 无末尾LF、缺失读取 Io无创建、UTF-8 Io
+与 JSON `InvalidJson line: 0`；不做 UID/owner-only 拒绝。新目录/文件请求0700/0600，非Unix fail-closed。
+parent 现在需可读，写入同步完整目录链，性能未测；失败可留空/部分/完整新正文，非atomic、无锁、
+无自动重试/恢复，不解除live写门禁。公共RED6通过/7失败；GREEN路径13、audit14/路径20、CLI16，
+真实unit5通过；目录屏障mutant2通过/3失败，恢复后5通过。最终全量79个harness、1097通过、0失败/跳过，
+严格all-targets Clippy、lib/bin build、fmt/diff通过；提交/合入及后续复验状态见
+`/temp/codex/steerbox-validation/run-summary-path-20261122/RECEIPT.md`。
+State/workspace替换端、inbox/审批及其余真实锁仍未完成验收，Phase 1未完成。
+
 2026-11-22 ToolCallRecordStore T1（基线 `4fe81d9`）：限定切片已通过独立审核与全量验证。
 只覆盖 tool JSONL 及一个真实锁；同 pinned parent、安全打开与实际 fd regular/nlink/UID/mode
 校验，持锁至完整 JSON+LF、文件同步和最终 parent 同步后 ACK。constructor 的 metadata-only

@@ -1,6 +1,7 @@
 # 崩溃恢复：当前证据与实施边界
 
-核查日期：2026-11-22。ToolCallRecordStore T1 基线 `4fe81d9`，限定切片已通过独立审核与全量验证；
+核查日期：2026-11-22。RunSummary R1 基线 `d78fa6f`，限定切片已验收；
+ToolCallRecordStore T1 基线 `4fe81d9`，限定切片已通过独立审核与全量验证；
 ModelCallStore M1 增量基线 `0a1ca50`，限定切片已通过独立审核与全量验证；
 EventLog 安全 I/O 增量基线 `76f31dc`；
 三 store 安全 I/O 增量基线 `bc17025`，限定切片已验收；
@@ -10,13 +11,14 @@ EventLog 安全 I/O 增量基线 `76f31dc`；
 
 ## 现在能恢复什么
 
-下表仅列已验证能力；EventLog 与三 store 安全 I/O 的范围及兼容性变化见下方。
+下表列已取得验证证据的能力；各片最终验收状态、范围及兼容性变化见下方。
 
 | 对象 | 已实现 | 不代表什么 |
 |---|---|---|
 | EventLog | 五个实际 I/O 入口逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；完整追加后文件与父目录均同步，再推进序号与 ACK；重开完整历史后接续序号 | 每次访问独立 pin，不是生命周期身份绑定；没有跨进程单写者锁、事务或完整自动恢复；MAX 序号仍有写后溢出边界 |
 | ModelCallStore | 成败 JSONL 与两实际锁安全打开；持锁完成历史校验、判重和文件/父目录同步后 ACK；相同记录 retry 同步原历史 fd、不改字节 | 查询可创建 RW sidecar；不防锁替换，无跨文件事务、坏尾修复或完整恢复 |
 | ToolCallRecordStore | tool JSONL/真实锁同 parent 安全打开，实际 fd 检查 regular/nlink/UID/mode；持锁至 JSON+LF、文件/parent 同步后 ACK | constructor 预检非 anchored 身份保证；不判重、不防锁替换，无尾修/事务/完整恢复 |
+| RunSummary | R1 限定切片已验收：安全打开并检查 regular/nlink 后原位覆盖，同 fd 文件及 pinned parent 同步 | 不做 UID/owner-only 拒绝；非 atomic，无锁、自动重试或完整恢复；失败可留下空/部分/完整新正文 |
 | StateStore | 从合法事件重建 loop/step 投影；临时文件同步、rename、Unix 父目录同步 | 不包含完整 TaskRun/Attempt、模型上下文、预算和租约 |
 | checkpoint / side-effect / trace | 共享 JSONL 追加/历史读取逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；目录链屏障、完整追加后文件同步再父目录同步；可查询及标记 `uncertain` | 每次访问独立 pin，不是生命周期身份绑定；无跨 store 事务、并发写者协调或完整恢复，不承诺抗 OS 掉电 |
 | workspace snapshot | 可选单文件原文快照；文件及目录同步；显式授权 restore | controller 的 snapshot binding 仍在内存，重启后不能据此直接 resume |
@@ -25,6 +27,25 @@ EventLog 安全 I/O 增量基线 `76f31dc`；
 源码依据：`src/event_log.rs`、`src/model_call_store.rs`、`src/tool_call_store.rs`、`src/state_store.rs`、`src/audit_store.rs`、
 `src/workspace_snapshot.rs`、`src/loop_controller.rs`、`src/provider_runner.rs`。
 CLI 的 execution 查询和运行中 inbox Resume 不是进程重启后的恢复入口。
+
+## RunSummary R1 安全 I/O（2026-11-22，限定切片已验收）
+
+基线 `d78fa6f`，仅 `audit_store.rs` 的普通 JSON 读写及 `safe_file.rs` 最小原语。
+完整路径先验证、逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 检查 regular/nlink=1；
+写入以 O_WRONLY 打开且不提前 truncate，验证后才截断/写入、同步同 fd，再同步 pinned parent 才 ACK。
+保留 in-place 覆盖及既有 inode/owner/mode（含 0644），不新增 UID 或 owner-only 拒绝；
+新目录/文件请求 0700/0600，受 umask 收窄。保留 pretty JSON 无末尾 LF、缺失读取 Io 且无创建、
+UTF-8 错误为 Io、JSON 错误为 `InvalidJson { line: 0, .. }`，不加 JSONL 尾部门禁。
+
+安全遍历要求 parent 可读，较原仅需可遍历的路径收窄；写入同步完整父目录链（含既有目录），
+性能未测。非 Unix 实际 I/O fail-closed；不是生命周期身份绑定或同 UID fencing。
+失败可能留下空/部分/完整新正文；不提供 atomic 替换、旧正文保全、锁、自动重试或恢复，
+也不代表之前的工具未执行或已回滚，不解除 live 写门禁。
+公共 RED 为 6 通过/7 失败；GREEN 为 R1 路径13、既有 audit14/路径20、CLI16通过；
+真实故障单元5通过，省略目录屏障 mutant 为2通过/3失败，精确恢复后5通过。
+最终全量79个harness、1097通过、0失败/跳过；严格all-targets Clippy、lib/bin build、fmt/diff通过。
+提交/合入及后续复验状态以
+`/temp/codex/steerbox-validation/run-summary-path-20261122/RECEIPT.md` 为准。
 
 ## ToolCallRecordStore T1 安全 I/O（2026-11-22，限定切片已验收）
 
@@ -212,6 +233,7 @@ controller 在写前记录 checkpoint，执行文件编辑后再记录完成事�
    三 store 与 EventLog 的安全打开、历史读取及目录同步已逐片实现并测试，不能替代其余路径验收。
    ModelCallStore 成败记录及两锁的 M1 已通过独立审核与全量验证；其余门禁不因此解除。
    ToolCallRecordStore T1 已通过独立审核与全量验证，不能代替剩余路径验收。
+   RunSummary R1 限定切片已验收；inbox/审批及其余真实锁仍须独立核查。
    State/实际 workspace edit 的替换端也要独立验收。
    仅末级 NOFOLLOW 或 metadata 预检不等于父路径安全，更不等于抵御任意同 UID 恶意进程。
 2. **只读恢复检查器**：识别完整前缀/坏尾、stale state、未闭合请求/工具/副作用、缺失快照；

@@ -165,6 +165,16 @@ impl AuditParent {
         Ok(file)
     }
 
+    /// Open for in-place overwrite, but do not truncate before fd validation.
+    pub(crate) fn open_write(&self) -> io::Result<File> {
+        let flags =
+            libc::O_WRONLY | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+        let file = open_at(&self.directory, &self.name, flags, 0o600)
+            .map_err(|error| io_error("file open", error))?;
+        validate_file(&file)?;
+        Ok(file)
+    }
+
     pub(crate) fn open_read(&self) -> io::Result<Option<File>> {
         let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
         let file = match open_at(&self.directory, &self.name, flags, 0) {
@@ -240,6 +250,10 @@ impl AuditParent {
     }
 
     pub(crate) fn open_append(&self) -> io::Result<File> {
+        Err(io_error("file open", io::ErrorKind::Unsupported.into()))
+    }
+
+    pub(crate) fn open_write(&self) -> io::Result<File> {
         Err(io_error("file open", io::ErrorKind::Unsupported.into()))
     }
 

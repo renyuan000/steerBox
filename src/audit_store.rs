@@ -1,13 +1,18 @@
 use crate::redaction::Redactor;
 use crate::tool_registry::{SideEffectClass, SideEffectDisposition};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
+#[cfg(test)]
+use std::fs;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use thiserror::Error;
 
 mod safe_file;
 pub(crate) use safe_file::AuditParent;
+
+#[cfg(all(test, unix))]
+mod run_summary_tests;
 
 #[derive(Debug, Error)]
 pub enum AuditStoreError {
@@ -248,25 +253,89 @@ pub struct RunSummary {
 }
 
 impl RunSummary {
+    /// Overwrite in place through a validated fd, then sync file and parent.
+    /// Failure may leave empty, partial or complete new bytes; there is no
+    /// atomic replacement, rollback, concurrency lock or automatic retry.
     pub fn write_json(&self, path: impl AsRef<Path>) -> Result<(), AuditStoreError> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(io_error)?;
-        }
+        self.write_json_with_io(path.as_ref(), &mut SummaryDisk)
+    }
+
+    fn write_json_with_io(
+        &self,
+        path: &Path,
+        io: &mut impl SummaryIo,
+    ) -> Result<(), AuditStoreError> {
         let encoded =
             serde_json::to_vec_pretty(self).map_err(|error| AuditStoreError::InvalidJson {
                 line: 0,
                 message: error.to_string(),
             })?;
-        fs::write(path, encoded).map_err(io_error)
+        let parent = AuditParent::open(path, true)
+            .map_err(io_error)?
+            .ok_or_else(|| summary_io_error("parent open", io::ErrorKind::NotFound.into()))?;
+        // open_write validates the actual fd before any truncation occurs.
+        let mut file = parent.open_write().map_err(io_error)?;
+        #[cfg(test)]
+        io.after_open(&file)
+            .map_err(|error| summary_io_error("opened file", error))?;
+        io.truncate(&file)
+            .map_err(|error| summary_io_error("truncate", error))?;
+        io.write(&mut file, &encoded)
+            .map_err(|error| summary_io_error("write", error))?;
+        io.sync_file(&file)
+            .map_err(|error| summary_io_error("file sync", error))?;
+        io.sync_directory(&parent)
+            .map_err(|error| summary_io_error("directory sync", error))
     }
 
     pub fn read_json(path: impl AsRef<Path>) -> Result<Self, AuditStoreError> {
-        let contents = fs::read_to_string(path).map_err(io_error)?;
+        let parent = AuditParent::open(path.as_ref(), false)
+            .map_err(io_error)?
+            .ok_or_else(|| summary_io_error("parent open", io::ErrorKind::NotFound.into()))?;
+        let mut file = parent
+            .open_read()
+            .map_err(io_error)?
+            .ok_or_else(|| summary_io_error("file open", io::ErrorKind::NotFound.into()))?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .map_err(|error| summary_io_error("read", error))?;
         serde_json::from_str(&contents).map_err(|error| AuditStoreError::InvalidJson {
             line: 0,
             message: error.to_string(),
         })
+    }
+}
+
+trait SummaryIo {
+    #[cfg(test)]
+    fn after_open(&mut self, _file: &File) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn truncate(&mut self, file: &File) -> io::Result<()> {
+        file.set_len(0)
+    }
+
+    fn write(&mut self, file: &mut File, encoded: &[u8]) -> io::Result<()> {
+        file.write_all(encoded)
+    }
+
+    fn sync_file(&mut self, file: &File) -> io::Result<()> {
+        file.sync_data()
+    }
+
+    fn sync_directory(&mut self, parent: &AuditParent) -> io::Result<()> {
+        parent.sync_directory()
+    }
+}
+
+struct SummaryDisk;
+
+impl SummaryIo for SummaryDisk {}
+
+fn summary_io_error(stage: &str, error: io::Error) -> AuditStoreError {
+    AuditStoreError::Io {
+        message: format!("run summary {stage} failed: {:?}", error.kind()),
     }
 }
 
