@@ -1,5 +1,21 @@
 # Phase 1 Validation Plan
 
+## 2026-11-22 Workspace editor W1（限定普通文件切片已验证）
+
+基线 `c7df098`；旧 edit/audit-gates/snapshot 基线70项通过。仅接read seam后，普通父目录
+替换测试真实RED为0通过/1失败：读取原文件后替换parent，旧实现报告成功却未更新原目录。
+同测试在pinned-parent实现后通过；另补失败清理不触碰替身目录temp sentinel的回归。
+实际source/temp FD 10项覆盖read、partial/full write、权限复制、file-sync、publish前失败、
+publish后parent-sync失败及成功/匹配短路；检查真实字节/inode/权限/阶段与普通环境temp清理。
+新增公开兼容7项覆盖approval优先级、noop/mismatch与预存temp、冲突保全、Unicode/CRLF字节数、缺失零创建。
+
+最终全量87个harness/1201项，0失败/跳过，严格all-targets Clippy、实际lib/bin构建、fmt/diff通过。
+三路独立源码/兼容/故障审查及master实际diff审查无剩余阻断；移除四条不能证明发布后所有权保留的
+UID/GID断言后已重跑完整门禁。本片未实施生产mutant；上层故障传播仅源码核查，不冒称故障E2E。
+非Unix行为收窄（approved noop也拒绝）、可读parent、诊断、post-create校验/cleanup失败残留及
+发布后错误边界见 `WORKSPACE_EDIT_IO.md`。不重试未获准专项，不放开live写，不提供完整恢复。
+命令/日志、提交与合入复验见 `/temp/codex/steerbox-validation/workspace-edit-path-20261122/RECEIPT.md`。
+
 ## 2026-11-22 StateStore S1（限定普通文件切片已验证）
 
 基线 `ac0070c`。定向基线4个harness/46项通过；新公共回归RED为8通过/1失败，

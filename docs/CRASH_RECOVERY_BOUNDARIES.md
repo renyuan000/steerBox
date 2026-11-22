@@ -1,6 +1,7 @@
 # 崩溃恢复：当前证据与实施边界
 
-核查日期：2026-11-22。StateStore S1 基线 `ac0070c`，限定普通文件安全读/原子替换切片已验证；
+核查日期：2026-11-22。Workspace editor W1 基线 `c7df098`，限定普通文件安全替换切片已验证；
+StateStore S1 基线 `ac0070c`，限定普通文件安全读/原子替换切片已验证；
 只读恢复检查 RDI1 基线 `75cdb2e`，事件/State 诊断切片已实现；
 ApprovalStore A1 基线 `ee87518`，限定 I/O 增量已实现，验证受限，非完整收口；
 UserCommandInbox I1 基线 `d271f7c`，限定切片已验收；
@@ -25,6 +26,7 @@ EventLog 安全 I/O 增量基线 `76f31dc`；
 | RunSummary | R1 限定切片已验收：安全打开并检查 regular/nlink 后原位覆盖，同 fd 文件及 pinned parent 同步 | 不做 UID/owner-only 拒绝；非 atomic，无锁、自动重试或完整恢复；失败可留下空/部分/完整新正文 |
 | UserCommandInbox | I1：安全只读查询；完整 JSON+LF 追加、同 fd 文件同步及 pinned parent 同步后追加 ACK | 无锁；同 intent 公开重试不重新同步；读与追加分别 pin；不保证原子判重、Applied 事务或完整恢复 |
 | StateStore | S1：安全 no-create load；同 pinned parent 的 exclusive temp、实际 FD 完整写/同步、renameat、parent 同步后 ACK | 发布后同步失败可能已发布；无 CAS/fencing/事务/孤儿恢复，不包含 TaskRun/Attempt、模型上下文、预算和租约；非 Unix IO fail-closed |
+| workspace editor | W1：同source FD读/权限、同pinned parent的exclusive temp、文件同步、rename和目录同步；保留expected/noop/冲突语义 | 发布后错误可能已改文件；非Unix含approved noop拒绝；无CAS/fencing/孤儿恢复或掉电保证，不代替snapshot持久关联 |
 | checkpoint / side-effect / trace | 共享 JSONL 追加/历史读取逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；目录链屏障、完整追加后文件同步再父目录同步；可查询及标记 `uncertain` | 每次访问独立 pin，不是生命周期身份绑定；无跨 store 事务、并发写者协调或完整恢复，不承诺抗 OS 掉电 |
 | workspace snapshot | 可选单文件原文快照；文件及目录同步；显式授权 restore | controller 的 snapshot binding 仍在内存，重启后不能据此直接 resume |
 | provider 身份门禁 | 拒绝顺序复用已有 run 身份 | 不证明旧请求没发送，也不证明旧动作没执行 |
@@ -32,6 +34,17 @@ EventLog 安全 I/O 增量基线 `76f31dc`；
 源码依据：`src/event_log.rs`、`src/model_call_store.rs`、`src/tool_call_store.rs`、`src/state_store.rs`、`src/audit_store.rs`、
 `src/workspace_snapshot.rs`、`src/loop_controller.rs`、`src/provider_runner.rs`、`src/user_command_inbox.rs`。
 CLI 的 execution 查询和运行中 inbox Resume 不是进程重启后的恢复入口。
+
+## Workspace editor W1（2026-11-22，限定普通文件切片已验证）
+
+父目录替换真实RED后修复通过；普通入口7项、真实FD10项、目录替换2项通过。
+最终全量87个harness/1201项及严格Clippy/build/fmt/diff通过，独立审核无剩余阻断。
+只替换选中条目，复制source FD权限，不承诺UID/GID；regular hardlink源策略不收窄。
+发布前失败仅尽力清理成功独占创建并校验的temp；校验/清理失败或进程异常可残留。
+发布后parent-sync失败可已发布，无自动回滚/重试。controller/restore错误处理仅源码复核，
+未做注入故障E2E；Consumed Once不退还，失败后应先检查当前文件。
+可信目录、非Unix收窄、可读parent与未测性能等详见 `WORKSPACE_EDIT_IO.md`；
+提交/合入复验见外置W1收据。不代替snapshot存储/关联、跨store事务、持久恢复输入或live验收。
 
 ## StateStore S1（2026-11-22，限定普通文件切片已验证）
 
@@ -43,7 +56,7 @@ exclusive temp，不删除预存冲突文件；发布后parent-sync失败不回�
 六项实际FD故障和新增普通文件回归通过；全量86个harness/1182项、严格Clippy/build/fmt/diff通过。
 这是状态投影写端加固，不是EventLog与State的事务，不提供快照关联、预算或授权恢复。
 合同、最终审核及提交/合入复验见 `STATE_STORE_IO.md`、验证计划与外置S1收据。
-workspace替换端、未获准A1专项、live写及完整恢复仍待验收；Phase 1未完成。
+workspace替换端限定范围见W1；未获准A1专项、live写及完整恢复仍待验收；Phase 1未完成。
 
 ## ApprovalStore A1（限定增量，验证受限）
 
@@ -297,7 +310,7 @@ controller 在写前记录 checkpoint，执行文件编辑后再记录完成事�
    ModelCallStore 成败记录及两锁的 M1 已通过独立审核与全量验证；其余门禁不因此解除。
    ToolCallRecordStore T1 已通过独立审核与全量验证，不能代替剩余路径验收。
    RunSummary R1 限定切片已验收；Inbox I1 范围及验收见上节，审批 A1 仅完成限定增量，未覆盖专项及其余真实锁仍须独立核查。
-   State/实际 workspace edit 的替换端也要独立验收。
+   State S1、实际workspace edit W1的限定替换端已逐片验收，不能替代snapshot存储/关联或完整恢复验收。
    仅末级 NOFOLLOW 或 metadata 预检不等于父路径安全，更不等于抵御任意同 UID 恶意进程。
 2. **只读恢复检查器**：RDI1 已实现有界 events/State 投影诊断，见上节；
    仅比较 mismatch，不推断 stale。后续补未闭合请求/工具/副作用与缺失快照对账。

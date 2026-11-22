@@ -2,6 +2,19 @@
 
 ## 定位与证据边界
 
+2026-11-22 Workspace editor W1（基线 `c7df098`）：限定 Unix 普通文件替换切片已实现并验证。
+保留审批/scope/Markdown、bounded expected 比较、noop、PID-temp 冲突与权限复制；
+读取/权限来自同一 source FD，临时创建/写入/同步/发布/清理/目录同步绑定同一 pinned parent。
+父目录替换真实 RED 为0通过/1失败，修复后通过；新增普通入口7项、实际FD10项、目录替换2项通过。
+最终全量87个harness/1201项、0失败/跳过，严格Clippy、实际lib/bin build、fmt/diff通过；
+独立源码/兼容/故障审查无剩余阻断。非Unix（含approved noop）fail-closed，未跨平台实测；
+保留regular hardlink源语义，不套用audit的nlink/UID策略。发布后sync失败可能已改文件，不回滚或重试；
+可信目录、无CAS/fencing/孤儿恢复/掉电保证，性能未测。合同见 `WORKSPACE_EDIT_IO.md`；
+提交及合入复验以外置 `workspace-edit-path-20261122/RECEIPT.md` 为准。
+不代替snapshot存储/关联、未获准A1专项、持久恢复输入与对账或live验收；Phase 1未完成，不解除live写门禁。
+
+下方保留各切片独立历史验收范围与计数，不将其历史待办作为 W1 的当前状态：
+
 2026-11-22 StateStore S1（基线 `ac0070c`）：限定 Unix 普通文件读写切片已实现，
 通过独立审核与全量验证。load 安全 no-create；persist 在同一 pinned parent 中
 exclusive temp → 完整 pretty JSON → 实际 FD sync_all → renameat → parent sync 后 ACK。
