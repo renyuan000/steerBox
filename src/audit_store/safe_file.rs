@@ -175,6 +175,50 @@ impl AuditParent {
         Ok(file)
     }
 
+    /// Create a new private file; never reuse an existing directory entry.
+    pub(crate) fn open_create_new(&self) -> io::Result<File> {
+        let flags = libc::O_WRONLY
+            | libc::O_CREAT
+            | libc::O_EXCL
+            | libc::O_NOFOLLOW
+            | libc::O_NONBLOCK
+            | libc::O_CLOEXEC;
+        let file = open_at(&self.directory, &self.name, flags, 0o600)
+            .map_err(|error| io_error("exclusive file create", error))?;
+        validate_file(&file)?;
+        Ok(file)
+    }
+
+    /// Replace this entry from a basename in this same pinned directory.
+    pub(crate) fn rename_from(&self, source: &std::ffi::OsStr) -> io::Result<()> {
+        let source = self.sibling(source)?;
+        // SAFETY: both names are validated basenames and both operations use
+        // the same live directory FD. renameat replaces, not opens, the target.
+        let result = unsafe {
+            libc::renameat(
+                self.directory.as_raw_fd(),
+                source.name.as_ptr(),
+                self.directory.as_raw_fd(),
+                self.name.as_ptr(),
+            )
+        };
+        if result < 0 {
+            return Err(io_error("file rename", io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    /// Unlink only this basename; used for an exclusively created temporary.
+    pub(crate) fn remove_file(&self) -> io::Result<()> {
+        // SAFETY: directory owns a live FD, name is a validated basename, and
+        // flags=0 unlinks a file entry rather than removing a directory.
+        let result = unsafe { libc::unlinkat(self.directory.as_raw_fd(), self.name.as_ptr(), 0) };
+        if result < 0 {
+            return Err(io_error("file cleanup", io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
     pub(crate) fn open_read(&self) -> io::Result<Option<File>> {
         let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
         let file = match open_at(&self.directory, &self.name, flags, 0) {
@@ -255,6 +299,21 @@ impl AuditParent {
 
     pub(crate) fn open_write(&self) -> io::Result<File> {
         Err(io_error("file open", io::ErrorKind::Unsupported.into()))
+    }
+
+    pub(crate) fn open_create_new(&self) -> io::Result<File> {
+        Err(io_error(
+            "exclusive file create",
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+
+    pub(crate) fn rename_from(&self, _: &std::ffi::OsStr) -> io::Result<()> {
+        Err(io_error("file rename", io::ErrorKind::Unsupported.into()))
+    }
+
+    pub(crate) fn remove_file(&self) -> io::Result<()> {
+        Err(io_error("file cleanup", io::ErrorKind::Unsupported.into()))
     }
 
     pub(crate) fn open_read(&self) -> io::Result<Option<File>> {
@@ -560,6 +619,59 @@ mod tests {
         );
         parent.open_append().unwrap();
         parent.sync_directory().unwrap();
+    }
+
+    #[test]
+    fn exclusive_create_collision_preserves_original_bytes_and_inode() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state.tmp");
+        let parent = AuditParent::open(&path, false).unwrap().unwrap();
+        let mut file = parent.open_create_new().unwrap();
+        file.write_all(b"original temporary state").unwrap();
+        file.sync_all().unwrap();
+        let before = file.metadata().unwrap();
+
+        let error = parent.open_create_new().unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        let after = fs::metadata(&path).unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert_eq!(fs::read(&path).unwrap(), b"original temporary state");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn cleanup_after_parent_replacement_removes_only_pinned_temporary() {
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("original");
+        fs::create_dir(&original).unwrap();
+        let parent = AuditParent::open(&original.join("state.tmp"), false)
+            .unwrap()
+            .unwrap();
+        let mut file = parent.open_create_new().unwrap();
+        file.write_all(b"owned temporary state").unwrap();
+        drop(file);
+        let moved = root.path().join("moved");
+        fs::rename(&original, &moved).unwrap();
+        fs::create_dir(&original).unwrap();
+        let decoy = original.join("state.tmp");
+        fs::write(&decoy, b"replacement directory decoy").unwrap();
+        let decoy_before = fs::metadata(&decoy).unwrap();
+
+        parent.remove_file().unwrap();
+
+        assert_eq!(fs::read_dir(&moved).unwrap().count(), 0);
+        assert_eq!(
+            fs::metadata(moved.join("state.tmp")).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let decoy_after = fs::metadata(&decoy).unwrap();
+        assert_eq!(
+            (decoy_after.dev(), decoy_after.ino()),
+            (decoy_before.dev(), decoy_before.ino())
+        );
+        assert_eq!(fs::read(&decoy).unwrap(), b"replacement directory decoy");
+        assert_eq!(fs::read_dir(&original).unwrap().count(), 1);
     }
 }
 

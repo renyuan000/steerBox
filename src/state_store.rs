@@ -1,14 +1,63 @@
+use crate::audit_store::AuditParent;
 use crate::domain::{EventEnvelope, LoopStatus, LoopStepStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
 static NEXT_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
+
+trait StateIo {
+    fn write(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()>;
+    fn sync_file(&mut self, file: &File) -> io::Result<()>;
+    fn publish(&mut self, parent: &AuditParent, temp_name: &OsStr) -> io::Result<()>;
+    fn sync_directory(&mut self, parent: &AuditParent) -> io::Result<()>;
+}
+
+struct RealStateIo;
+
+impl StateIo for RealStateIo {
+    fn write(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+        file.write_all(bytes)
+    }
+
+    fn sync_file(&mut self, file: &File) -> io::Result<()> {
+        file.sync_all()
+    }
+
+    fn publish(&mut self, parent: &AuditParent, temp_name: &OsStr) -> io::Result<()> {
+        parent.rename_from(temp_name)
+    }
+
+    fn sync_directory(&mut self, parent: &AuditParent) -> io::Result<()> {
+        parent.sync_directory()
+    }
+}
+
+struct PendingStateFile {
+    parent: AuditParent,
+    published: bool,
+}
+
+impl Drop for PendingStateFile {
+    fn drop(&mut self) {
+        if !self.published {
+            // Best effort only: preserve the original write/sync/publish error.
+            let _ = self.parent.remove_file();
+        }
+    }
+}
+
+fn state_io_error(stage: &str, error: io::Error) -> StateStoreError {
+    StateStoreError::Io {
+        message: format!("{stage} failed: {:?}", error.kind()),
+    }
+}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum StateStoreError {
@@ -77,52 +126,59 @@ impl StateStore {
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self, StateStoreError> {
-        let contents = fs::read_to_string(path).map_err(|error| StateStoreError::Io {
-            message: error.to_string(),
-        })?;
+        let parent = AuditParent::open(path.as_ref(), false)
+            .map_err(|error| state_io_error("parent open", error))?
+            .ok_or_else(|| state_io_error("parent open", io::ErrorKind::NotFound.into()))?;
+        let mut file = parent
+            .open_read()
+            .map_err(|error| state_io_error("state open", error))?
+            .ok_or_else(|| state_io_error("state open", io::ErrorKind::NotFound.into()))?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
+            .map_err(|error| state_io_error("state read", error))?;
         serde_json::from_str(&contents).map_err(|error| StateStoreError::InvalidJson {
             message: error.to_string(),
         })
     }
 
     pub fn persist(&self, path: impl AsRef<Path>) -> Result<(), StateStoreError> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| StateStoreError::Io {
-                message: error.to_string(),
-            })?;
-        }
+        self.persist_with_io(path.as_ref(), &mut RealStateIo)
+    }
+
+    fn persist_with_io(&self, path: &Path, io: &mut impl StateIo) -> Result<(), StateStoreError> {
+        let parent = AuditParent::open(path, true)
+            .map_err(|error| state_io_error("parent open", error))?
+            .ok_or_else(|| state_io_error("parent open", io::ErrorKind::NotFound.into()))?;
         let encoded =
             serde_json::to_vec_pretty(self).map_err(|error| StateStoreError::InvalidJson {
                 message: error.to_string(),
             })?;
         let temp_id = NEXT_TEMP_FILE_ID.fetch_add(1, Ordering::Relaxed);
         let temporary = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), temp_id));
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .map_err(|error| StateStoreError::Io {
-                message: error.to_string(),
-            })?;
-        file.write_all(&encoded)
-            .map_err(|error| StateStoreError::Io {
-                message: error.to_string(),
-            })?;
-        file.sync_all().map_err(|error| StateStoreError::Io {
-            message: error.to_string(),
-        })?;
-        fs::rename(&temporary, path).map_err(|error| StateStoreError::Io {
-            message: error.to_string(),
-        })?;
-        #[cfg(unix)]
-        if let Some(parent) = path.parent() {
-            fs::File::open(parent)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|error| StateStoreError::Io {
-                    message: error.to_string(),
-                })?;
-        }
+        let temp_name = temporary
+            .file_name()
+            .ok_or_else(|| state_io_error("temporary name", io::ErrorKind::InvalidInput.into()))?;
+        let temp_parent = parent
+            .sibling(temp_name)
+            .map_err(|error| state_io_error("temporary parent", error))?;
+        let mut file = temp_parent
+            .open_create_new()
+            .map_err(|error| state_io_error("temporary create", error))?;
+        // Arm cleanup only after this invocation has exclusively created it.
+        let mut pending = PendingStateFile {
+            parent: temp_parent,
+            published: false,
+        };
+        io.write(&mut file, &encoded)
+            .map_err(|error| state_io_error("temporary write", error))?;
+        io.sync_file(&file)
+            .map_err(|error| state_io_error("temporary sync", error))?;
+        io.publish(&parent, temp_name)
+            .map_err(|error| state_io_error("state rename", error))?;
+        // A later parent-sync error cannot undo a successful publication.
+        pending.published = true;
+        io.sync_directory(&parent)
+            .map_err(|error| state_io_error("parent sync", error))?;
         Ok(())
     }
 
@@ -436,3 +492,7 @@ fn invalid_field(event: &EventEnvelope, field: &str, reason: &str) -> StateStore
         reason: reason.into(),
     }
 }
+
+#[cfg(test)]
+#[path = "state_io_tests.rs"]
+mod io_tests;
