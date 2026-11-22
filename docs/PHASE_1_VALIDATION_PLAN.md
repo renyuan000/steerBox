@@ -1,5 +1,34 @@
 # Phase 1 Validation Plan
 
+## 2026-11-22 ToolCallRecordStore T1（限定切片已验收）
+
+基线 `4fe81d9`，仅 tool JSONL 与一个实际 `.lock`。最终
+`cargo test --locked --offline --all-targets` 为 78 个 harness、1079 项通过，0 失败/跳过；
+`cargo clippy --locked --offline --all-targets -- -D warnings`、
+`cargo build --locked --offline --lib --bins`、`cargo fmt --all -- --check` 与 diff 检查通过。
+外置 target、`CARGO_BUILD_JOBS=1` 串行执行；独立审核无剩余阻断。
+真实 seam 5 项、扩展路径 13 项通过；目录同步省略 mutant 为1通过/4失败，精确恢复后通过。
+日志及提交/合入复验见
+`/temp/codex/steerbox-validation/tool-store-path-20261122/RECEIPT.md`，不复用 M1 计数。
+
+- constructor 保留 metadata-only 即时诊断，不要求 data 读写权限，也不是 anchored 身份保证。
+  实际 data/lock 由一个 pinned parent 安全打开，regular/nlink后再验证 UID/owner-only。
+- data/lock leaf symlink/dangling/hardlink/FIFO/directory 均拒绝；parent symlink 不跟随，
+  非法全路径在 mkdir 前拒绝；检查受保护目标与另一 leaf 字节、inode/mode/nlink 不变。
+  这不是设备节点或所有父路径类型的完整实测矩阵。
+- 真实降权核验 0200 append/0400 query、0000 metadata-only 构造、RW lock及只读 parent；
+  foreign-owner data/lock 测试需特权夹具，非 root 明示不可用，不隐称已覆盖。
+- cap 在方法 I/O 前、zero 在安全锁后跳过 data、missing data 不创建业务文件；
+  缺失 parent 不重建。保留 offset/blank/物理行号/UTF-8/早停和无LF尾行读取语义。
+- 真实跨进程锁回归包含有界观察窗口；append 另以独立 contender 逐阶段 WouldBlock
+  断言持锁及返回后释放，不把进程调度窗口表述为无调度依赖的证明。
+- JSON+LF → 同 fd 文件同步 → pinned parent同步 → ACK；注入部分写/file/parent失败，
+  检查短路、不误ACK、uncertain字节保留与不自动重试。rename后用目录witness核对目标。
+- 不按 tool_call_id 排重，不扫描旧历史；相同记录、同步失败后的显式再次append仍新增。
+
+目录同步性能未测，非 Unix 实际 I/O fail-closed；无sidecar替换fencing、timeout或事务。
+无LF尾行后追加拼接风险未修复；不新增尾修、provider/live写CLI或完整崩溃恢复。
+
 ## 2026-11-22 ModelCallStore M1（限定切片已验收）
 
 基线 `0a1ca50`。本片仅为成功/failure JSONL 与两实际 advisory lock 的安全 I/O；

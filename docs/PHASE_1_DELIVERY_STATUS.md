@@ -2,6 +2,18 @@
 
 ## 定位与证据边界
 
+2026-11-22 ToolCallRecordStore T1（基线 `4fe81d9`）：限定切片已通过独立审核与全量验证。
+只覆盖 tool JSONL 及一个真实锁；同 pinned parent、安全打开与实际 fd regular/nlink/UID/mode
+校验，持锁至完整 JSON+LF、文件同步和最终 parent 同步后 ACK。constructor 的 metadata-only
+诊断不构成 anchored 身份保证；append 改用 O_WRONLY，0200 data 可追加但不可查询，
+查询仍需可读 data、RW lock。不扫描/判重，保留重复记录和分页 cap/zero/missing 语义。
+不防 sidecar 替换、无 timeout/事务/自动恢复；失败字节不回滚，无 LF 追加拼接风险未修复。
+成本未测，非 Unix 实际 I/O fail-closed，不放开 live 写 CLI；Phase 1 未完成。
+最终全量 78 个 harness、1079 项通过，0 失败/跳过；严格 all-targets Clippy、实际 lib/bin
+build、fmt/diff 通过。真实 seam 5 项、扩展路径 13 项通过；省略目录同步的 mutant 被
+4 项失败拦截，精确恢复后通过；独立规格、质量与文档审核无剩余阻断。日志与提交/合入复验以
+`/temp/codex/steerbox-validation/tool-store-path-20261122/RECEIPT.md` 为准。
+
 2026-11-22 ModelCallStore M1（基线 `0a1ca50`）：限定切片已通过独立审核与全量验证。
 成功/failure JSONL 及两实际锁接安全目录 fd，逐组件 NOFOLLOW、同 fd regular/nlink 校验；
 同一 pinned parent 派生锁与数据，持锁至完整追加、文件同步与最终 parent 同步后 ACK。
@@ -17,7 +29,7 @@ Clippy、lib/bin build、fmt/diff 通过；新增 helper 6 项、模型库 12 �
 文档审核无剩余阻断。日志与提交/合入复验以
 `/temp/codex/steerbox-validation/model-store-path-20261122/RECEIPT.md` 为准。Phase 1 未完成。
 
-以下保留 EventLog 和三 store 的独立历史范围与计数，不外推为 M1 验收结果：
+以下保留 EventLog 和三 store 的独立历史范围与计数，不外推为后续切片验收结果：
 
 2026-11-22 EventLog 安全 I/O 增量（基线 `76f31dc`）：五入口实现及回归通过。
 `open`、append、全量/分页查询、run identity 查询均接安全目录 fd 原语；
@@ -310,6 +322,11 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 2026-10-18 bounded resolved loop 用户进度增量：`RequestHuman` 与“无已验证 action”停止分支现在向现有 `ProgressSink` 发送 metadata-only `ProgressSubject::Loop + ProgressStatus::Progress`，subject id 使用 loop id，摘要固定为 `bounded resolved loop stopped: request human` 或 `bounded resolved loop stopped: no verified action`；不重复 `CompleteLoop` 已有的 Loop/Completed，不把 budget exhaustion 伪报为 Failed。model-call controller audit 29 项通过；这只是用户可见停止提示，不改变 EventLog、loop status 或 provider/live 验收边界。
 
 2026-10-19 provider runner ToolCallRecord 接线增量：OpenAI-compatible foreground、Anthropic foreground 和 bounded Markdown runner 均从 `events.jsonl` 同目录派生并接入 metadata-only `tool-calls.jsonl`；bounded Markdown focused 回归现在断言 mutation 的 `started/completed`、verification 的独立 `started/completed`，以及 verification 失败时的 `started/failed` 和 identity 分离。`provider_foreground_runner` 8 项、`provider_markdown_runner` 11 项通过；这仍是注入式 fixture/local transport 验收，不是 live provider、真实多步 coding loop、CLI 默认接线或完整 Phase 1 验收。
+
+前述“2026-10-19 ToolCallRecord runtime 与存储安全加固增量”为历史切片，不能作当前父链结论；其 NOFOLLOW|NONBLOCK 表述须收窄：
+旧源码仅在非 create 打开时添加 NONBLOCK，append/lock 的 create 打开并非全部具备。
+2026-11-22 T1 才统一接安全 helper 的非阻塞打开及父链约束；T1 当前状态见本文开头。
+这仍不建立 runtime private-root confinement 或 Windows 等价 ACL/reparse-point 防护。
 
 2026-10-18 memory candidate recording 增量：controller 新增显式 `record_memory_candidate`，先校验当前 project/goal/task scope 与 EventLog source-event identity，再 append caller-owned `MemoryStore`，成功后写入 `memory_candidate_write_requested`/`memory_candidate_written`，存储失败写入固定错误分类的 `memory_candidate_write_failed`（best-effort）。事件只保留 candidate identity、scope/confidence/lifecycle、source count 和 provenance kind，不写 claim summary、source payload 或敏感正文；不实现 promotion、MemoryRecord、PolicyGate 授权、prompt 注入或跨存储原子事务。loop_controller 44 项通过；该切片关闭 candidate 写入回链，不代表 memory/promotion 完整完成。
 
