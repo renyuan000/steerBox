@@ -64,6 +64,44 @@ impl Fixture {
 }
 
 #[test]
+fn open_leaves_missing_root_and_ancestors_uncreated() {
+    let fixture = Fixture::new();
+    let ancestor = fixture._dir.path().join("missing-ancestor");
+    let root = ancestor.join("snapshots");
+    let store = WorkspaceSnapshotStore::open(&root);
+    assert!(!root.exists());
+    assert!(!ancestor.exists());
+    drop(store);
+    assert_eq!(fs::read_dir(fixture._dir.path()).unwrap().count(), 1);
+    fixture.assert_bytes(BEFORE);
+}
+
+#[test]
+fn capture_does_not_recursively_create_missing_store_ancestors() {
+    let fixture = Fixture::new();
+    let ancestor = fixture._dir.path().join("missing-ancestor");
+    let root = ancestor.join("snapshots");
+    let error = WorkspaceSnapshotStore::open(&root)
+        .capture(
+            &fixture.workspace,
+            &fixture.goal,
+            "README.md",
+            "missing-parent",
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        SnapshotError::Io {
+            kind: std::io::ErrorKind::NotFound
+        }
+    );
+    assert!(!root.exists());
+    assert!(!ancestor.exists());
+    assert_eq!(fs::read_dir(fixture._dir.path()).unwrap().count(), 1);
+    fixture.assert_bytes(BEFORE);
+}
+
+#[test]
 fn capture_reopen_and_explicit_restore_preserve_exact_crlf_bytes() {
     let fixture = Fixture::new();
     let store = fixture.store();
@@ -119,6 +157,7 @@ fn restore_rejects_invalid_expected_hash_before_comparing_current_bytes() {
     let fixture = Fixture::new();
     fixture.capture();
     fs::write(fixture.workspace.join("README.md"), AFTER).unwrap();
+    let missing = Fixture::new();
     for invalid_hash in [
         "sha256:not-a-hash".to_owned(),
         format!("sha256:{}", "a".repeat(65)),
@@ -134,7 +173,44 @@ fn restore_rejects_invalid_expected_hash_before_comparing_current_bytes() {
             .unwrap_err();
         assert_eq!(error, SnapshotError::InvalidHash);
         fixture.assert_bytes(AFTER);
+        for snapshot_id in ["snapshot-1", ""] {
+            let error = missing
+                .store()
+                .restore(
+                    &missing.workspace,
+                    &missing.goal,
+                    snapshot_id,
+                    &invalid_hash,
+                )
+                .unwrap_err();
+            assert_eq!(error, SnapshotError::InvalidHash);
+            assert!(!missing.store_root.exists());
+            missing.assert_bytes(BEFORE);
+        }
     }
+}
+
+#[test]
+fn restore_missing_store_root_does_not_create_it() {
+    let fixture = Fixture::new();
+    let error = fixture
+        .store()
+        .restore(
+            &fixture.workspace,
+            &fixture.goal,
+            "snapshot-1",
+            &hash(BEFORE),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        SnapshotError::Io {
+            kind: std::io::ErrorKind::NotFound
+        }
+    );
+    assert!(!fixture.store_root.exists());
+    assert_eq!(fs::read_dir(fixture._dir.path()).unwrap().count(), 1);
+    fixture.assert_bytes(BEFORE);
 }
 
 #[test]
@@ -404,17 +480,40 @@ fn capture_rejects_traversal_non_markdown_and_out_of_scope() {
 }
 
 #[test]
+fn invalid_utf8_source_leaves_empty_store_root_without_record() {
+    let fixture = Fixture::new();
+    let invalid = [0xff, 0xfe];
+    fs::write(fixture.workspace.join("README.md"), invalid).unwrap();
+    let error = fixture
+        .store()
+        .capture(
+            &fixture.workspace,
+            &fixture.goal,
+            "README.md",
+            "invalid-text",
+        )
+        .unwrap_err();
+    assert_eq!(error, SnapshotError::InvalidUtf8);
+    assert!(fixture.store_root.is_dir());
+    assert_eq!(fs::read_dir(&fixture.store_root).unwrap().count(), 0);
+    fixture.assert_bytes(&invalid);
+}
+
+#[test]
 fn oversized_source_is_rejected_without_snapshot_or_source_changes() {
     let fixture = Fixture::new();
     assert_eq!(MAX_SNAPSHOT_BYTES, 1024 * 1024);
     let large = vec![b'x'; MAX_SNAPSHOT_BYTES + 1];
     fs::write(fixture.workspace.join("README.md"), &large).unwrap();
-    assert!(fixture
+    let error = fixture
         .store()
         .capture(&fixture.workspace, &fixture.goal, "README.md", "too-large")
-        .is_err());
+        .unwrap_err();
+    assert_eq!(error, SnapshotError::TooLarge);
     fixture.assert_bytes(&large);
     assert!(!fixture.store_root.join("too-large.json").exists());
+    assert!(fixture.store_root.is_dir());
+    assert_eq!(fs::read_dir(&fixture.store_root).unwrap().count(), 0);
 }
 
 #[test]
@@ -424,12 +523,27 @@ fn duplicate_snapshot_id_never_overwrites_existing_snapshot_or_source() {
     let record = fixture.store_root.join("snapshot-1.json");
     let saved_record = fs::read(&record).unwrap();
     fs::write(fixture.workspace.join("README.md"), AFTER).unwrap();
-    assert!(fixture
+    let error = fixture
         .store()
         .capture(&fixture.workspace, &fixture.goal, "README.md", "snapshot-1")
-        .is_err());
+        .unwrap_err();
+    assert_eq!(
+        error,
+        SnapshotError::Io {
+            kind: std::io::ErrorKind::AlreadyExists
+        }
+    );
     assert_eq!(fs::read(&record).unwrap(), saved_record);
     fixture.assert_bytes(AFTER);
+    let invalid = [0xff, 0xfe];
+    fs::write(fixture.workspace.join("README.md"), invalid).unwrap();
+    let error = fixture
+        .store()
+        .capture(&fixture.workspace, &fixture.goal, "README.md", "snapshot-1")
+        .unwrap_err();
+    assert_eq!(error, SnapshotError::InvalidUtf8);
+    assert_eq!(fs::read(&record).unwrap(), saved_record);
+    fixture.assert_bytes(&invalid);
 }
 
 #[cfg(unix)]

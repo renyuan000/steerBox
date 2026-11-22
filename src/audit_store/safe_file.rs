@@ -88,6 +88,57 @@ impl AuditParent {
         Ok(Self { directory, name })
     }
 
+    /// Enter this store leaf through the pinned parent and bind a record name.
+    pub(crate) fn enter_directory(
+        &self,
+        record_name: &std::ffi::OsStr,
+        create_leaf: bool,
+    ) -> io::Result<Option<Self>> {
+        let bytes = record_name.as_bytes();
+        if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
+            return Err(io_error(
+                "record name validation",
+                io::ErrorKind::InvalidInput.into(),
+            ));
+        }
+        let name = CString::new(bytes)
+            .map_err(|_| io_error("record name validation", io::ErrorKind::InvalidInput.into()))?;
+        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        let directory = match open_at(&self.directory, &self.name, flags, 0) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if !create_leaf {
+                    return Ok(None);
+                }
+                // SAFETY: directory owns a live parent descriptor, self.name
+                // is a validated basename, and 0700 is a valid directory mode.
+                let result =
+                    unsafe { libc::mkdirat(self.directory.as_raw_fd(), self.name.as_ptr(), 0o700) };
+                if result < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::AlreadyExists {
+                        return Err(io_error("store directory create", error));
+                    }
+                } else {
+                    self.directory
+                        .sync_all()
+                        .map_err(|error| io_error("parent directory sync", error))?;
+                }
+                open_at(&self.directory, &self.name, flags, 0)
+                    .map_err(|error| io_error("store directory open", error))?
+            }
+            Err(error) => return Err(io_error("store directory open", error)),
+        };
+        Ok(Some(Self { directory, name }))
+    }
+
+    /// Inspect the pinned directory, without reopening its path.
+    pub(crate) fn directory_metadata(&self) -> io::Result<std::fs::Metadata> {
+        self.directory
+            .metadata()
+            .map_err(|error| io_error("directory metadata", error))
+    }
+
     /// Open a lock candidate without truncation; the caller acquires the lock.
     /// This does not prevent later unlink/recreation of the directory entry.
     pub(crate) fn open_lock(&self) -> io::Result<File> {
@@ -189,6 +240,18 @@ impl AuditParent {
         Ok(file)
     }
 
+    /// Transfer an exclusively created file to the caller for validation.
+    pub(crate) fn open_create_new_candidate(&self) -> io::Result<File> {
+        let flags = libc::O_WRONLY
+            | libc::O_CREAT
+            | libc::O_EXCL
+            | libc::O_NOFOLLOW
+            | libc::O_NONBLOCK
+            | libc::O_CLOEXEC;
+        open_at(&self.directory, &self.name, flags, 0o600)
+            .map_err(|error| io_error("exclusive file create", error))
+    }
+
     /// Replace this entry from a basename in this same pinned directory.
     pub(crate) fn rename_from(&self, source: &std::ffi::OsStr) -> io::Result<()> {
         let source = self.sibling(source)?;
@@ -228,6 +291,16 @@ impl AuditParent {
         };
         validate_file(&file)?;
         Ok(Some(file))
+    }
+
+    /// Open an existing candidate; the caller validates the returned file FD.
+    pub(crate) fn open_read_candidate(&self) -> io::Result<Option<File>> {
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+        match open_at(&self.directory, &self.name, flags, 0) {
+            Ok(file) => Ok(Some(file)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(io_error("file open", error)),
+        }
     }
 
     /// Read an existing regular source for replacement, without audit's
@@ -304,6 +377,20 @@ impl AuditParent {
         Err(io_error("sibling open", io::ErrorKind::Unsupported.into()))
     }
 
+    pub(crate) fn enter_directory(&self, _: &std::ffi::OsStr, _: bool) -> io::Result<Option<Self>> {
+        Err(io_error(
+            "store directory open",
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+
+    pub(crate) fn directory_metadata(&self) -> io::Result<std::fs::Metadata> {
+        Err(io_error(
+            "directory metadata",
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+
     pub(crate) fn open_lock(&self) -> io::Result<File> {
         Err(io_error(
             "lock file open",
@@ -326,6 +413,13 @@ impl AuditParent {
         ))
     }
 
+    pub(crate) fn open_create_new_candidate(&self) -> io::Result<File> {
+        Err(io_error(
+            "exclusive file create",
+            io::ErrorKind::Unsupported.into(),
+        ))
+    }
+
     pub(crate) fn rename_from(&self, _: &std::ffi::OsStr) -> io::Result<()> {
         Err(io_error("file rename", io::ErrorKind::Unsupported.into()))
     }
@@ -335,6 +429,10 @@ impl AuditParent {
     }
 
     pub(crate) fn open_read(&self) -> io::Result<Option<File>> {
+        Err(io_error("file open", io::ErrorKind::Unsupported.into()))
+    }
+
+    pub(crate) fn open_read_candidate(&self) -> io::Result<Option<File>> {
         Err(io_error("file open", io::ErrorKind::Unsupported.into()))
     }
 
@@ -367,6 +465,206 @@ mod tests {
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+
+    #[test]
+    fn enter_directory_uses_the_pinned_parent_after_its_path_is_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("original");
+        let store = original.join("store");
+        fs::create_dir(&original).unwrap();
+        fs::create_dir(&store).unwrap();
+        fs::write(store.join("record.json"), b"original record").unwrap();
+        let before = fs::metadata(&store).unwrap();
+        let entry = AuditParent::open(&store, false).unwrap().unwrap();
+        let moved = root.path().join("moved");
+        fs::rename(&original, &moved).unwrap();
+        fs::create_dir(&original).unwrap();
+        fs::create_dir(&store).unwrap();
+        let decoy = store.join("record.json");
+        fs::write(&decoy, b"replacement directory decoy").unwrap();
+        let decoy_before = fs::metadata(&decoy).unwrap();
+
+        let record = entry
+            .enter_directory(std::ffi::OsStr::new("record.json"), false)
+            .unwrap()
+            .unwrap();
+        let actual = record.directory_metadata().unwrap();
+        let mut bytes = Vec::new();
+        record
+            .open_read()
+            .unwrap()
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+
+        assert_eq!((actual.dev(), actual.ino()), (before.dev(), before.ino()));
+        assert_eq!(bytes, b"original record");
+        assert_eq!(fs::read(&decoy).unwrap(), b"replacement directory decoy");
+        let decoy_after = fs::metadata(&decoy).unwrap();
+        assert_eq!(
+            (decoy_after.dev(), decoy_after.ino()),
+            (decoy_before.dev(), decoy_before.ino())
+        );
+        assert_eq!(fs::read_dir(&store).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(moved.join("store")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn enter_directory_creates_only_the_store_leaf_under_an_existing_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let ancestor = root.path().join("ancestor");
+        fs::create_dir(&ancestor).unwrap();
+        let before = fs::metadata(&ancestor).unwrap();
+        let store = ancestor.join("store");
+        let entry = AuditParent::open(&store, false).unwrap().unwrap();
+
+        let record = entry
+            .enter_directory(std::ffi::OsStr::new("record.json"), true)
+            .unwrap()
+            .unwrap();
+
+        let actual = record.directory_metadata().unwrap();
+        let created = fs::metadata(&store).unwrap();
+        let after = fs::metadata(&ancestor).unwrap();
+        assert!(actual.is_dir());
+        assert_eq!((actual.dev(), actual.ino()), (created.dev(), created.ino()));
+        assert_eq!(actual.mode() & 0o077, 0);
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert_eq!(fs::read_dir(&store).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&ancestor).unwrap().count(), 1);
+        assert!(!store.join("record.json").exists());
+        let missing = root.path().join("missing/ancestor/store");
+        assert!(AuditParent::open(&missing, false).unwrap().is_none());
+        assert!(!root.path().join("missing").exists());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn enter_directory_without_create_leaves_a_missing_store_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        let entry = AuditParent::open(&store, false).unwrap().unwrap();
+
+        assert!(entry
+            .enter_directory(std::ffi::OsStr::new("record.json"), false)
+            .unwrap()
+            .is_none());
+
+        assert!(!store.exists());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn directory_metadata_uses_the_entered_store_fd_after_path_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        fs::create_dir(&store).unwrap();
+        let before = fs::metadata(&store).unwrap();
+        let entry = AuditParent::open(&store, false).unwrap().unwrap();
+        let record = entry
+            .enter_directory(std::ffi::OsStr::new("record.json"), false)
+            .unwrap()
+            .unwrap();
+        drop(entry);
+        let moved = root.path().join("moved-store");
+        fs::rename(&store, &moved).unwrap();
+        fs::create_dir(&store).unwrap();
+
+        let actual = record.directory_metadata().unwrap();
+
+        assert!(actual.is_dir());
+        assert_eq!((actual.dev(), actual.ino()), (before.dev(), before.ino()));
+        assert_eq!(actual.uid(), before.uid());
+        assert_eq!(actual.mode(), before.mode());
+        let decoy = fs::metadata(&store).unwrap();
+        assert_ne!((actual.dev(), actual.ino()), (decoy.dev(), decoy.ino()));
+        assert_eq!(fs::read_dir(&store).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&moved).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn enter_directory_rejects_invalid_record_names_before_creating_the_store() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        let entry = AuditParent::open(&store, false).unwrap().unwrap();
+        for bytes in [
+            b"".as_slice(),
+            b".",
+            b"..",
+            b"/absolute",
+            b"nested/record",
+            b"record/",
+            b"bad\0record",
+        ] {
+            let error = entry
+                .enter_directory(std::ffi::OsStr::from_bytes(bytes), true)
+                .err()
+                .expect("the record basename must be validated before mkdir");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(!store.exists());
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn open_read_candidate_returns_a_directory_fd_for_caller_validation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ordinary-directory");
+        fs::create_dir(&path).unwrap();
+        let parent = AuditParent::open(&path, false).unwrap().unwrap();
+
+        let candidate = parent.open_read_candidate().unwrap().unwrap();
+
+        assert!(candidate.metadata().unwrap().is_dir());
+        assert_eq!(
+            parent.open_read().unwrap_err().kind(),
+            io::ErrorKind::IsADirectory
+        );
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn open_read_candidate_reads_existing_bytes_and_does_not_create_missing_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("record.json");
+        fs::write(&path, b"ordinary candidate record").unwrap();
+        let before = fs::metadata(&path).unwrap();
+        let parent = AuditParent::open(&path, false).unwrap().unwrap();
+
+        let mut candidate = parent.open_read_candidate().unwrap().unwrap();
+        let actual = candidate.metadata().unwrap();
+        let mut bytes = Vec::new();
+        candidate.read_to_end(&mut bytes).unwrap();
+
+        assert_eq!((actual.dev(), actual.ino()), (before.dev(), before.ino()));
+        assert_eq!(bytes, b"ordinary candidate record");
+        let missing = parent
+            .sibling(std::ffi::OsStr::new("missing.json"))
+            .unwrap();
+        assert!(missing.open_read_candidate().unwrap().is_none());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn open_create_new_candidate_preserves_collisions_and_allows_owned_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("record.json");
+        let parent = AuditParent::open(&path, false).unwrap().unwrap();
+        let mut candidate = parent.open_create_new_candidate().unwrap();
+        candidate.write_all(b"owned candidate record").unwrap();
+        let before = candidate.metadata().unwrap();
+
+        let error = parent.open_create_new_candidate().unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        let after = fs::metadata(&path).unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert_eq!(fs::read(&path).unwrap(), b"owned candidate record");
+        drop(candidate);
+        parent.remove_file().unwrap();
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn sibling_rejects_non_basename_without_creating_entries() {

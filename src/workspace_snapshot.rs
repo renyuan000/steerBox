@@ -6,11 +6,13 @@
 //! decide policy. Permissions do not isolate the same OS user/root; this API
 //! does not provide a concurrent writer lock or a crash transaction.
 
+use crate::audit_store::AuditParent;
 use crate::domain::GoalContract;
 use crate::workspace_edit::{checked_existing_file, edit_markdown, safe_relative_path, EditResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::ffi::OsStr;
+use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
@@ -20,6 +22,26 @@ pub const MAX_SNAPSHOT_BYTES: usize = 1024 * 1024;
 pub const MAX_RECORD_BYTES: usize = 6 * MAX_SNAPSHOT_BYTES + 64 * 1024;
 const MAX_IDENTITY_BYTES: usize = 1024;
 const MAX_PATH_BYTES: usize = 4096;
+
+// Narrow failure/operation seams; production always uses the real file I/O.
+trait SnapshotIo {
+    fn root_opened(&mut self) {}
+
+    fn write(&mut self, file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
+        file.write_all(bytes)
+    }
+
+    fn sync_file(&mut self, file: &File) -> std::io::Result<()> {
+        file.sync_all()
+    }
+
+    fn sync_directory(&mut self, parent: &AuditParent) -> std::io::Result<()> {
+        parent.sync_directory()
+    }
+}
+
+struct RealSnapshotIo;
+impl SnapshotIo for RealSnapshotIo {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -102,6 +124,23 @@ impl WorkspaceSnapshotStore {
         relative_path: &str,
         snapshot_id: &str,
     ) -> Result<SnapshotMetadata, SnapshotError> {
+        self.capture_with_io(
+            workspace,
+            goal,
+            relative_path,
+            snapshot_id,
+            &mut RealSnapshotIo,
+        )
+    }
+
+    fn capture_with_io(
+        &self,
+        workspace: &Path,
+        goal: &GoalContract,
+        relative_path: &str,
+        snapshot_id: &str,
+        io: &mut impl SnapshotIo,
+    ) -> Result<SnapshotMetadata, SnapshotError> {
         supported_platform()?;
         validate_id(snapshot_id)?;
         validate_goal_identity(goal)?;
@@ -109,7 +148,8 @@ impl WorkspaceSnapshotStore {
         let relative = scoped_path(goal, relative_path)?;
         let target =
             checked_existing_file(&binding, &relative).map_err(|_| SnapshotError::InvalidPath)?;
-        let root = self.checked_root(&binding, true)?;
+        let root = self.checked_root(&binding, snapshot_id, true)?;
+        io.root_opened();
         let contents = read_text(&target, MAX_SNAPSHOT_BYTES, false)?;
         let metadata = SnapshotMetadata {
             schema_version: 1,
@@ -129,23 +169,22 @@ impl WorkspaceSnapshotStore {
         if encoded.len() > MAX_RECORD_BYTES {
             return Err(SnapshotError::TooLarge);
         }
-        let path = root.join(format!("{snapshot_id}.json"));
-        let mut options = nofollow_options();
-        options.write(true).create_new(true);
-        private_file_mode(&mut options);
-        let mut file = options.open(&path).map_err(io_error)?;
+        // Retain ownership even if subsequent FD validation fails, so failure
+        // cleanup can unlink this call's entry in the same pinned directory.
+        let mut file = root.open_create_new_candidate().map_err(io_error)?;
         let persisted = (|| {
             check_regular(&file.metadata().map_err(io_error)?)?;
             check_private(&file.metadata().map_err(io_error)?)?;
-            file.write_all(&encoded).map_err(io_error)?;
-            file.sync_all().map_err(io_error)?;
-            sync_directory(&root)
+            io.write(&mut file, &encoded).map_err(io_error)?;
+            io.sync_file(&file).map_err(io_error)?;
+            io.sync_directory(&root).map_err(io_error)
         })();
         if persisted.is_err() {
-            // Only remove the record that this call successfully create_new'ed.
+            // Best effort through the pinned directory, not a pathname. This
+            // does not fence entry replacement by another same-UID writer.
             drop(file);
-            let _ = fs::remove_file(&path);
-            let _ = sync_directory(&root);
+            let _ = root.remove_file();
+            let _ = root.sync_directory();
         }
         persisted?;
         Ok(metadata)
@@ -174,9 +213,11 @@ impl WorkspaceSnapshotStore {
         validate_id(snapshot_id)?;
         validate_goal_identity(goal)?;
         let binding = checked_workspace(workspace)?;
-        let root = self.checked_root(&binding, false)?;
-        let path = root.join(format!("{snapshot_id}.json"));
-        let encoded = read_bytes(&path, MAX_RECORD_BYTES, true)?;
+        let root = self.checked_root(&binding, snapshot_id, false)?;
+        // Keep the existing static-symlink error category; the following open
+        // still uses the pinned root, never this prechecked pathname.
+        check_no_symlinks(&self.root.join(format!("{snapshot_id}.json")))?;
+        let encoded = read_parent(&root, MAX_RECORD_BYTES, true)?;
         let record: SnapshotRecord =
             serde_json::from_slice(&encoded).map_err(|_| SnapshotError::InvalidRecord)?;
         let metadata = &record.metadata;
@@ -230,7 +271,12 @@ impl WorkspaceSnapshotStore {
         .map_err(|_| SnapshotError::ReplacementFailed)
     }
 
-    fn checked_root(&self, workspace: &Path, create: bool) -> Result<PathBuf, SnapshotError> {
+    fn checked_root(
+        &self,
+        workspace: &Path,
+        snapshot_id: &str,
+        create: bool,
+    ) -> Result<AuditParent, SnapshotError> {
         check_absolute_components(&self.root)?;
         let parent = self.root.parent().ok_or(SnapshotError::UnsafePath)?;
         check_no_symlinks(parent)?;
@@ -239,20 +285,23 @@ impl WorkspaceSnapshotStore {
         if resolved.starts_with(workspace) {
             return Err(SnapshotError::StoreWithinWorkspace);
         }
-        if create {
-            create_private_directory(&resolved)?;
+        // Preserve static-path error categories, but these prechecks are not
+        // the authority: all record operations use the opened directory FD.
+        match fs::symlink_metadata(&resolved) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(SnapshotError::UnsafePath),
+            Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(error)),
         }
-        check_no_symlinks(&resolved)?;
-        let metadata = fs::symlink_metadata(&resolved).map_err(io_error)?;
-        if !metadata.is_dir() {
-            return Err(SnapshotError::UnsafePath);
-        }
-        check_private(&metadata)?;
-        let canonical = fs::canonicalize(&resolved).map_err(io_error)?;
-        if canonical.starts_with(workspace) {
-            return Err(SnapshotError::StoreWithinWorkspace);
-        }
-        Ok(canonical)
+        let containing = AuditParent::open(&resolved, false)
+            .map_err(io_error)?
+            .ok_or_else(missing_file)?;
+        let root = containing
+            .enter_directory(OsStr::new(&format!("{snapshot_id}.json")), create)
+            .map_err(io_error)?
+            .ok_or_else(missing_file)?;
+        check_private(&root.directory_metadata().map_err(io_error)?)?;
+        Ok(root)
     }
 }
 
@@ -333,10 +382,32 @@ fn check_no_symlinks(path: &Path) -> Result<(), SnapshotError> {
 }
 
 fn read_bytes(path: &Path, limit: usize, private: bool) -> Result<Vec<u8>, SnapshotError> {
+    read_bytes_with_hook(path, limit, private, || {})
+}
+
+fn read_bytes_with_hook(
+    path: &Path,
+    limit: usize,
+    private: bool,
+    after_parent: impl FnOnce(),
+) -> Result<Vec<u8>, SnapshotError> {
     check_no_symlinks(path)?;
-    let mut options = nofollow_options();
-    options.read(true);
-    let file = options.open(path).map_err(io_error)?;
+    let parent = AuditParent::open(path, false)
+        .map_err(io_error)?
+        .ok_or_else(missing_file)?;
+    after_parent();
+    read_parent(&parent, limit, private)
+}
+
+fn read_parent(
+    parent: &AuditParent,
+    limit: usize,
+    private: bool,
+) -> Result<Vec<u8>, SnapshotError> {
+    let file = parent
+        .open_read_candidate()
+        .map_err(io_error)?
+        .ok_or_else(missing_file)?;
     let metadata = file.metadata().map_err(io_error)?;
     check_regular(&metadata)?;
     if private {
@@ -382,27 +453,6 @@ fn supported_platform() -> Result<(), SnapshotError> {
     Err(SnapshotError::UnsupportedPlatform)
 }
 
-fn nofollow_options() -> OpenOptions {
-    let mut options = OpenOptions::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // NONBLOCK ensures a concurrent FIFO substitution cannot hang the read.
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    options
-}
-
-fn private_file_mode(options: &mut OpenOptions) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    #[cfg(not(unix))]
-    let _ = options;
-}
-
 fn check_regular(metadata: &fs::Metadata) -> Result<(), SnapshotError> {
     if !metadata.is_file() {
         return Err(SnapshotError::NotRegularFile);
@@ -434,26 +484,15 @@ fn check_private(metadata: &fs::Metadata) -> Result<(), SnapshotError> {
     }
 }
 
-fn create_private_directory(path: &Path) -> Result<(), SnapshotError> {
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+fn missing_file() -> SnapshotError {
+    SnapshotError::Io {
+        kind: std::io::ErrorKind::NotFound,
     }
-    match builder.create(path) {
-        Ok(()) => sync_directory(path.parent().ok_or(SnapshotError::UnsafePath)?),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(error) => Err(io_error(error)),
-    }
-}
-
-fn sync_directory(path: &Path) -> Result<(), SnapshotError> {
-    File::open(path)
-        .and_then(|file| file.sync_all())
-        .map_err(io_error)
 }
 
 fn io_error(error: std::io::Error) -> SnapshotError {
     SnapshotError::Io { kind: error.kind() }
 }
+
+#[cfg(all(test, unix))]
+mod tests;
