@@ -17,6 +17,13 @@
 
 ## 当前收口依赖顺序（2026-11-22）
 
+StateStore S1（基线 `ac0070c`）限定 Unix 普通文件切片已通过独立审核与全量验证：
+安全 no-create load，同 pinned parent 的 exclusive temp/完整写入/文件同步/rename/目录同步；
+普通入口10项、实际FD6项、共享helper15项通过，全量86个harness/1182项，严格Clippy/build/fmt/diff通过。
+平台、诊断及发布后同步失败边界见 `STATE_STORE_IO.md`，提交/合入复验见外置 S1 收据。
+后续仍须完成 workspace 实际替换端、持久恢复输入与请求/工具/副作用/快照对账；
+A1 未获准专项及 live provider/live mutation 门禁不由本片解除，不能把 State 投影持久化当完整续跑。
+
 Phase 1 尚未完成。实际 runtime I/O 继续逐片验收；零写入检查不依赖全部写端完成。
 RDI1 已实现事件/State 投影诊断入口，不包含请求/工具/副作用/快照对账。
 实际修复与续跑仍须先交付安全写端、持久恢复输入及对账协调；supervisor/fencing

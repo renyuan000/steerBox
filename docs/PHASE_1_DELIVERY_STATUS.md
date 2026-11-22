@@ -2,6 +2,18 @@
 
 ## 定位与证据边界
 
+2026-11-22 StateStore S1（基线 `ac0070c`）：限定 Unix 普通文件读写切片已实现，
+通过独立审核与全量验证。load 安全 no-create；persist 在同一 pinned parent 中
+exclusive temp → 完整 pretty JSON → 实际 FD sync_all → renameat → parent sync 后 ACK。
+保留 API/schema/投影及 rename-entry 替换语义，修复裸相对 basename；错误诊断改为
+stage/kind，新建请求0700/0600，非 Unix 实际 I/O fail-closed，目录链同步成本未测。
+发布前失败尽力清理本次 temp；发布后目录同步失败可能已发布，不回滚或自动重试。
+普通文件新增入口10项、真实FD6项、共享helper15项通过；最终全量86个harness/1182项、
+0失败/跳过，严格all-targets Clippy、实际lib/bin build、fmt/diff通过。
+合同见 `STATE_STORE_IO.md`，提交/合入复验见外置 `state-path-20261122/RECEIPT.md`。
+不代替未获准的 A1 专项、workspace 写端、持久恢复输入/对账或 live provider 验收；
+不提供 CAS/fencing/事务、孤儿清理或掉电恢复。Phase 1 未完成，不解除 live mutation 门禁。
+
 2026-11-22 ApprovalStore A1（基线 `ee87518`）：审批历史及真实 `.lock` 的限定
 安全 I/O 增量已实现。单次操作在同一 pinned parent 下 try-lock、全量重载并追加，
 新记录经完整 JSON+LF、同 fd 文件同步和 parent 同步后确认；保留审批范围、

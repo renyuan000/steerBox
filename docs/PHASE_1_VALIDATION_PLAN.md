@@ -1,5 +1,24 @@
 # Phase 1 Validation Plan
 
+## 2026-11-22 StateStore S1（限定普通文件切片已验证）
+
+基线 `ac0070c`。定向基线4个harness/46项通过；新公共回归RED为8通过/1失败，
+裸相对basename子进程无法确认成功。修复后同组加新回归共55项通过；最终新增普通文件
+harness为10项入口（含子进程probe及exclusive冲突后显式再调用），不是自动重试能力。
+真实FD6项覆盖partial/full write报错、file-sync/publish/parent-sync失败和成功时
+parent rename/decoy/witness；检查旧bytes/inode保留、同实际FD同步、阶段短路、
+发布后报错但新投影可读、内存投影不变及普通环境temp清理。
+共享helper15项通过，含新增exclusive冲突与pinned-parent清理2项；不将共享测试
+外推为新的State特殊路径/权限专项，也不重试被拒绝的A1专项。
+
+最终全量86个harness/1182项通过，0失败/跳过；严格all-targets Clippy、实际lib/bin
+build、fmt/diff通过。三路独立规格/安全/故障与文档审查、master实际diff审核无剩余阻断。
+本片未实施临时mutant。非Unix磁盘IO改为fail-closed；IO文本改stage/kind；目录可读要求、
+整链同步成本未测、cleanup失败及post-create校验失败可能残留，见 `STATE_STORE_IO.md`。
+不证明掉电恢复、CAS/fencing、跨store事务、持久预算或授权恢复；不放开live写门禁。
+命令、日志及提交/合入复验以
+`/temp/codex/steerbox-validation/state-path-20261122/RECEIPT.md` 为准。
+
 ## 2026-11-22 ApprovalStore A1（限定增量，验证受限）
 
 基线 `ee87518`。普通文件兼容、真实进程锁竞争/锁内重载与私有 FD 故障测试
