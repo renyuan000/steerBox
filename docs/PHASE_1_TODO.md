@@ -17,6 +17,13 @@
 
 ## 当前收口依赖顺序（2026-11-22）
 
+Snapshot SS1（基线 `4586e5f`）限定安全磁盘 I/O 已通过独立审核与隔离树全量门禁；
+root/record 操作固定目录FD，保留末级创建、source优先于ID冲突及原private/single-link合同。
+最终全量89个harness/1240项、0失败/跳过，严格Clippy/build/fmt/diff通过；
+提交/合入复验证据见验证计划与外置SS1收据。
+合同见 `WORKSPACE_SNAPSHOT_IO.md`。此片不是原子发布、持久关联重建或自动恢复；
+snapshot关联、跨store完整对账、持久恢复输入、fencing与获准live验收仍待完成。
+
 RDI2（基线 `73886fe`）显式 tool/side-effect 日志观察已实现，隔离树全量1219项及严格
 Clippy/build/fmt/diff通过，三路独立审核无剩余阻断；提交/合入复验见收据，细项见验证计划。
 新增可选文件的有界、零写入独立扫描，固定 status/class 计数与异常位置；

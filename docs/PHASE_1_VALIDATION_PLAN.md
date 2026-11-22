@@ -1,5 +1,20 @@
 # Phase 1 Validation Plan
 
+## 2026-11-22 Snapshot SS1（限定安全磁盘 I/O，已验证）
+
+基线 `4586e5f`。snapshot/controller原基线59项通过；新增五项普通文件回归在旧I/O
+实现上真实RED为0通过/5失败：source读到替身、capture落入替身root、partial-write/
+file-sync/directory-sync失败未清理原record。helper新增测试首次为缺方法E0599的compile
+RED，不冒称运行时失败。首次修复后lib128、snapshot46、controller17项通过。
+另有full-write报错、cleanup失败保留原始错误、固定root读取record测试；新增helper8项，
+兼容测试4项及重复ID/空root/错误优先级补强。补同rawFD/dev/inode成功同步见证，及
+四类失败正常阶段轨迹短路；snapshot实际FD/故障unit最终9项通过。最终隔离树全量
+89个harness/1240项、0失败/跳过，严格all-targets Clippy、实际lib/bin构建、fmt/diff通过。
+独立规格、质量与覆盖复审无剩余阻断；master已核对实际生产/test/document diff。
+精确提交与主树复验以 `/temp/codex/steerbox-validation/snapshot-io-20261122/RECEIPT.md` 为准。
+合同/未测边界见 `WORKSPACE_SNAPSHOT_IO.md`；不包含原子发布、read-stability、同UID
+隔离、持久绑定/授权/预算恢复或live provider验收；不重复未获准A1专项，不放开live写。
+
 ## 2026-11-22 RDI2（显式工具/副作用日志观察）
 
 基线 `73886fe`。原有 API/CLI 基线23项通过；新库测试先确认缺API编译错误，

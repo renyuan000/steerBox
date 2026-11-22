@@ -2,6 +2,16 @@
 
 ## 定位与证据边界
 
+2026-11-22 Snapshot SS1（基线 `4586e5f`）：限定安全磁盘 I/O 已通过独立审核及隔离树全量验证。
+store root、record create/read/cleanup/sync 绑定实际目录 FD；root private 与 record
+single-link/private 校验保留，source/current 逐组件安全打开，capture 仅创建末级 root。
+五项普通文件目录替换/失败清理回归旧实现真实RED为0通过/5失败，修复后通过；
+首轮定向 lib128、snapshot46、controller17项通过；补强后的snapshot实际FD/故障9项通过。
+最终全量89个harness/1240项、0失败/跳过，严格Clippy、实际lib/bin build、fmt/diff通过；
+独立规格、质量与覆盖复审无剩余阻断。精确提交/合入复验以验证计划和
+外置 `snapshot-io-20261122/RECEIPT.md` 为准；合同见 `WORKSPACE_SNAPSHOT_IO.md`。
+不表示原子snapshot发布、读期间稳定性、持久binding、完整对账/fencing或live验收；Phase 1未完成。
+
 2026-11-22 RDI2（基线 `73886fe`）：显式 tool/side-effect 日志观察已实现，
 隔离树全量89个harness/1219项、0失败/跳过，严格Clippy、实际lib/bin build、fmt/diff通过；
 三路独立审核无剩余阻断。提交及合入复验状态见验证计划和外置 `recovery-audits-20261122/RECEIPT.md`。

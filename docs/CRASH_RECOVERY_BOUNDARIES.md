@@ -1,6 +1,7 @@
 # 崩溃恢复：当前证据与实施边界
 
 核查日期：2026-11-22。Workspace editor W1 基线 `c7df098`，限定普通文件安全替换切片已验证；
+Snapshot SS1 基线 `4586e5f`，限定安全磁盘 I/O 已通过独立审核与隔离树全量验证，合同见 `WORKSPACE_SNAPSHOT_IO.md`；
 StateStore S1 基线 `ac0070c`，限定普通文件安全读/原子替换切片已验证；
 只读恢复检查 RDI1 基线 `75cdb2e`，事件/State 诊断切片已实现；
 RDI2 基线 `73886fe`，显式工具/副作用日志观察已实现，非跨 store 对账；验证状态见验证计划；
@@ -317,7 +318,8 @@ controller 在写前记录 checkpoint，执行文件编辑后再记录完成事�
    ModelCallStore 成败记录及两锁的 M1 已通过独立审核与全量验证；其余门禁不因此解除。
    ToolCallRecordStore T1 已通过独立审核与全量验证，不能代替剩余路径验收。
    RunSummary R1 限定切片已验收；Inbox I1 范围及验收见上节，审批 A1 仅完成限定增量，未覆盖专项及其余真实锁仍须独立核查。
-   State S1、实际workspace edit W1的限定替换端已逐片验收，不能替代snapshot存储/关联或完整恢复验收。
+   State S1、实际workspace edit W1的限定替换端已逐片验收；snapshot存储SS1的目录FD加固
+   已通过独立审核与全量验证，不能替代原子发布、snapshot关联或完整恢复验收。
    仅末级 NOFOLLOW 或 metadata 预检不等于父路径安全，更不等于抵御任意同 UID 恶意进程。
 2. **只读恢复检查器**：RDI1 已实现有界 events/State 投影诊断，RDI2 补显式工具/副作用
    日志观察，均见上节；
