@@ -458,6 +458,9 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
         (Some("loop"), Some("preflight-markdown")) => {
             println!("{}", provider_markdown_cli::preflight(args)?);
         }
+        (Some("loop"), Some("provider-markdown")) => {
+            println!("{}", provider_markdown_cli::run(args)?);
+        }
         (Some("loop"), Some("preflight-readonly")) => {
             println!("{}", provider_readonly_cli::preflight(args)?);
         }
@@ -820,6 +823,8 @@ fn print_usage() {
     eprintln!("  steerbox loop preflight-readonly <same arguments as provider-readonly>");
     eprintln!("    Default credential source is fail-closed; `--credential-source env` resolves only opaque env:NAME references.");
     eprintln!("  steerbox loop preflight-markdown <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> <objective> <observation> --workspace <absolute> --path <relative.md>...");
+    eprintln!("  steerbox loop provider-markdown <same scope arguments as preflight-markdown> --authorize-markdown once [--credential-source env]");
+    eprintln!("    Authorizes only this one-shot Markdown scope; no persistent approval, retries or automatic rollback.");
     eprintln!("  steerbox dev markdown <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <path> <expected> <replacement> <auto|ask|approved>");
 }
 

@@ -1,5 +1,29 @@
 # Phase 1 Validation Plan
 
+## 2026-11-23 Markdown 单动作执行 CLI（离线切片已验证）
+
+基线 `45d4e73`，获准实现合同见 `BOUNDED_MARKDOWN_EXECUTION_CLI.md`。
+要求强制 `--authorize-markdown once`（全部选项均 flag/value）、可信宿主本次 scope
+授权、`HumanSteerableLoop`/`approved=true`，不冒充持久 ApprovalStore 或可恢复 Once。
+默认 resolver 拒绝、显式 env opaque 引用；双协议共用至多一次模型/一次 edit/同文件
+verifier，十一目的地检查及 runtime/workspace 双向隔离。实际 run 须读历史身份，
+投影前重新检查路径；双故障保留固定执行错误分类而非动态错误正文，投影失败不得报告
+成功。进度抹除原 subject ID/summary/progress，仅保留固定 ID 和 subject/status 枚举，
+非 token streaming；仅 CompleteLoop/Completed 及投影成功输出成功摘要，其余 exit1。
+
+旧二进制上三项进程测试实际 RED（0 通过/3 失败，均因命令不存在）；授权用例首个
+assertion 后的变体未在 RED 执行，不冒称全部变体 RED。接线后定向 75 项通过；
+隔离树全量 91 个测试 harness、1284 项通过，0 失败/跳过（另 0 项 doctest）。
+严格 all-targets Clippy、实际 lib/bin build、fmt/diff、独立规格及质量审核通过。
+参数与授权拒绝、双协议合成执行、历史身份、路径/隔离和投影错误优先级分别验收，
+不能以既有 library 或纯预检测试替代。新增进程测试的参数/授权、路径/隔离及默认
+凭据拒绝证据，与注入式 CLI 单元测试的双协议成功编辑、历史 guard、非完成结果、
+投影故障及进度清除证据分别登记；不冒称进程成功或 live 验收。
+提交/主树复验及完整命令结果见外置收据
+`/temp/codex/steerbox-validation/markdown-execution-cli-20261123/RECEIPT.md`。
+没有读取真实配置/密钥或进行 live LLM 验收；
+不包含任意文件/Bash、多步、重试/fallback、运行中 status/cancel、恢复或 Phase 1 完成。
+
 ## 2026-11-23 Markdown 完整有界验证与 checkpoint hash
 
 基线 `2a4a74f`，相关三套基线50项通过。修改前真实行为RED：hash为1通过/2失败，

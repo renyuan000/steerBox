@@ -1,6 +1,6 @@
 # 受控 Markdown runner 的运行前门禁
 
-2026-11-09。本片是已有单动作 Markdown library runner 的安全底座，不新增 CLI，
+2026-11-09。原门禁切片是已有单动作 Markdown library runner 的安全底座，本身不新增 CLI，
 不放开通用文件/Bash、多步写入、自动重试、fallback 或审批策略。
 
 ## 调用顺序
@@ -59,8 +59,13 @@ symlink，保留普通 hardlink 兼容。Markdown tool verifier 在同一 2 MiB 
 统一限额，也不限制模型响应解析前的内存；实现和验收状态见本片外置收据。
 
 为保留可信 library 调用契约，audit/runtime 可与 workspace 同目录，但不能与授权
-可编辑文件或其它 store/lock 发生别名。未来用户 CLI 的 runtime 外置要求须单独明确，
-不能把这里的 library 检查说成整个 workspace 与 runtime 已隔离。
+可编辑文件或其它 store/lock 发生别名。CLI 的额外要求见纯预检合同及
+`BOUNDED_MARKDOWN_EXECUTION_CLI.md`：既有 runtime 与 workspace 双向不嵌套，执行前及
+写状态投影前重查；不能把这里的 library 检查说成整个 workspace 与 runtime 已隔离。
+执行合同要求显式 `--authorize-markdown once`，使用 `HumanSteerableLoop` 与
+`approved=true`；这是本次 scope 的可信宿主授权，不是 ApprovalStore 或可恢复 Once。
+执行 CLI 的离线切片已通过独立规格/质量审核及全量1284项测试，详情见验证计划和
+外置`markdown-execution-cli-20261123/RECEIPT.md`；不是获准live写入验收。
 
 ## 已知限制与后续安全门槛
 

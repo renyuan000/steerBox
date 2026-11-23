@@ -2,6 +2,14 @@
 
 ## 定位与证据边界
 
+2026-11-23 Markdown 执行 CLI（基线 `45d4e73`）：获准实现范围及 mandatory
+`--authorize-markdown once` 合同见 `BOUNDED_MARKDOWN_EXECUTION_CLI.md`。本次 scope
+宿主授权不是持久 ApprovalStore/可恢复 Once；复用一次模型、一次 edit 及同文件验证，
+要求十一目的地/双向隔离、历史身份 guard 和投影错误门禁。定向75项及隔离树全量
+1284项通过，0失败/跳过；严格Clippy、实际lib/bin build、fmt/diff及独立规格/质量
+审核通过。提交/主树复验见验证计划与外置`markdown-execution-cli-20261123/RECEIPT.md`；
+仅交付单动作离线验收切片，不解除获准live E2E、status/cancel或完整Phase 1门禁。
+
 2026-11-23 Markdown读取门禁（基线 `2a4a74f`）：checkpoint hash与实际Markdown tool
 verifier改用pinned parent/实际regular FD的2 MiB完整有界读取；tool verifier拒绝坏UTF-8，
 不再把16 KiB展示前缀当完整输入。controller的expected/replacement超限在capture/
@@ -312,7 +320,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 已有：
 
 - `loop preflight-markdown` 已接线现有 library 纯预检：双协议绑定、1..256 个显式授权文件、十一条审计/状态目的地及 CLI 独立的 runtime/workspace 双向隔离；固定输出明确 `execution=disabled`，无凭据解析、历史正文读取、模型/工具运行或运行文件创建。17 项新测试与既有37项通过，规格/质量审核通过；全量/提交/合入复验见验证计划及外置收据。合同见 `BOUNDED_MARKDOWN_PREFLIGHT_CLI.md`；不关闭下述执行、状态/取消及 live 待办。
-- [main.rs](../src/main.rs) 提供 runtime init、config validate、event、execution list/show/page、board、loop readonly/fixture 和 dev markdown；没有已交付的真实模型开发任务入口。
+- [main.rs](../src/main.rs) 已有 runtime init、config validate、event、execution list/show/page、board、loop readonly/fixture/provider/provider-readonly/provider-markdown、两种 preflight 和 dev markdown；只读 provider CLI 不等于模型驱动编辑。单动作 Markdown 执行 CLI 已通过合成验收，仍不能声称真实模型开发任务 E2E 已交付。
 - [stream_reporter.rs](../src/stream_reporter.rs) 已接入 readonly／fixture CLI 的生命周期反馈；[execution_query.rs](../src/execution_query.rs) 是 metadata-only detached 历史投影，不是后台 live worker。
 - inbox/controller 已支持 pause／resume／cancel 安全边界应用；`ReadCommandReader` 和 Unix `UnixCommandReader` 已把非阻塞 `Read`／stdin/pipe 接到 `CommandPoller` 的 reader 边界，并保留注入式测试路径，但尚未接到常驻后台 loop、同步模型调用期间轮询或 CLI live control。
 

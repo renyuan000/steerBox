@@ -522,9 +522,183 @@ fn markdown_preflight_accepts_256_paths_and_rejects_257_before_config_io() {
 }
 
 #[test]
-fn markdown_preflight_does_not_open_a_markdown_execution_command() {
+fn markdown_execution_requires_scope_authorization_before_configuration_io() {
     let fixture = Fixture::new(OPENAI_COMPATIBLE_CHAT_PROTOCOL);
     let mut args = fixture.args();
     args[1] = "provider-markdown".into();
-    fixture.reject(args, "steerbox: unsupported command");
+    args[2] = "/missing/untrusted-sensitive-value.json".into();
+    fixture.reject(
+        args.clone(),
+        "steerbox: invalid provider-markdown arguments",
+    );
+    for flags in [
+        vec!["--authorize-markdown"],
+        vec!["--authorize-markdown", "always"],
+        vec![
+            "--authorize-markdown",
+            "once",
+            "--authorize-markdown",
+            "once",
+        ],
+        vec!["--authorize-markdown", "once", "--approved", "true"],
+        vec!["--authorize-markdown", "once", "--max-iterations", "2"],
+        vec![
+            "--authorize-markdown",
+            "once",
+            "--credential-source",
+            "file",
+        ],
+        vec![
+            "--authorize-markdown",
+            "once",
+            "--credential-source",
+            "env",
+            "--credential-source",
+            "env",
+        ],
+    ] {
+        let mut invalid = args.clone();
+        invalid.extend(flags.into_iter().map(str::to_owned));
+        fixture.reject(invalid, "steerbox: invalid provider-markdown arguments");
+    }
+}
+
+#[test]
+fn markdown_execution_rejects_bad_runtime_before_opening_stores() {
+    let fixture = Fixture::new(OPENAI_COMPATIBLE_CHAT_PROTOCOL);
+    let mut args = fixture.args();
+    args[1] = "provider-markdown".into();
+    args.extend(["--authorize-markdown".into(), "once".into()]);
+    fs::create_dir(fixture.config.state_path()).unwrap();
+    fixture.reject(
+        args,
+        "steerbox: provider-markdown scope or runtime check failed",
+    );
+}
+
+#[test]
+fn markdown_execution_sanitizes_configuration_failure_without_writes() {
+    let fixture = Fixture::new(OPENAI_COMPATIBLE_CHAT_PROTOCOL);
+    let mut args = fixture.args();
+    args[1] = "provider-markdown".into();
+    args[2] = "/missing/untrusted-sensitive-value.json".into();
+    args.extend(["--authorize-markdown".into(), "once".into()]);
+    fixture.reject(args, "steerbox: invalid provider-markdown configuration");
+}
+
+#[test]
+fn markdown_preflight_never_accepts_execution_authorization() {
+    let fixture = Fixture::new(OPENAI_COMPATIBLE_CHAT_PROTOCOL);
+    let mut args = fixture.args();
+    args[2] = "/missing/config.json".into();
+    args.extend(["--authorize-markdown".into(), "once".into()]);
+    fixture.reject(args, "steerbox: invalid preflight-markdown arguments");
+}
+
+#[test]
+fn markdown_execution_rechecks_all_destinations_and_workspace_runtime_separation() {
+    use std::os::unix::fs::symlink;
+    for filename in STORES {
+        for kind in ["directory", "symlink", "hardlink"] {
+            let fixture = Fixture::new(OPENAI_COMPATIBLE_CHAT_PROTOCOL);
+            let target = fixture
+                .config
+                .events_path()
+                .parent()
+                .unwrap()
+                .join(filename);
+            let protected = fixture.config.data_root.join("protected.md");
+            fs::write(&protected, "protected synthetic content\n").unwrap();
+            match kind {
+                "directory" => fs::create_dir(&target).unwrap(),
+                "symlink" => symlink(&protected, &target).unwrap(),
+                "hardlink" => fs::hard_link(&protected, &target).unwrap(),
+                _ => unreachable!(),
+            }
+            let mut args = fixture.args();
+            args[1] = "provider-markdown".into();
+            args.extend(["--authorize-markdown".into(), "once".into()]);
+            fixture.reject(
+                args,
+                "steerbox: provider-markdown scope or runtime check failed",
+            );
+        }
+    }
+    for relation in [
+        "same",
+        "runtime-inside-workspace",
+        "workspace-inside-runtime",
+    ] {
+        let fixture = Fixture::new(OPENAI_COMPATIBLE_CHAT_PROTOCOL);
+        let runtime = fixture.config.events_path().parent().unwrap().to_owned();
+        let workspace = match relation {
+            "same" => runtime,
+            "runtime-inside-workspace" => fixture.config.data_root.clone(),
+            "workspace-inside-runtime" => {
+                let child = runtime.join("workspace");
+                fs::create_dir(&child).unwrap();
+                child
+            }
+            _ => unreachable!(),
+        };
+        fs::write(workspace.join("README.md"), "synthetic\n").unwrap();
+        let mut args = fixture.args();
+        args[1] = "provider-markdown".into();
+        args[11] = workspace.display().to_string();
+        args.extend(["--authorize-markdown".into(), "once".into()]);
+        fixture.reject(
+            args,
+            "steerbox: provider-markdown scope or runtime check failed",
+        );
+    }
+}
+
+#[test]
+fn markdown_execution_default_credentials_fail_closed_with_safe_lifecycle_only() {
+    for protocol in [OPENAI_COMPATIBLE_CHAT_PROTOCOL, "anthropic-messages"] {
+        let fixture = Fixture::new(protocol);
+        let original = fs::read(fixture.workspace.join("README.md")).unwrap();
+        let mut args = fixture.args();
+        args[1] = "provider-markdown".into();
+        args.extend(["--authorize-markdown".into(), "once".into()]);
+        let output = Command::new(env!("CARGO_BIN_EXE_steerbox"))
+            .args(args)
+            .env_remove("SYNTHETIC_MARKDOWN_PREFLIGHT_NOT_CONFIGURED")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.starts_with("steerbox: provider-markdown execution failed; audit or workspace may have changed; no automatic rollback\n"), "{stderr}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(!stdout.contains("decision="));
+        for line in stdout.lines() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            assert_eq!(fields.len(), 3, "{line}");
+            assert_eq!(fields[1], "bounded-markdown");
+            assert!(["step", "tool", "model", "action", "loop"].contains(&fields[0]));
+            assert!([
+                "started",
+                "progress",
+                "completed",
+                "failed",
+                "paused",
+                "resumed",
+                "cancelled"
+            ]
+            .contains(&fields[2]));
+        }
+        assert_eq!(
+            fs::read(fixture.workspace.join("README.md")).unwrap(),
+            original
+        );
+        assert!(fixture.config.state_path().is_file());
+        for marker in [
+            "synthetic-hidden",
+            "SYNTHETIC_MARKDOWN_PREFLIGHT_NOT_CONFIGURED",
+            "untrusted-sensitive-value",
+        ] {
+            assert!(!stdout.contains(marker));
+            assert!(!stderr.contains(marker));
+        }
+    }
 }

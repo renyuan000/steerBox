@@ -8,7 +8,9 @@ steerbox loop preflight-markdown <config.json> <project_id> <goal_id> <loop_run_
 ```
 
 沿用 `BOUNDED_MARKDOWN_RUNTIME_GATES.md` 的模型/提示绑定和 scope/runtime 检查，
-不复制一套 runner。不开放 `provider-markdown`、任意文件工具、Bash、自动授权或后台运行。
+不复制一套 runner。本预检不执行 `provider-markdown`，不开放任意文件工具、Bash、
+自动授权或后台运行。独立执行入口的获准实现合同见 `BOUNDED_MARKDOWN_EXECUTION_CLI.md`；
+其测试和交付状态不能由本预检的通过结果推导。
 
 ## 输入和检查顺序
 
@@ -42,7 +44,8 @@ preflight=passed scope=markdown execution=disabled credentials=not_checked trans
 
 这是离散时点元数据检查，不验证可写性、文件正文/链接、历史身份/完整性、帐号可用性，
 不是执行许可，也不防同 UID/root 并发替换。重复预检不等于重试执行，不写状态或审计。
-真实写入 CLI、状态/取消接线、实际写链安全复审和获准 live E2E 仍为独立待办。
+独立写入 CLI 的实现/验收、状态/取消接线、实际写链安全复审和获准 live E2E
+仍须分别记录，不由本预检解除；`execution=disabled` 不授予执行授权。
 
 ## 验证入口
 
