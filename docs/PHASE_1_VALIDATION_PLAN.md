@@ -1,5 +1,23 @@
 # Phase 1 Validation Plan
 
+## 2026-11-23 Markdown 执行停止与投影回归
+
+基线 `e37c181`；仅补既有合同的直接测试，不修改生产逻辑、授权或恢复能力。
+原10项 CLI 单元测试基线通过；新增3项后13项通过，均使用合成双协议 transport，
+不访问真实账号。新增测试第一次运行即通过，不把它们称为真实缺陷的 RED/GREEN。
+
+- `request_human` 携带动作或不携带动作均失败，单次发送，无编辑、checkpoint、
+  side-effect 或 tool record；投影为 Failed，只有失败模型记录，无完成事件。
+- 真实编辑后同文件链接验证失败，再阻断 State 投影：保留固定执行错误分类、
+  已编辑字节及失败验证记录，不伪报完成，不自动回滚或重发。
+- 真实成功编辑后，runtime 目录被 symlink 替换，或 workspace 被不同普通目录替换：
+  投影失败；保留实际编辑，不修改替换目录中的哨兵，不生成派生 State。
+
+路径替换在执行返回与投影开始之间确定性注入，不是并发竞态、OS 崩溃或 CAS/fencing
+证明。全量、Clippy/build/fmt、自审和提交/合入复验结果见外置
+`/temp/codex/steerbox-validation/markdown-stop-regressions-20261123/RECEIPT.md`。
+本片不新增 Phase 1 功能，不构成真实 provider、持久恢复或整体完成验收。
+
 ## 2026-11-23 Markdown 单动作执行 CLI（离线切片已验证）
 
 基线 `45d4e73`，获准实现合同见 `BOUNDED_MARKDOWN_EXECUTION_CLI.md`。

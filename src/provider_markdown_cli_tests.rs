@@ -322,6 +322,141 @@ fn markdown_cli_rejects_outside_scope_wrong_verifier_and_nonterminal_actions() {
 }
 
 #[test]
+fn markdown_cli_request_human_with_or_without_action_never_mutates_or_completes() {
+    for anthropic in [false, true] {
+        for include_action in [false, true] {
+            let fixture = Fixture::new(anthropic);
+            let mut transport = SyntheticTransport::new(&fixture.workspace, "after\n");
+            transport.action["decision"] = json!("request_human");
+            if !include_action {
+                transport.action.as_object_mut().unwrap().remove("action");
+            }
+            let sends = transport.sends.clone();
+            assert_eq!(
+                fixture.run(transport).unwrap_err().to_string(),
+                EXECUTION_FAILED
+            );
+            assert_eq!(sends.get(), 1);
+            assert_eq!(fixture.contents("README.md"), "before\n");
+            assert_eq!(fixture.contents("OTHER.md"), "untouched\n");
+            assert!(!fixture.config.checkpoints_path().exists());
+            assert!(!fixture.config.side_effects_path().exists());
+            assert!(!fixture.config.tool_calls_path().exists());
+            let state = StateStore::load(fixture.config.state_path()).unwrap();
+            assert_eq!(state.loop_run("loop").unwrap().status, LoopStatus::Failed);
+            let events = EventLog::open(fixture.config.events_path())
+                .unwrap()
+                .read_all()
+                .unwrap();
+            assert!(!events
+                .iter()
+                .any(|event| event.event_type == "loop_completed"));
+            let calls = ModelCallStore::open(fixture.config.model_calls_path()).unwrap();
+            assert!(calls.read_all().unwrap().is_empty());
+            assert_eq!(calls.read_failures().unwrap().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn markdown_cli_real_verification_and_projection_failures_preserve_edit_and_execution_error() {
+    for anthropic in [false, true] {
+        let fixture = Fixture::new(anthropic);
+        let replacement = "[missing](missing.md)\n";
+        let transport = SyntheticTransport::new(&fixture.workspace, replacement);
+        let sends = transport.sends.clone();
+        let error = run_with(fixture.args().into_iter(), |prepared, _, events, calls| {
+            let result = execute(prepared, events, calls, transport, anthropic);
+            assert!(result.is_err());
+            assert_eq!(fixture.contents("README.md"), replacement);
+            fs::create_dir(fixture.config.state_path()).unwrap();
+            result
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), EXECUTION_FAILED);
+        assert_eq!(sends.get(), 1);
+        assert_eq!(fixture.contents("README.md"), replacement);
+        assert!(fixture.config.state_path().is_dir());
+        assert_eq!(
+            fs::read_dir(fixture.config.state_path()).unwrap().count(),
+            0
+        );
+        let calls = ModelCallStore::open(fixture.config.model_calls_path())
+            .unwrap()
+            .read_all()
+            .unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].verification_status, "failed");
+        let events = EventLog::open(fixture.config.events_path())
+            .unwrap()
+            .read_all()
+            .unwrap();
+        assert!(events.iter().any(|event| event.event_type == "loop_failed"));
+        assert!(!events
+            .iter()
+            .any(|event| event.event_type == "loop_completed"));
+    }
+}
+
+#[test]
+fn markdown_cli_post_execution_path_replacement_blocks_projection_without_rollback() {
+    use std::os::unix::fs::symlink;
+
+    for anthropic in [false, true] {
+        for replace_runtime in [false, true] {
+            let fixture = Fixture::new(anthropic);
+            let runtime = fixture.config.events_path().parent().unwrap().to_path_buf();
+            let moved = fixture._directory.path().join("moved-original");
+            let decoy = fixture._directory.path().join("replacement-runtime");
+            let transport = SyntheticTransport::new(&fixture.workspace, "after\n");
+            let sends = transport.sends.clone();
+            let error = run_with(fixture.args().into_iter(), |prepared, _, events, calls| {
+                let result = execute(prepared, events, calls, transport, anthropic);
+                assert!(result.is_ok());
+                assert_eq!(fixture.contents("README.md"), "after\n");
+                assert!(!fixture.config.state_path().exists());
+                if replace_runtime {
+                    fs::rename(&runtime, &moved).unwrap();
+                    fs::create_dir(&decoy).unwrap();
+                    fs::write(decoy.join("state.json"), "untrusted sentinel\n").unwrap();
+                    symlink(&decoy, &runtime).unwrap();
+                } else {
+                    fs::rename(&fixture.workspace, &moved).unwrap();
+                    fs::create_dir(&fixture.workspace).unwrap();
+                    fs::write(
+                        fixture.workspace.join("README.md"),
+                        "replacement workspace\n",
+                    )
+                    .unwrap();
+                }
+                result
+            })
+            .unwrap_err();
+            assert_eq!(error.to_string(), PROJECTION_FAILED);
+            assert_eq!(sends.get(), 1);
+            if replace_runtime {
+                assert_eq!(fixture.contents("README.md"), "after\n");
+                assert_eq!(
+                    fs::read_to_string(decoy.join("state.json")).unwrap(),
+                    "untrusted sentinel\n"
+                );
+                assert_eq!(fs::read_dir(&decoy).unwrap().count(), 1);
+                assert!(!moved
+                    .join(fixture.config.state_path().file_name().unwrap())
+                    .exists());
+            } else {
+                assert_eq!(
+                    fs::read_to_string(moved.join("README.md")).unwrap(),
+                    "after\n"
+                );
+                assert_eq!(fixture.contents("README.md"), "replacement workspace\n");
+                assert!(!fixture.config.state_path().exists());
+            }
+        }
+    }
+}
+
+#[test]
 fn markdown_cli_projection_refusal_after_success_is_not_reported_as_success() {
     let fixture = Fixture::new(false);
     let error = run_with(fixture.args().into_iter(), |prepared, _, events, calls| {
