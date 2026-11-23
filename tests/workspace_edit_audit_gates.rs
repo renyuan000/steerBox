@@ -116,6 +116,96 @@ fn assert_original(root: &Path) {
     );
 }
 
+#[test]
+fn oversized_edit_input_is_rejected_before_checkpoint_or_mutation() {
+    for oversized_field in ["expected", "replacement"] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let snapshot_root = root.join("snapshots-not-created");
+        let mut controller = controller(root, true, true, true).with_snapshot_store(&snapshot_root);
+        let mut parameters = serde_json::json!({
+            "path":"README.md",
+            "expected":std::str::from_utf8(ORIGINAL).unwrap(),
+            "replacement":"# bounded replacement\n"
+        });
+        parameters[oversized_field] = serde_json::json!("x".repeat(2 * 1024 * 1024 + 1));
+        let action = ModelActionEnvelope {
+            schema_version: 1,
+            action_id: "oversized-edit".into(),
+            tool_id: "edit_markdown".into(),
+            parameters,
+            path_scope: ActionPathScope {
+                root: root.display().to_string(),
+                allowed_paths: vec!["README.md".into()],
+            },
+            verification: VerificationContract {
+                verifier_tool_id: "markdown_link_check".into(),
+                parameters: serde_json::json!({"path":"README.md"}),
+            },
+        };
+        let result = controller.execute_workspace_edit_action(
+            &ToolRegistry::baseline().unwrap(),
+            &PolicyGate::new(),
+            &WorkspaceToolExecutor,
+            &ReadOnlyToolExecutor,
+            root,
+            &action,
+            "oversized-step",
+            false,
+        );
+        assert!(
+            matches!(result, Err(LoopControllerError::WorkspaceToolExecution(ref message))
+            if message == "workspace edit input exceeds verification limit")
+        );
+        assert_original(root);
+        assert!(!snapshot_root.exists());
+        assert_no_workspace_audit_files(root);
+        assert_no_mutation_events(&root.join("events.jsonl"), true);
+    }
+}
+
+#[test]
+fn exact_verification_budget_edit_is_accepted_and_verified() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let mut controller = controller(root, true, true, true);
+    let expected = "x".repeat(2 * 1024 * 1024);
+    let replacement = "y".repeat(2 * 1024 * 1024);
+    fs::write(root.join("README.md"), &expected).unwrap();
+    let action = ModelActionEnvelope {
+        schema_version: 1,
+        action_id: "exact-budget-edit".into(),
+        tool_id: "edit_markdown".into(),
+        parameters: serde_json::json!({"path":"README.md", "expected":expected, "replacement":replacement}),
+        path_scope: ActionPathScope {
+            root: root.display().to_string(),
+            allowed_paths: vec!["README.md".into()],
+        },
+        verification: VerificationContract {
+            verifier_tool_id: "markdown_link_check".into(),
+            parameters: serde_json::json!({"path":"README.md"}),
+        },
+    };
+    controller
+        .execute_workspace_edit_action(
+            &ToolRegistry::baseline().unwrap(),
+            &PolicyGate::new(),
+            &WorkspaceToolExecutor,
+            &ReadOnlyToolExecutor,
+            root,
+            &action,
+            "exact-budget-step",
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("README.md")).unwrap(),
+        replacement
+    );
+    let events = fs::read_to_string(root.join("events.jsonl")).unwrap();
+    assert!(events.contains("\"event_type\":\"model_action_verified\""));
+}
+
 fn assert_no_workspace_audit_files(root: &Path) {
     for file in ["checkpoints.jsonl", "traces.jsonl", "side-effects.jsonl"] {
         assert!(

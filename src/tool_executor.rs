@@ -3,6 +3,7 @@ use crate::model_contracts::ModelActionEnvelope;
 use crate::redaction::{RedactionError, Redactor};
 use crate::tool_registry::{SideEffectClass, ToolRegistry};
 use crate::workspace_edit::{edit_markdown, EditResult, WorkspaceEditError};
+use crate::workspace_read::read_regular_bounded;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -336,7 +337,10 @@ impl ReadOnlyToolExecutor {
             require_exact_keys(&input.arguments, &["path"])?;
             let relative_path = required_string(&input.arguments, "path")?;
             let path = resolve_workspace_path(workspace, &relative_path)?;
-            let content = read_bounded_file(&path)?;
+            let bytes = read_regular_bounded(&path)
+                .map_err(|_| ToolExecutionError::OutputCollectionFailed)?;
+            let content =
+                String::from_utf8(bytes).map_err(|_| ToolExecutionError::OutputCollectionFailed)?;
             let missing = markdown_missing_links(workspace, &relative_path, &content);
             let summary = if missing.is_empty() {
                 format!("checked {relative_path}: no missing local links")

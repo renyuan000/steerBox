@@ -38,4 +38,5 @@ pub mod tool_registry;
 pub mod transcript_store;
 pub mod user_command_inbox;
 pub mod workspace_edit;
+mod workspace_read;
 pub mod workspace_snapshot;

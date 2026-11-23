@@ -48,6 +48,16 @@ HTTPS transport。非法路径/工作区或历史身份在 client 创建前拒�
 `markdown_link_check`。沿用 PolicyGate、显式宿主 approval、checkpoint、side-effect
 ledger 和写后验证；拒绝不扩大授权，验证失败不伪报完成或自动 rollback。
 
+2026-11-23 读取门禁增量：controller 对 `expected`、`replacement` 各新增 2 MiB
+字节上限，在 snapshot capture、checkpoint 和 mutation 前拒绝超限输入。
+前述拒绝仍发生在 policy/approval 处理之后，不承诺零审计或不消费已有 Once 审批。
+checkpoint hash 读取也限 2 MiB，保留 `SHA256(relative_path + NUL + file bytes)` 格式；先解析
+workspace 根别名，再用 pinned parent 和实际 regular-file FD 读取，不跟随打开过程中的
+symlink，保留普通 hardlink 兼容。Markdown tool verifier 在同一 2 MiB 预算内完整读取，
+超限或无效 UTF-8 返回 `OutputCollectionFailed`，不验证截断前缀后报成功。`read_file`
+仍是 16 KiB 展示截断；独立 snapshot 的 1 MiB 限额不变。这不是所有 editor 或工具的
+统一限额，也不限制模型响应解析前的内存；实现和验收状态见本片外置收据。
+
 为保留可信 library 调用契约，audit/runtime 可与 workspace 同目录，但不能与授权
 可编辑文件或其它 store/lock 发生别名。未来用户 CLI 的 runtime 外置要求须单独明确，
 不能把这里的 library 检查说成整个 workspace 与 runtime 已隔离。
@@ -57,11 +67,12 @@ ledger 和写后验证；拒绝不扩大授权，验证失败不伪报完成或�
 不执行 workspace edit **不等于零持久化副作用**：进入 controller 后，拒绝/失败仍
 会尝试写入 event/model 等审计。公开纯预检的无写入承诺不适用于实际 run。
 
-这些检查是离散时点的 metadata 快照，不构成原子 OS 隔离；共享 event/model/audit
-stores 中仍有按路径 append 的实现。如果同 OS 用户进程或不可信 callback 在检查
-后替换 runtime 路径，后续失败审计不能据此获得端到端防别名保证。本片没有修改
-所有共享 store 的写入机制，不能声称可抵御该威胁。**未来接入 live 写入 CLI 前必须
-重新审计并解决实际写入端的路径安全边界**，不能用这份 preflight 作为放行证明。
+这些检查是离散时点的 metadata 快照，不构成原子 OS 隔离。原门禁切片未修改共享
+store I/O；其后各 store、workspace 和 snapshot 已分片接入实际 FD/pinned parent 的
+单次安全操作，不能再将旧的按路径 append 描述当作当前全部实现。上述增量仍不锁定
+整个 run 的目录身份或读取期间的字节，不提供跨阶段 hash/edit/verify 原子性、writer
+CAS、自动重试或恢复。**未来接入 live 写入 CLI 前仍须复审实际执行链并完成获准验收**，
+不能用这份 preflight 或单次 FD 安全作为端到端放行证明。
 
 Unix 身份门禁之外的平台 fail-closed；本轮不宣称 Windows/macOS 实测。可写性、
 历史内容完整性、完整 TaskRun/Attempt/预算恢复、快照/自动补偿、后台调度、真实

@@ -50,6 +50,7 @@ use crate::user_command_inbox::{
     CommandStatus, NonBlockingCommandReader, RuntimeTick, RuntimeTickError, UserCommand,
     UserCommandInbox, UserCommandInboxError,
 };
+use crate::workspace_read::{read_regular_bounded, MAX_WORKSPACE_VERIFICATION_BYTES};
 use crate::workspace_snapshot::{validate_content_hash, WorkspaceSnapshotStore};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -3723,6 +3724,19 @@ impl ReadOnlyLoopController {
             .ok_or_else(|| {
                 LoopControllerError::WorkspaceToolExecution("missing edit path".into())
             })?;
+        // Reject oversized input before capture, audit checkpoints or mutation:
+        // a replacement must fit the same complete post-edit verification budget.
+        if ["expected", "replacement"].iter().any(|key| {
+            action
+                .parameters
+                .get(key)
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value.len() > MAX_WORKSPACE_VERIFICATION_BYTES)
+        }) {
+            return Err(LoopControllerError::WorkspaceToolExecution(
+                "workspace edit input exceeds verification limit".into(),
+            ));
+        }
         let snapshot = if let Some(snapshot_store) = self.snapshot_store.clone() {
             let snapshot_id =
                 controller_snapshot_id(&self.loop_run.loop_run_id, &step_id, &action.action_id);
@@ -5159,11 +5173,29 @@ fn workspace_file_hash(
     workspace: &std::path::Path,
     relative_path: &str,
 ) -> Result<String, LoopControllerError> {
-    let contents = std::fs::read(workspace.join(relative_path)).map_err(|error| {
+    let failure = || {
         LoopControllerError::WorkspaceToolExecution(format!(
-            "workspace file hash failed for {relative_path}: {error}"
+            "workspace file hash failed for {relative_path}"
         ))
-    })?;
+    };
+    let relative = std::path::Path::new(relative_path);
+    if relative_path.is_empty()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(failure());
+    }
+    // Canonicalize only the trusted root alias, not the file being hashed.
+    let target = std::fs::canonicalize(workspace)
+        .map_err(|_| failure())?
+        .join(relative);
+    let contents = read_regular_bounded(&target).map_err(|_| failure())?;
     let mut hasher = Sha256::new();
     hasher.update(relative_path.as_bytes());
     hasher.update([0]);
@@ -5302,6 +5334,60 @@ fn append_step_event(
     event.loop_run_id = Some(loop_run.loop_run_id.clone());
     event.step_id = Some(step.step_id.clone());
     Ok(event_log.append(event)?)
+}
+
+#[cfg(all(test, unix))]
+mod workspace_hash_tests {
+    use super::workspace_file_hash;
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn checkpoint_hash_preserves_domain_raw_bytes_root_alias_and_hardlinks() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("workspace")).unwrap();
+        fs::write(root.path().join("original.md"), b"raw\r\n\0\xff").unwrap();
+        fs::hard_link(
+            root.path().join("original.md"),
+            root.path().join("workspace/README.md"),
+        )
+        .unwrap();
+        symlink(root.path().join("workspace"), root.path().join("alias")).unwrap();
+        let expected = format!("sha256:{:x}", Sha256::digest(b"README.md\0raw\r\n\0\xff"));
+        assert_eq!(
+            workspace_file_hash(&root.path().join("alias"), "README.md").unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn checkpoint_hash_accepts_exact_budget_and_rejects_plus_one() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("README.md"), vec![b'x'; 2 * 1024 * 1024]).unwrap();
+        assert!(workspace_file_hash(root.path(), "README.md").is_ok());
+        fs::write(
+            root.path().join("README.md"),
+            vec![b'x'; 2 * 1024 * 1024 + 1],
+        )
+        .unwrap();
+        assert!(workspace_file_hash(root.path(), "README.md").is_err());
+    }
+
+    #[test]
+    fn checkpoint_hash_rejects_leaf_and_ancestor_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("original")).unwrap();
+        fs::write(root.path().join("original/README.md"), b"fixture").unwrap();
+        symlink(
+            root.path().join("original/README.md"),
+            root.path().join("README.md"),
+        )
+        .unwrap();
+        symlink(root.path().join("original"), root.path().join("alias")).unwrap();
+        assert!(workspace_file_hash(root.path(), "README.md").is_err());
+        assert!(workspace_file_hash(root.path(), "alias/README.md").is_err());
+    }
 }
 
 #[cfg(test)]

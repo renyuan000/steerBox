@@ -250,6 +250,7 @@ Memory 最小实现：
 
 - [x] 实现 checkpoint metadata JSONL 写入
 - [x] 记录 checkpoint 与 goal / loop / step 的关系（workspace-edit 路径写入三者标识）
+- [x] controller checkpoint hash 改为实际 regular FD 的完整 2 MiB 有界读取，保留路径绑定 hash 格式和 source hardlink；expected/replacement 写前限额及完整 UTF-8 Markdown tool verifier 一并接线，展示读取不变。合成回归已通过；全量/提交/主线状态见本片验证记录，不代表写入 CLI/live 或自动恢复完成
 - [x] 记录 checkpoint 前后的文件 diff boundary（workspace-edit checkpoint JSONL 只保存路径绑定的边界 hash，不保存正文或实际 diff；独立 snapshot private record 保存 bounded 正文，采用 content-only hash，与旧 checkpoint hash 不通用）
 - [x] 记录 checkpoint 覆盖范围（当前为 workspace-edit action 指定的相对文件路径，非通用多文件范围）
 - [x] 记录不可恢复 side effect 引用（当前写入 step 级 side_effect_ref；`SideEffectAuditStatus::Uncertain` 与 restore-audit typed signal 已实现；外部不可逆动作的完整处理仍待完成）

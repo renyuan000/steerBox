@@ -72,6 +72,11 @@ result semantics: a diagnostic action may report a nonzero Git exit or missing
 links as evidence, whereas its explicitly selected verifier must pass its own
 criterion. Passing a verifier does not mean every diagnostic action found no
 issue. Tool execution errors and policy denials still stop the run.
+The Markdown verifier scans complete UTF-8 input up to a 2 MiB byte budget;
+over-limit, invalid UTF-8 and read failures stop verification rather than passing
+a truncated prefix. This differs from the unchanged 16 KiB display truncation of
+read_file. These failures must not emit verified/passed records or continue the
+model loop. This bound does not replace the existing link syntax/target rules.
 Propagate the two final human/no-action progress-report
 errors so the runner's existing failure closure can handle them; do not change
 successful stopped outcomes or initial-constructor progress semantics.

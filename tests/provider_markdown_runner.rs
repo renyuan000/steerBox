@@ -682,6 +682,25 @@ fn unapproved_markdown_edit_is_denied_without_changing_workspace() {
 }
 
 #[test]
+fn tail_link_failure_is_not_reported_as_verified_or_rolled_back() {
+    let directory = tempfile::tempdir().unwrap();
+    let replacement = format!("{}\n[missing](missing.md)\n", "x".repeat(16 * 1024));
+    let (result, calls) = run(directory.path(), &replacement, true);
+    assert!(result.is_err());
+    assert_eq!(
+        fs::read_to_string(directory.path().join("README.md")).unwrap(),
+        replacement
+    );
+    assert_eq!(calls.read_all().unwrap()[0].verification_status, "failed");
+    let events = fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    assert!(!events.contains("\"event_type\":\"model_action_verified\""));
+    assert!(!events.contains("\"event_type\":\"loop_completed\""));
+    assert!(events.contains("loop_failed"));
+    let effects = fs::read_to_string(directory.path().join("effects.jsonl")).unwrap();
+    assert!(effects.contains("verification_failed"));
+}
+
+#[test]
 fn model_scope_does_not_grant_access_to_another_markdown_file() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("OTHER.md"), "before\n").unwrap();

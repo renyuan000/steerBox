@@ -2,6 +2,13 @@
 
 ## 定位与证据边界
 
+2026-11-23 Markdown读取门禁（基线 `2a4a74f`）：checkpoint hash与实际Markdown tool
+verifier改用pinned parent/实际regular FD的2 MiB完整有界读取；tool verifier拒绝坏UTF-8，
+不再把16 KiB展示前缀当完整输入。controller的expected/replacement超限在capture/
+checkpoint/mutation前拒绝；policy/approval顺序不变。隔离树全量91个harness/1269项通过，
+严格Clippy、实际构建、fmt/diff及三路审核通过；提交/主树复验见验证计划和外置
+`markdown-read-gates-20261123/RECEIPT.md`。不解锁执行CLI/live，不表示自动恢复或Phase 1完成。
+
 2026-11-22 Snapshot SS1（基线 `4586e5f`）：限定安全磁盘 I/O 已通过独立审核及隔离树全量验证。
 store root、record create/read/cleanup/sync 绑定实际目录 FD；root private 与 record
 single-link/private 校验保留，source/current 逐组件安全打开，capture 仅创建末级 root。

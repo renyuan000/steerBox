@@ -1,5 +1,19 @@
 # Phase 1 Validation Plan
 
+## 2026-11-23 Markdown 完整有界验证与 checkpoint hash
+
+基线 `2a4a74f`，相关三套基线50项通过。修改前真实行为RED：hash为1通过/2失败，
+verifier为2通过/4失败；runner尾部链接漏检1失败，确认旧代码错误完成；input门禁1失败
+（循环先在expected变体停止，不冒称已执行replacement变体）。修复后hash3项、相关
+四套58项通过。补snapshot未创建和controller精确2 MiB输入成功用例后，库132项加相关
+四套59项共191项通过，fmt/diff通过；独立规格、质量及五文档审核无阻断。
+代码将2 MiB验证预算用于完整UTF-8 Markdown扫描和raw-byte hash，controller输入超限在
+capture/checkpoint/mutation前拒绝；不改变policy/approval先后次序。保留hash域、root alias、
+hardlink和read_file展示截断；不声称并发稳定、完整Markdown解析、自动恢复或live完成。
+隔离树全量91个harness/1269项通过、0失败/跳过；严格all-targets Clippy、实际lib/bin
+构建、fmt/diff通过。提交与主树复验状态见
+`/temp/codex/steerbox-validation/markdown-read-gates-20261123/RECEIPT.md`。
+
 ## 2026-11-23 Markdown 纯预检 CLI
 
 基线 `b25a8b1`，合同见 `BOUNDED_MARKDOWN_PREFLIGHT_CLI.md`。既有三套基线37项通过。
