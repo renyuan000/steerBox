@@ -28,6 +28,7 @@ use steerbox::tool_registry::{SideEffectClass, ToolProfile, ToolRegistry};
 use steerbox::user_command_inbox::{UserCommand, UserCommandEntry, UserCommandInbox};
 use steerbox::workspace_edit::{edit_markdown, verify_markdown_links};
 
+mod provider_markdown_cli;
 mod provider_readonly_cli;
 mod recovery_inspect_cli;
 
@@ -454,6 +455,9 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), Box<dyn Error>> {
                 controller_status(&controller)
             );
         }
+        (Some("loop"), Some("preflight-markdown")) => {
+            println!("{}", provider_markdown_cli::preflight(args)?);
+        }
         (Some("loop"), Some("preflight-readonly")) => {
             println!("{}", provider_readonly_cli::preflight(args)?);
         }
@@ -815,6 +819,7 @@ fn print_usage() {
     eprintln!("  steerbox loop provider-readonly <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> <objective> <observation> --workspace <absolute> --max-iterations <1..16> --path <relative.md>... [--credential-source env]");
     eprintln!("  steerbox loop preflight-readonly <same arguments as provider-readonly>");
     eprintln!("    Default credential source is fail-closed; `--credential-source env` resolves only opaque env:NAME references.");
+    eprintln!("  steerbox loop preflight-markdown <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <model_id> <objective> <observation> --workspace <absolute> --path <relative.md>...");
     eprintln!("  steerbox dev markdown <config.json> <project_id> <goal_id> <loop_run_id> <task_run_id> <step_id> <path> <expected> <replacement> <auto|ask|approved>");
 }
 

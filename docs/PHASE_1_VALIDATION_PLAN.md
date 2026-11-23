@@ -1,5 +1,19 @@
 # Phase 1 Validation Plan
 
+## 2026-11-23 Markdown 纯预检 CLI
+
+基线 `b25a8b1`，合同见 `BOUNDED_MARKDOWN_PREFLIGHT_CLI.md`。既有三套基线37项通过。
+首轮测试因 fixture 的协议名拼写错误失败，不算行为RED；改用已核实常量后，旧CLI
+真实RED为1通过/13失败（不开放执行命令的保护项原本通过，其余均因命令不存在失败）。
+接线后14项及既有37项通过；补交错参数、合法JSON中的配置错误、workspace根symlink，
+最终定向四套54项通过（新17项+既有37项），fmt/diff通过；独立规格与质量审核无阻断。
+测试比较合成fixture的最终条目、字节、dev/ino、mode/nlink；坏正文/历史用例证明
+不解析这些内容。零正文读取/运行写入另有生产调用链审查依据，未做syscall跟踪。
+不开放实际Markdown执行、live写入、状态/取消、完整恢复或Phase 1完成。
+隔离树全量90个harness/1257项通过、0失败/跳过；严格all-targets Clippy、实际lib/bin
+构建、fmt/diff通过。提交及主树复验状态以
+`/temp/codex/steerbox-validation/markdown-preflight-20261123/RECEIPT.md` 为准。
+
 ## 2026-11-22 Snapshot SS1（限定安全磁盘 I/O，已验证）
 
 基线 `4586e5f`。snapshot/controller原基线59项通过；新增五项普通文件回归在旧I/O

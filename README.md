@@ -29,6 +29,12 @@ See [CLI usage and boundaries](./docs/BOUNDED_READONLY_PROVIDER_CLI.md).
 Live-provider acceptance, generic editing/Bash and background recovery remain
 unfinished; this is a constrained read-only entry, not a complete coding agent.
 
+`loop preflight-markdown` checks the existing bounded Markdown runner's model binding,
+authorized files and runtime destinations offline. Runtime must already exist and
+must not overlap the workspace; this command does not resolve credentials, read
+runtime history, call providers or edit files. See the [preflight contract](./docs/BOUNDED_MARKDOWN_PREFLIGHT_CLI.md).
+It is not a Markdown execution command or live-provider acceptance.
+
 The repository currently contains a verified Rust domain and local runtime slice, including EventLog/StateStore, trace/checkpoint metadata, a read-only board fixture, and an approved Markdown edit-and-verify development slice. A verification failure is persisted and returns a non-zero exit code. The bounded `loop provider` CLI rejects credential resolution by default; explicitly passing `--credential-source env` enables profile `auth_ref` values in `env:NAME` form. Live-provider acceptance remains pending; this is not yet an end-to-end model-connected coding agent. The reproducible commands are:
 
 ```bash

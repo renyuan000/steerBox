@@ -304,6 +304,7 @@ ModelRouter 有静态 capability/risk/privacy/cost/latency 约束及 determinist
 
 已有：
 
+- `loop preflight-markdown` 已接线现有 library 纯预检：双协议绑定、1..256 个显式授权文件、十一条审计/状态目的地及 CLI 独立的 runtime/workspace 双向隔离；固定输出明确 `execution=disabled`，无凭据解析、历史正文读取、模型/工具运行或运行文件创建。17 项新测试与既有37项通过，规格/质量审核通过；全量/提交/合入复验见验证计划及外置收据。合同见 `BOUNDED_MARKDOWN_PREFLIGHT_CLI.md`；不关闭下述执行、状态/取消及 live 待办。
 - [main.rs](../src/main.rs) 提供 runtime init、config validate、event、execution list/show/page、board、loop readonly/fixture 和 dev markdown；没有已交付的真实模型开发任务入口。
 - [stream_reporter.rs](../src/stream_reporter.rs) 已接入 readonly／fixture CLI 的生命周期反馈；[execution_query.rs](../src/execution_query.rs) 是 metadata-only detached 历史投影，不是后台 live worker。
 - inbox/controller 已支持 pause／resume／cancel 安全边界应用；`ReadCommandReader` 和 Unix `UnixCommandReader` 已把非阻塞 `Read`／stdin/pipe 接到 `CommandPoller` 的 reader 边界，并保留注入式测试路径，但尚未接到常驻后台 loop、同步模型调用期间轮询或 CLI live control。

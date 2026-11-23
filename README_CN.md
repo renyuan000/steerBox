@@ -87,6 +87,11 @@
 - 执行策略已有可验证的库 API 切片：按显式任务特征选择策略，记录选择/调整事件，将倍率分配限制在既有授权预算内，并在需审批时拒绝动作；调整不清零消耗或重复动作历史。验证频率与协作/专业领域策略目前只是需求元数据，不代表自动验证、多 agent 编排或专业操作已执行
 - 用户中途接入后台任务已有设计契约，但没有常驻后台 worker 或可连接它的交互控制面；见 [Human Steering Modes](./docs/HUMAN_STEERING_MODES.md) 与 [Control Plane Discussion](./docs/CONTROL_PLANE_DISCUSSION.md)
 
+新增 `loop preflight-markdown` 离线预检模型绑定、授权文件和全部审计/状态目的地；
+runtime 须已存在，且与 workspace 不相等、不相互包含。它不解析凭据、不读历史、
+不联网、不编辑文件，也不代表模型驱动 Markdown 执行 CLI 或 live 验收完成。
+命令和边界见 [Markdown 预检合同](./docs/BOUNDED_MARKDOWN_PREFLIGHT_CLI.md)。
+
 最小验证命令：
 
 新增 `loop provider-readonly` 双协议多步只读入口，要求显式 workspace、Markdown
