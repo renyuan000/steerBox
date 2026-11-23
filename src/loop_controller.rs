@@ -1205,6 +1205,32 @@ impl ReadOnlyLoopController {
         })
     }
 
+    /// Capture private state at a quiescent host boundary, without resume authority.
+    pub fn capture_recovery_input(
+        &mut self,
+        paths: &crate::recovery_input::RecoveryInputPaths,
+    ) -> Result<crate::recovery_input::RecoveryInput, crate::recovery_input::RecoveryInputError>
+    {
+        use crate::recovery_input::{RecoveryInput, RecoveryInputError, RecoveryState};
+        if !paths.matches_events(self.event_log.path()) {
+            return Err(RecoveryInputError::InvalidRecord);
+        }
+        let mut task_run = self.task_run.clone();
+        task_run.budget = self.budget.clone();
+        RecoveryInput::capture(
+            RecoveryState {
+                goal: self.goal.clone(),
+                loop_run: self.loop_run.clone(),
+                task_run,
+                next_step_no: self.next_step_no,
+                no_progress: self.no_progress.clone(),
+                strategy: self.strategy.clone(),
+                strategy_revision: self.strategy_revision,
+            },
+            paths,
+        )
+    }
+
     pub fn run_observation(
         &mut self,
         step_id: impl Into<String>,

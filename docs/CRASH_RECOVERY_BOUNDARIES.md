@@ -1,5 +1,13 @@
 # 崩溃恢复：当前证据与实施边界
 
+2026-11-23 RI1 增量（基线 `c25aea4`）：私有恢复输入可由宿主显式捕获、保存、
+重载并评估来源一致性，含 TaskRun/Attempt、预算/token、tracker 与策略版本。
+独立规格/质量审核及隔离树 1325 项全量测试通过；合同、限制与实测见
+`RECOVERY_INPUT_CONTRACT.md` 和 `PHASE_1_VALIDATION_PLAN.md`。
+这不是 StateStore 投影字段的扩展，也不是恢复授权；无定时/默认采集、恢复 CLI、
+自动续跑或 mutation 重发，未补齐跨 store joins、持久 snapshot binding 或审批/命令游标。
+下列 2026-11-22 各 store 的历史核查边界仍保留，不能用 RI1 覆盖其未实现能力。
+
 核查日期：2026-11-22。Workspace editor W1 基线 `c7df098`，限定普通文件安全替换切片已验证；
 Snapshot SS1 基线 `4586e5f`，限定安全磁盘 I/O 已通过独立审核与隔离树全量验证，合同见 `WORKSPACE_SNAPSHOT_IO.md`；
 StateStore S1 基线 `ac0070c`，限定普通文件安全读/原子替换切片已验证；
@@ -22,6 +30,7 @@ EventLog 安全 I/O 增量基线 `76f31dc`；
 
 | 对象 | 已实现 | 不代表什么 |
 |---|---|---|
+| 私有恢复输入 RI1 | 宿主显式保存/重载 Goal、Loop、TaskRun/Attempt、预算/token、tracker/策略；七源有界 typed JSONL/hash 与事件投影诊断 | 两个恢复授权/完整覆盖标志永远 false；不绑定全部 controller stores，无自动采集/恢复 CLI、跨 store joins、事务或恢复执行 |
 | EventLog | 五个实际 I/O 入口逐组件 NOFOLLOW、dirfd-relative 打开，同 fd 验证 regular/nlink=1；完整追加后文件与父目录均同步，再推进序号与 ACK；重开完整历史后接续序号 | 每次访问独立 pin，不是生命周期身份绑定；没有跨进程单写者锁、事务或完整自动恢复；MAX 序号仍有写后溢出边界 |
 | ModelCallStore | 成败 JSONL 与两实际锁安全打开；持锁完成历史校验、判重和文件/父目录同步后 ACK；相同记录 retry 同步原历史 fd、不改字节 | 查询可创建 RW sidecar；不防锁替换，无跨文件事务、坏尾修复或完整恢复 |
 | ToolCallRecordStore | tool JSONL/真实锁同 parent 安全打开，实际 fd 检查 regular/nlink/UID/mode；持锁至 JSON+LF、文件/parent 同步后 ACK | constructor 预检非 anchored 身份保证；不判重、不防锁替换，无尾修/事务/完整恢复 |

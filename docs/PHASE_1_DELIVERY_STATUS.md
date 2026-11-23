@@ -2,6 +2,19 @@
 
 ## 定位与证据边界
 
+2026-11-23 私有恢复输入 RI1（基线 `c25aea4`）：新增显式宿主库入口，保存并重载
+Goal/Loop/TaskRun、完整 Attempt 父链、累计预算/token 账本、无进展 tracker 与策略版本。
+七源有界 typed JSONL/同字节 hash、事件身份/步号/投影比对；私有独占文件完成文件及
+pinned parent 同步后确认，失败保留不确定残留，不覆盖、不自动重试。本轮发现的
+身份绕过、步号问题及保存确认权限窗口均有真实 RED/GREEN；23 项模块、15 项集成
+通过，含新进程重载。隔离树全量 93 个 harness/1325 项通过、0 失败/跳过；严格
+Clippy、实际 lib/bin build、fmt/diff 与独立规格/质量审核通过。提交及合入复验见
+验证计划及外置 `recovery-input-20261123/RECEIPT.md`。
+合同见 `RECOVERY_INPUT_CONTRACT.md`：仅 inputs/诊断，两个恢复授权/完整覆盖标志
+永远为 false；无默认采集、定时保存、恢复 CLI、自动续跑或 mutation 重发。其他 store
+绑定依赖可信宿主；跨 store joins、snapshot/审批/命令游标和恢复器仍未完成。
+本片不解除 live E2E 或完整 Phase 1 门禁。
+
 2026-11-23 Markdown 执行 CLI（基线 `45d4e73`）：获准实现范围及 mandatory
 `--authorize-markdown once` 合同见 `BOUNDED_MARKDOWN_EXECUTION_CLI.md`。本次 scope
 宿主授权不是持久 ApprovalStore/可恢复 Once；复用一次模型、一次 edit 及同文件验证，

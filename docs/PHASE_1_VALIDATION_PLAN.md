@@ -1,5 +1,32 @@
 # Phase 1 Validation Plan
 
+## 2026-11-23 私有恢复输入 RI1
+
+基线 `c25aea491f468baae2a11f290d93df5b9e4f8d9d`；合同见
+`RECOVERY_INPUT_CONTRACT.md`。仅显式宿主捕获/私有保存/重载及来源对照，
+不新增 CLI、自动恢复、动作重发、审批恢复或 live provider 访问。
+
+- 实际 RED/GREEN：写入窗口改变文件/父目录权限或新增硬链接不再返回成功；
+  缺失 envelope loop ID 的身份绕过、重复/倒序/零步号、显式冲突 lifecycle aggregate
+  均先由回归测试复现，再修复通过；payload loop ID 冲突同组回归通过。
+- `cargo test ... --lib recovery_input`：23 项通过；无名称过滤的
+  `cargo test ... --test recovery_input`：15 项通过，含父测试启动新进程重载。
+  覆盖预算/Attempt/no-progress/strategy 精确保留、blocked/超额 token 账本、
+  同长度篡改/append、缺失/空源、截断/坏事件、未知/重复字段、私有权限/链接、
+  保存碰撞、I/O 故障残留与 pinned 父目录替换。
+- 隔离树 `cargo test --locked --offline --jobs 1`：93 个 harness，1325 passed，
+  0 failed/ignored；严格 `cargo clippy --locked --offline --jobs 1 --all-targets -- -D warnings`、
+  `cargo build --locked --offline --jobs 1 --lib --bin steerbox`、fmt/diff 均通过。
+  各 Cargo 命令均额外指定外置 target，未在项目新增构建目录。
+- 独立规格审核发现的两类问题及归属一致性残留已修复并复审；随后独立质量审核
+  未发现阻断。尚未做所有七源的逐类畸形输入矩阵、所有大容量临界值或跨平台实测；
+  不以 Linux 离线测试代替 OS/VM 掉电或跨 store 一致恢复证明。
+
+证据目录：`/temp/codex/steerbox-validation/recovery-input-20261123/`；
+外置 target：`/temp/codex/steerbox-validation/foreground-upgrade-20261102/master-target`。
+`full-test.log`、`clippy.log`、`build.log` 记录本轮隔离树验证；精确提交、
+合入后的复验与主树原有修改保护结果以外置 `RECEIPT.md` 为准。
+
 ## 2026-11-23 Markdown 执行停止与投影回归
 
 基线 `e37c181`；仅补既有合同的直接测试，不修改生产逻辑、授权或恢复能力。
