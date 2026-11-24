@@ -5,8 +5,8 @@ use crate::model_adapter::{
 };
 use crate::model_contracts::ModelActionEnvelope;
 use crate::provider_adapter::{
-    OpenAiCompatibleAdapter, ProviderMessage, ProviderRequest, ProviderResponse,
-    ProviderStreamEvent, ProviderTransport, ReasoningEffort,
+    OpenAiCompatibleAdapter, OpenAiWireProtocol, ProviderMessage, ProviderRequest,
+    ProviderResponse, ProviderStreamEvent, ProviderTransport, ReasoningEffort,
 };
 use crate::redaction::Redactor;
 use crate::resolved_prompt::ResolvedPromptPack;
@@ -149,6 +149,7 @@ pub trait ResolvedModelAdapter {
 pub(crate) struct EffectProfileBinding {
     pub(crate) provider_id: String,
     pub(crate) endpoint: String,
+    pub(crate) endpoint_mode: crate::endpoint_mode::EndpointMode,
     pub(crate) model_id: String,
     pub(crate) auth_ref: Option<String>,
     pub(crate) selected_level: EffectLevel,
@@ -263,7 +264,13 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
         request: ModelRequest,
         pack: &ResolvedPromptPack,
     ) -> Result<ResolvedModelResponseWithAction, ResolvedCallFailure> {
-        if !matches!(pack.endpoint_protocol(), "openai" | "openai-compatible") {
+        let protocol_matches = match self.provider.wire_protocol() {
+            OpenAiWireProtocol::ChatCompletions => {
+                matches!(pack.endpoint_protocol(), "openai" | "openai-compatible")
+            }
+            OpenAiWireProtocol::Responses => pack.endpoint_protocol() == "openai-responses",
+        };
+        if !protocol_matches {
             return Err(ResolvedCallFailure::new(
                 ModelAdapterError::ResolvedBindingMismatch {
                     field: "endpoint_protocol",
@@ -277,8 +284,8 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
                 "provider_id",
             ),
             (
-                self.provider.base_url().trim_end_matches('/'),
-                pack.endpoint_base_url().trim_end_matches('/'),
+                self.provider.bound_endpoint(self.provider.base_url()),
+                self.provider.bound_endpoint(pack.endpoint_base_url()),
                 "endpoint_base_url",
             ),
             (request.model_id.as_str(), pack.model_id(), "model_id"),

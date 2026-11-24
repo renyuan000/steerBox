@@ -1,4 +1,5 @@
 use crate::adaptive_routing::EffectLevel;
+use crate::endpoint_mode::EndpointMode;
 use crate::redaction::Redactor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -64,6 +65,8 @@ pub struct PreparedProviderRequest {
     input_hash: String,
     provider_id: String,
     base_url: String,
+    wire_protocol: OpenAiWireProtocol,
+    endpoint_mode: EndpointMode,
 }
 
 impl PreparedProviderRequest {
@@ -314,12 +317,21 @@ impl ModelEffectPolicy {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum OpenAiWireProtocol {
+    #[default]
+    ChatCompletions,
+    Responses,
+}
+
 #[derive(Debug)]
 pub struct OpenAiCompatibleAdapter<T: ProviderTransport> {
     provider_id: String,
     base_url: String,
     transport: T,
     effect_policy: Option<(ModelEffectPolicy, EffectLevel)>,
+    wire_protocol: OpenAiWireProtocol,
+    endpoint_mode: EndpointMode,
 }
 
 impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
@@ -329,7 +341,27 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
             base_url: base_url.into(),
             transport,
             effect_policy: None,
+            wire_protocol: OpenAiWireProtocol::ChatCompletions,
+            endpoint_mode: EndpointMode::BaseUrl,
         }
+    }
+
+    pub fn with_wire_protocol(mut self, protocol: OpenAiWireProtocol) -> Self {
+        self.wire_protocol = protocol;
+        self
+    }
+
+    pub fn wire_protocol(&self) -> OpenAiWireProtocol {
+        self.wire_protocol
+    }
+
+    pub(crate) fn bound_endpoint<'a>(&self, endpoint: &'a str) -> &'a str {
+        self.endpoint_mode.binding_url(endpoint)
+    }
+
+    pub fn with_endpoint_mode(mut self, mode: EndpointMode) -> Self {
+        self.endpoint_mode = mode;
+        self
     }
 
     /// Select a host-governed effect for subsequent requests. This does not
@@ -373,7 +405,9 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
             body,
             input_hash,
             provider_id: self.provider_id.clone(),
-            base_url: self.base_url.trim_end_matches('/').to_owned(),
+            base_url: self.bound_endpoint(&self.base_url).to_owned(),
+            wire_protocol: self.wire_protocol,
+            endpoint_mode: self.endpoint_mode,
         })
     }
 
@@ -382,10 +416,12 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
         prepared: &PreparedProviderRequest,
     ) -> Result<ProviderResponse, ProviderAdapterError> {
         if prepared.provider_id != self.provider_id
-            || prepared.base_url != self.base_url.trim_end_matches('/')
+            || prepared.base_url != self.bound_endpoint(&self.base_url)
+            || prepared.wire_protocol != self.wire_protocol
+            || prepared.endpoint_mode != self.endpoint_mode
         {
             return Err(ProviderAdapterError::InvalidRequest {
-                reason: "prepared request belongs to a different provider or endpoint",
+                reason: "prepared request belongs to a different provider, endpoint or protocol",
             });
         }
         // A frozen request must not bypass the receiving adapter's current
@@ -396,7 +432,10 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
             });
         }
         let response = self.send(&prepared.request, &prepared.body, false)?;
-        parse_completion_response(&response.body)
+        match self.wire_protocol {
+            OpenAiWireProtocol::ChatCompletions => parse_completion_response(&response.body),
+            OpenAiWireProtocol::Responses => crate::responses_wire::parse(&response.body),
+        }
     }
 
     pub fn complete(
@@ -411,6 +450,11 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
         &self,
         request: ProviderRequest,
     ) -> Result<Vec<ProviderStreamEvent>, ProviderAdapterError> {
+        if self.wire_protocol == OpenAiWireProtocol::Responses {
+            return Err(ProviderAdapterError::InvalidRequest {
+                reason: "Responses streaming is not supported by this bounded adapter",
+            });
+        }
         if !request.stream {
             return Err(ProviderAdapterError::InvalidRequest {
                 reason: "stream request must set stream=true",
@@ -452,6 +496,9 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
                 })
             })
             .collect::<Result<Vec<_>, ProviderAdapterError>>()?;
+        if self.wire_protocol == OpenAiWireProtocol::Responses {
+            return crate::responses_wire::encode(&messages, &request.model, reasoning_effort);
+        }
         let wire_request = WireRequest {
             model: &request.model,
             messages: &messages,
@@ -467,7 +514,11 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
         body: &str,
         streaming: bool,
     ) -> Result<TransportResponse, ProviderAdapterError> {
-        let endpoint = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let suffix = match self.wire_protocol {
+            OpenAiWireProtocol::ChatCompletions => "/chat/completions",
+            OpenAiWireProtocol::Responses => "/responses",
+        };
+        let endpoint = self.endpoint_mode.resolve(&self.base_url, suffix);
         let response = self
             .transport
             .send(

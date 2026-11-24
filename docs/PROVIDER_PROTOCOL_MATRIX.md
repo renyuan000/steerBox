@@ -1,6 +1,6 @@
 # Provider Protocol Matrix
 
-状态：设计基线（2026-10-16）
+状态：设计基线及受限实现更新（2026-11-24；不代表 live 验收或 Phase 1 全部完成）
 
 ## 结论
 
@@ -16,7 +16,7 @@ Anthropic Messages 已作为独立协议接入。协议差异必须由 provider-
 | 协议族 | 典型接口 | 当前状态 | 设计边界 |
 |---|---|---|---|
 | OpenAI Chat Completions 兼容 | `/v1/chat/completions` | 已有 adapter、fake/localhost 测试、bounded Markdown runner | 统一 `messages`、非流式/基础 SSE；不同厂商的扩展字段不能静默假设兼容 |
-| OpenAI Responses | `/v1/responses` | 未实现 | 独立 request/response/item/tool-call/continuation contract；不能降级伪装成 Chat Completions |
+| OpenAI Responses | `/responses`（也可显式配置 `/v1` 或完整地址） | 已实现受限、同步、非流式 adapter；离线注入与 localhost 测试覆盖 | 独立 input/output/status 解析、`store:false`、固定 `reasoning.effort`；原生工具调用、SSE、续接未实现，不自动降级成 Chat |
 | Anthropic Messages | `/v1/messages` | 已有独立 adapter、fake/injected 覆盖 | 独立 system、消息块、认证 header、响应解析和错误分类 |
 | Google Gemini 原生 | `generateContent` / `streamGenerateContent` | 未实现 | 独立 `contents/parts`、工具调用、缓存和安全设置；不能仅依赖 OpenAI 兼容层 |
 | Google Gemini OpenAI 兼容入口 | OpenAI 风格 endpoint | 未单独验收 | 可复用 OpenAI-compatible adapter，但必须做 endpoint/provider capability 声明和 fixture 验证 |
@@ -32,7 +32,7 @@ Anthropic Messages 已作为独立协议接入。协议差异必须由 provider-
 
 - `ResolvedPromptPack`：已绑定的 provider、endpoint、model、prompt contract 和消息摘要。
 - `ResolvedModelAdapter`：一次 resolved invocation，返回严格的 decision/action envelope 和 secret-free usage/error metadata。
-- `ProviderTransport`：OpenAI-compatible HTTP transport 边界。
+- `ProviderTransport`：Chat/Responses 共享的 bearer HTTP transport 边界；wire 编解码由显式协议分别选择。
 - 独立 transport/adapter：协议有独立认证、消息结构、工具调用、流式事件或错误分类时使用。
 - `ModelCallStore`：只保存 binding、hash、usage、finish reason、错误分类和 lineage，不保存 credential 或原始正文。
 
@@ -51,11 +51,12 @@ Anthropic Messages 已作为独立协议接入。协议差异必须由 provider-
 - 保持并完成 `openai-compatible-chat` 的真实 credential/live provider 验收前置条件。
 - 保持 Anthropic Messages 独立 adapter；当前 fake/injected bounded Markdown 覆盖不等于 live 验收。
 - 为 endpoint protocol 增加显式 capability，禁止用 provider 名称或 URL 猜协议。
-- 暂不实现 Responses、Gemini 原生、Bedrock、Realtime 或跨协议 fallback。
+- 增补受限 `openai-responses`：无原生工具、非流式、无续接，复用已有 decision/action、只读与 Markdown controller 门禁；固定 effect 可用，自动 effect upgrade 仍仅限 Chat。
+- 暂不实现 Gemini 原生、Bedrock、Realtime 或跨协议 fallback。Responses live 验收单独记录，不以离线通过代替。
 
 ### Phase 2
 
-1. `openai-responses` adapter：先做无工具、非流式严格 response item 映射，再做工具调用和续接。
+1. 扩展已完成的受限 `openai-responses`：另立 SSE、原生工具调用、推理 item/continuation 合同及验收；不得将其视为当前已经支持。
 2. Gemini 原生 adapter：独立 contents/parts、工具和安全设置映射。
 3. Bedrock adapter：独立 credential/signing boundary 与模型族 schema。
 4. Provider capability matrix：声明 `chat`, `responses`, `tool_call`, `stream`, `cache`, `resume`, `vision`, `audio` 等能力；路由只能选择声明并通过 fixture 验证的能力。

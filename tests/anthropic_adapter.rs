@@ -75,6 +75,35 @@ fn response_body(text: &str) -> String {
     .to_string()
 }
 
+#[test]
+fn full_url_from_config_is_preserved_without_anthropic_suffix() {
+    use steerbox::runtime_config::RuntimeConfig;
+    let endpoint = "https://fixture.example.test/custom-message-entry/";
+    let config = RuntimeConfig::from_json_str(&serde_json::json!({
+        "schema_version":1, "project_ref":"anthropic-url", "data_root":"/temp/steerbox/anthropic-url",
+        "model_profiles":[{"model_id":"claude-fixture","provider":"anthropic","endpoint":endpoint,
+            "endpoint_protocol":"anthropic-messages","endpoint_mode":"full_url","capabilities":["text"]}]
+    }).to_string()).unwrap();
+    let transport = FakeTransport::response(&response_body("fixture"));
+    let captured = transport.captured.clone();
+    let adapter = config
+        .build_anthropic_adapter("claude-fixture", transport)
+        .unwrap();
+    adapter
+        .complete(ProviderRequest {
+            model: "claude-fixture".into(),
+            messages: vec![ProviderMessage::user("fixture")],
+            auth_ref: None,
+            timeout_ms: 1000,
+            stream: false,
+        })
+        .unwrap();
+    assert_eq!(
+        captured.lock().unwrap().as_ref().unwrap().endpoint,
+        endpoint
+    );
+}
+
 fn request() -> ProviderRequest {
     ProviderRequest {
         model: "claude-fixture".into(),

@@ -1,11 +1,13 @@
 use crate::adaptive_routing::EffectLevel;
 use crate::anthropic_adapter::{AnthropicAdapter, AnthropicTransport};
+use crate::endpoint_mode::EndpointMode;
 use crate::http_transport::{CredentialResolver, HttpAnthropicTransport, HttpProviderTransport};
 use crate::model_adapter::ModelRequest;
 use crate::model_contracts::RouteDecision;
 use crate::model_registry::{contains_url_authentication_material, is_opaque_auth_ref};
 use crate::provider_adapter::{
-    ModelEffectPolicy, OpenAiCompatibleAdapter, ProviderTransport, ReasoningEffort,
+    ModelEffectPolicy, OpenAiCompatibleAdapter, OpenAiWireProtocol, ProviderTransport,
+    ReasoningEffort,
 };
 use crate::provider_model_adapter::{
     EffectBoundResolvedAdapter, EffectProfileBinding, ProviderModelAdapter, ResolvedModelAdapter,
@@ -20,6 +22,7 @@ use thiserror::Error;
 const DATA_ROOT_PREFIX: &str = "/temp/steerbox";
 
 pub const OPENAI_COMPATIBLE_CHAT_PROTOCOL: &str = "openai-compatible-chat";
+pub const OPENAI_RESPONSES_PROTOCOL: &str = "openai-responses";
 pub const ANTHROPIC_MESSAGES_PROTOCOL: &str = "anthropic-messages";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -92,6 +95,8 @@ pub struct ModelProfileConfig {
     /// reading legacy JSON; runners use this field and never infer a
     /// protocol from provider names.
     pub endpoint_protocol: String,
+    #[serde(default, skip_serializing_if = "EndpointMode::is_base_url")]
+    pub endpoint_mode: EndpointMode,
     #[serde(default)]
     pub auth_ref: Option<String>,
     #[serde(default)]
@@ -175,6 +180,8 @@ struct ModelProfileConfigWire {
     #[serde(default)]
     endpoint_protocol: Option<String>,
     #[serde(default)]
+    endpoint_mode: EndpointMode,
+    #[serde(default)]
     auth_ref: Option<String>,
     #[serde(default)]
     capabilities: Vec<String>,
@@ -203,6 +210,7 @@ impl<'de> Deserialize<'de> for ModelProfileConfig {
             provider: wire.provider,
             endpoint: wire.endpoint,
             endpoint_protocol,
+            endpoint_mode: wire.endpoint_mode,
             auth_ref: wire.auth_ref,
             capabilities: wire.capabilities,
             effect: wire.effect,
@@ -215,9 +223,17 @@ impl ModelProfileConfig {
         let Some(effect) = &self.effect else {
             return Ok(None);
         };
-        if self.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
+        if !matches!(
+            self.endpoint_protocol.as_str(),
+            OPENAI_COMPATIBLE_CHAT_PROTOCOL | OPENAI_RESPONSES_PROTOCOL
+        ) {
             return Err(ConfigError::InvalidModelEffect {
-                reason: "effect requires openai-compatible-chat",
+                reason: "effect requires openai-compatible-chat or openai-responses",
+            });
+        }
+        if effect.automatic_upgrade && self.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
+            return Err(ConfigError::InvalidModelEffect {
+                reason: "automatic upgrade requires openai-compatible-chat",
             });
         }
         let policy = ModelEffectPolicy::new(&self.model_id, effect.mapping.clone()).map_err(|_| {
@@ -281,7 +297,18 @@ impl ModelProfileConfig {
             });
         }
         let policy = self.effect_policy()?;
-        let mut provider = OpenAiCompatibleAdapter::new(&self.provider, &self.endpoint, transport);
+        let protocol = match self.endpoint_protocol.as_str() {
+            OPENAI_COMPATIBLE_CHAT_PROTOCOL => OpenAiWireProtocol::ChatCompletions,
+            OPENAI_RESPONSES_PROTOCOL => OpenAiWireProtocol::Responses,
+            _ => {
+                return Err(ConfigError::UnsupportedEndpointProtocol {
+                    protocol: self.endpoint_protocol.clone(),
+                })
+            }
+        };
+        let mut provider = OpenAiCompatibleAdapter::new(&self.provider, &self.endpoint, transport)
+            .with_wire_protocol(protocol)
+            .with_endpoint_mode(self.endpoint_mode);
         if let Some((policy, selected_level)) = policy {
             provider = provider
                 .with_effect_policy(policy, selected_level)
@@ -352,6 +379,7 @@ impl RuntimeConfig {
             || request.objective != pack.objective()
             || request.observation != pack.observation()
             || route.approval_required
+            || profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL
             || !matches!(pack.endpoint_protocol(), "openai" | "openai-compatible")
             || route.validate().is_err()
         {
@@ -362,6 +390,7 @@ impl RuntimeConfig {
         let binding = EffectProfileBinding {
             provider_id: profile.provider.clone(),
             endpoint: profile.endpoint.clone(),
+            endpoint_mode: profile.endpoint_mode,
             model_id: profile.model_id.clone(),
             auth_ref: profile.auth_ref.clone(),
             selected_level: effect.selected_level,
@@ -370,6 +399,7 @@ impl RuntimeConfig {
         };
         let provider =
             OpenAiCompatibleAdapter::new(&profile.provider, &profile.endpoint, transport)
+                .with_endpoint_mode(profile.endpoint_mode)
                 .with_effect_policy(policy, level)
                 .map_err(|_| ConfigError::InvalidModelEffect {
                     reason: "effect candidate target is not declared",
@@ -479,7 +509,10 @@ impl RuntimeConfig {
             .ok_or_else(|| ConfigError::ModelProfileNotFound {
                 model_id: model_id.to_owned(),
             })?;
-        if profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
+        if !matches!(
+            profile.endpoint_protocol.as_str(),
+            OPENAI_COMPATIBLE_CHAT_PROTOCOL | OPENAI_RESPONSES_PROTOCOL
+        ) {
             return Err(ConfigError::UnsupportedEndpointProtocol {
                 protocol: profile.endpoint_protocol.clone(),
             });
@@ -529,6 +562,7 @@ impl RuntimeConfig {
             transport,
             profile.auth_ref.clone(),
         )
+        .with_endpoint_mode(profile.endpoint_mode)
         .with_model_id(model_id))
     }
 
@@ -580,7 +614,9 @@ impl RuntimeConfig {
         for profile in &self.model_profiles {
             if !matches!(
                 profile.endpoint_protocol.as_str(),
-                OPENAI_COMPATIBLE_CHAT_PROTOCOL | ANTHROPIC_MESSAGES_PROTOCOL
+                OPENAI_COMPATIBLE_CHAT_PROTOCOL
+                    | OPENAI_RESPONSES_PROTOCOL
+                    | ANTHROPIC_MESSAGES_PROTOCOL
             ) {
                 return Err(ConfigError::UnsupportedEndpointProtocol {
                     protocol: profile.endpoint_protocol.clone(),

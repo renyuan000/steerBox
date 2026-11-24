@@ -27,7 +27,7 @@ use crate::resolved_prompt::{
 };
 use crate::runtime_config::{
     ConfigError, ModelProfileConfig, RuntimeConfig, ANTHROPIC_MESSAGES_PROTOCOL,
-    OPENAI_COMPATIBLE_CHAT_PROTOCOL,
+    OPENAI_COMPATIBLE_CHAT_PROTOCOL, OPENAI_RESPONSES_PROTOCOL,
 };
 use crate::stream_reporter::ProgressSink;
 use crate::tool_call_store::{ToolCallRecordStore, ToolCallStoreError};
@@ -318,6 +318,7 @@ impl ForegroundProviderRun {
         let endpoint_id = format!("foreground:{}", profile.model_id);
         let endpoint_protocol = match profile.endpoint_protocol.as_str() {
             OPENAI_COMPATIBLE_CHAT_PROTOCOL => "openai-compatible",
+            OPENAI_RESPONSES_PROTOCOL => "openai-responses",
             ANTHROPIC_MESSAGES_PROTOCOL => "anthropic",
             _ => return Err(ProviderRunError::UnsupportedProtocol),
         };
@@ -466,7 +467,10 @@ impl ForegroundProviderRun {
         model_calls: ModelCallStore,
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
-        if self.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
+        if !matches!(
+            self.profile.endpoint_protocol.as_str(),
+            OPENAI_COMPATIBLE_CHAT_PROTOCOL | OPENAI_RESPONSES_PROTOCOL
+        ) {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
         reject_reused_run_identity(&events, &model_calls, &self.request)?;
@@ -569,6 +573,7 @@ impl ForegroundProviderRun {
             transport,
             self.profile.auth_ref,
         )
+        .with_endpoint_mode(self.profile.endpoint_mode)
         .with_model_id(&request.model_id);
         let decision = controller
             .run_resolved_model_step(
@@ -803,7 +808,7 @@ impl BoundedMarkdownProviderRun {
         self.validate_runtime_paths(events.path(), &model_calls.storage_paths()[0], None)?;
         reject_reused_run_identity(&events, &model_calls, &self.inner.request)?;
         match self.inner.profile.endpoint_protocol.as_str() {
-            OPENAI_COMPATIBLE_CHAT_PROTOCOL => {
+            OPENAI_COMPATIBLE_CHAT_PROTOCOL | OPENAI_RESPONSES_PROTOCOL => {
                 let transport = HttpProviderTransport::new(resolver)
                     .map_err(|_| ProviderRunError::TransportBuild)?;
                 self.run_with_transport(transport, events, model_calls, sink)
@@ -825,7 +830,10 @@ impl BoundedMarkdownProviderRun {
         sink: S,
     ) -> Result<ProviderRunOutcome, ProviderRunError> {
         self.validate_runtime_paths(events.path(), &model_calls.storage_paths()[0], None)?;
-        if self.inner.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
+        if !matches!(
+            self.inner.profile.endpoint_protocol.as_str(),
+            OPENAI_COMPATIBLE_CHAT_PROTOCOL | OPENAI_RESPONSES_PROTOCOL
+        ) {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
         let adapter = self.inner.profile.build_openai_adapter(transport)?;
@@ -849,6 +857,7 @@ impl BoundedMarkdownProviderRun {
             transport,
             self.inner.profile.auth_ref.clone(),
         )
+        .with_endpoint_mode(self.inner.profile.endpoint_mode)
         .with_model_id(&self.inner.request.model_id);
         self.run_with_resolved_adapter(adapter, events, model_calls, sink)
     }

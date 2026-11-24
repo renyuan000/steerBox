@@ -814,6 +814,39 @@ fn resolved_fixture() -> (ResolvedPromptPack, RouteDecision) {
     resolved_fixture_for("logical-model", "route-model-audit", vec![])
 }
 
+#[test]
+fn chat_and_responses_resolved_protocol_mismatches_fail_before_transport() {
+    use steerbox::provider_adapter::OpenAiWireProtocol;
+    for (wire, protocol) in [
+        (OpenAiWireProtocol::Responses, "openai"),
+        (OpenAiWireProtocol::ChatCompletions, "openai-responses"),
+    ] {
+        let (pack, _) =
+            resolved_fixture_for_protocol("logical-model", "route-model-audit", vec![], protocol);
+        let transport = FakeTransport::valid();
+        let sends = transport.sends.clone();
+        let adapter = ProviderModelAdapter::new(
+            OpenAiCompatibleAdapter::new("fixture-provider", BASE_URL, transport)
+                .with_wire_protocol(wire),
+            None,
+        );
+        let error = adapter
+            .complete_resolved_with_action(
+                token_budget_request(&pack, "step-protocol-mismatch"),
+                &pack,
+            )
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error.cause(),
+            ModelAdapterError::ResolvedBindingMismatch {
+                field: "endpoint_protocol"
+            }
+        ));
+        assert!(sends.lock().unwrap().is_empty());
+    }
+}
+
 fn resolved_fixture_for(
     model_id: &str,
     route_decision_id: &str,

@@ -116,7 +116,10 @@ impl BoundedReadOnlyProviderRun {
         model_calls: ModelCallStore,
         sink: S,
     ) -> Result<BoundedReadOnlyProviderRunOutcome, ProviderRunError> {
-        if self.inner.profile.endpoint_protocol != OPENAI_COMPATIBLE_CHAT_PROTOCOL {
+        if !matches!(
+            self.inner.profile.endpoint_protocol.as_str(),
+            OPENAI_COMPATIBLE_CHAT_PROTOCOL | OPENAI_RESPONSES_PROTOCOL
+        ) {
             return Err(ProviderRunError::UnsupportedProtocol);
         }
         self.preflight(&events, &model_calls)?;
@@ -141,6 +144,7 @@ impl BoundedReadOnlyProviderRun {
             transport,
             self.inner.profile.auth_ref.clone(),
         )
+        .with_endpoint_mode(self.inner.profile.endpoint_mode)
         .with_model_id(&self.inner.request.model_id);
         self.execute(adapter, events, model_calls, sink)
     }
@@ -154,7 +158,7 @@ impl BoundedReadOnlyProviderRun {
     ) -> Result<BoundedReadOnlyProviderRunOutcome, ProviderRunError> {
         self.preflight(&events, &model_calls)?;
         match self.inner.profile.endpoint_protocol.as_str() {
-            OPENAI_COMPATIBLE_CHAT_PROTOCOL => {
+            OPENAI_COMPATIBLE_CHAT_PROTOCOL | OPENAI_RESPONSES_PROTOCOL => {
                 let transport = HttpProviderTransport::new(resolver)
                     .map_err(|_| ProviderRunError::TransportBuild)?;
                 self.run_with_transport(transport, events, model_calls, sink)

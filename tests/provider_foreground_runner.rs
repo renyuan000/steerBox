@@ -248,13 +248,13 @@ fn anthropic_is_not_silently_sent_to_an_openai_wire_protocol() {
 #[test]
 fn unsupported_explicit_protocol_fails_before_chat_completions_transport() {
     let mut config = config(Some("secret-ref:provider-fixture"), "openai");
-    config.model_profiles[0].endpoint_protocol = "openai-responses".into();
+    config.model_profiles[0].endpoint_protocol = "unsupported-fixture-protocol".into();
     let result = ForegroundProviderRun::prepare(&config, request());
     assert!(matches!(
         result,
         Err(ProviderRunError::Config(
             ConfigError::UnsupportedEndpointProtocol { protocol }
-        )) if protocol == "openai-responses"
+        )) if protocol == "unsupported-fixture-protocol"
     ));
 }
 

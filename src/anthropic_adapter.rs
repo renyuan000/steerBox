@@ -116,6 +116,7 @@ pub struct AnthropicAdapter<T: AnthropicTransport> {
     model_id: String,
     timeout_ms: u64,
     max_tokens: u32,
+    endpoint_mode: crate::endpoint_mode::EndpointMode,
 }
 
 impl<T: AnthropicTransport> AnthropicAdapter<T> {
@@ -133,7 +134,13 @@ impl<T: AnthropicTransport> AnthropicAdapter<T> {
             model_id: String::new(),
             timeout_ms: DEFAULT_TIMEOUT_MS,
             max_tokens: DEFAULT_MAX_TOKENS,
+            endpoint_mode: crate::endpoint_mode::EndpointMode::BaseUrl,
         }
+    }
+
+    pub fn with_endpoint_mode(mut self, mode: crate::endpoint_mode::EndpointMode) -> Self {
+        self.endpoint_mode = mode;
+        self
     }
 
     pub fn with_model_id(mut self, model_id: impl Into<String>) -> Self {
@@ -294,6 +301,9 @@ impl<T: AnthropicTransport> AnthropicAdapter<T> {
     }
 
     fn endpoint(&self) -> String {
+        if self.endpoint_mode == crate::endpoint_mode::EndpointMode::FullUrl {
+            return self.base_url.clone();
+        }
         let base = self.base_url.trim_end_matches('/');
         if base.ends_with("/v1") {
             format!("{base}/messages")
@@ -319,8 +329,8 @@ impl<T: AnthropicTransport> ResolvedModelAdapter for AnthropicAdapter<T> {
         for (actual, expected, field) in [
             (self.provider_id.as_str(), pack.provider_id(), "provider_id"),
             (
-                self.base_url.trim_end_matches('/'),
-                pack.endpoint_base_url().trim_end_matches('/'),
+                self.endpoint_mode.binding_url(&self.base_url),
+                self.endpoint_mode.binding_url(pack.endpoint_base_url()),
                 "endpoint_base_url",
             ),
             (request.model_id.as_str(), pack.model_id(), "model_id"),

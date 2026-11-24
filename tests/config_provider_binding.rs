@@ -92,7 +92,7 @@ fn unsupported_protocol_is_rejected_before_http_adapter_construction() {
             "model_id": "logical-model",
             "provider": "openai",
             "endpoint": "https://fixture.example.test/v1",
-            "endpoint_protocol": "openai-responses",
+            "endpoint_protocol": "unsupported-fixture-protocol",
             "auth_ref": "env:FIXTURE_PROVIDER_KEY",
             "capabilities": ["text"]
         }]
@@ -100,7 +100,7 @@ fn unsupported_protocol_is_rejected_before_http_adapter_construction() {
     assert!(matches!(
         RuntimeConfig::from_json_str(&encoded.to_string()),
         Err(ConfigError::UnsupportedEndpointProtocol { protocol })
-            if protocol == "openai-responses"
+            if protocol == "unsupported-fixture-protocol"
     ));
 }
 

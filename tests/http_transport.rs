@@ -83,6 +83,53 @@ fn write_response(mut stream: TcpStream, status: &str, headers: &str, body: &str
 }
 
 #[test]
+fn responses_adapter_uses_real_local_http_with_full_url_and_synthetic_auth() {
+    use steerbox::{endpoint_mode::EndpointMode, provider_adapter::OpenAiWireProtocol};
+    let (listener, endpoint) = listener();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let request = read_request(&mut stream);
+        write_response(
+            stream,
+            "200 OK",
+            "Content-Type: application/json\r\n",
+            &serde_json::json!({
+                "object":"response","id":"resp-local","model":"fixture-model","status":"completed",
+                "output":[{"type":"message","role":"assistant","status":"completed",
+                    "content":[{"type":"output_text","text":"local fixture result"}]}],
+                "usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}
+            })
+            .to_string(),
+        );
+        request
+    });
+    let resolver = FixtureResolver::credential("synthetic-local-only");
+    let refs = resolver.refs.clone();
+    let transport = HttpProviderTransport::new(resolver)
+        .unwrap()
+        .allow_loopback_http_for_tests();
+    let adapter =
+        OpenAiCompatibleAdapter::new("relay-alias", format!("{endpoint}/custom-wire/"), transport)
+            .with_wire_protocol(OpenAiWireProtocol::Responses)
+            .with_endpoint_mode(EndpointMode::FullUrl);
+    let result = adapter
+        .complete(ProviderRequest {
+            model: "fixture-model".into(),
+            messages: vec![ProviderMessage::user("synthetic input")],
+            auth_ref: Some("env:SYNTHETIC_LOCAL".into()),
+            timeout_ms: 1000,
+            stream: false,
+        })
+        .unwrap();
+    assert_eq!(result.text, "local fixture result");
+    assert_eq!(refs.lock().unwrap().as_slice(), &["env:SYNTHETIC_LOCAL"]);
+    assert!(server
+        .join()
+        .unwrap()
+        .starts_with("POST /custom-wire/ HTTP/1.1\r\n"));
+}
+
+#[test]
 fn localhost_transport_resolves_opaque_auth_ref_and_sends_bounded_json_request() {
     let (listener, endpoint) = listener();
     let request = Arc::new(Mutex::new(String::new()));
