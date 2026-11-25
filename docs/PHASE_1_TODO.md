@@ -15,6 +15,13 @@
 并用软件开发智能体垂直切片验证 goal、loop、event、checkpoint、policy、side-effect、trace 是否能协同工作。
 ```
 
+## 最新 live 增量（2026-11-25）
+
+第三方 Chat 的纯观察调用及受限只读工具闭环已通过，usage 扩展字段误拒绝已修复；
+详情见 `LIVE_CHAT_READONLY_VALIDATION_2026_11_25.md`。不要继续把“所有路径均未真实
+连接模型”当作当前状态，也不要勾选整个 live E2E：其它协议、live mutation/开发任务、
+通用文件/Bash、后台控制和完整恢复仍待分别验收。此前安全与恢复依赖不变。
+
 ## 当前收口依赖顺序（2026-11-22）
 
 Snapshot SS1（基线 `4586e5f`）限定安全磁盘 I/O 已通过独立审核与隔离树全量门禁；

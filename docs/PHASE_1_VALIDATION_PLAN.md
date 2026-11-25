@@ -1,5 +1,17 @@
 # Phase 1 Validation Plan
 
+## 2026-11-25 真实 Chat 与只读工具闭环
+
+基线 `4d8803a` 加 usage 解码修复。真实 HTTP 200 的扩展 usage 被旧内部严格类型
+误拒绝，已以 wire/内部类型分离修复；普通与流式回归先失败再通过。
+真实 `loop provider` 单次完成，随后 `loop provider-readonly` 两次模型调用、两次
+只读工具调用及动作验证后完成；合成文件/配置不变，新增失败模型记录为零。
+scope、时间、记录数量、密钥检查与复现入口见
+`LIVE_CHAT_READONLY_VALIDATION_2026_11_25.md`。历史条目的“未 live”仍指各自当时范围；
+本次不替代 live mutation、其它协议、完整恢复或 Phase 1 整体验收。
+修复后全量 94 个 harness（含0项doctest）/1345项通过、0失败/忽略，严格 all-targets
+Clippy、lib/bin build、全仓 fmt/diff 通过；完整日志见该 live 验收文档的项目外证据目录。
+
 ## 2026-11-23 私有恢复输入 RI1
 
 基线 `c25aea491f468baae2a11f290d93df5b9e4f8d9d`；合同见

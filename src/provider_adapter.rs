@@ -572,7 +572,26 @@ struct WireCompletionResponse {
     id: String,
     model: String,
     choices: Vec<WireChoice>,
-    usage: Option<ProviderUsage>,
+    usage: Option<WireUsage>,
+}
+
+// Upstream providers may extend usage independently. Discard those extensions
+// at the wire boundary; keep the normalized audit contract strict.
+#[derive(Debug, Deserialize)]
+struct WireUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
+impl From<WireUsage> for ProviderUsage {
+    fn from(usage: WireUsage) -> Self {
+        Self {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -652,7 +671,7 @@ fn parse_completion_response(body: &str) -> Result<ProviderResponse, ProviderAda
         model: response.model,
         text: text.to_owned(),
         finish_reason: choice.finish_reason.clone(),
-        usage: response.usage,
+        usage: response.usage.map(ProviderUsage::from),
     })
 }
 

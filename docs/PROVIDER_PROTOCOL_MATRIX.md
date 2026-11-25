@@ -1,6 +1,6 @@
 # Provider Protocol Matrix
 
-状态：设计基线及受限实现更新（2026-11-24；不代表 live 验收或 Phase 1 全部完成）
+状态：设计基线及受限实现更新（2026-11-25；Chat 已有单一第三方的限定 live 验收，不代表其它协议或 Phase 1 全部完成）
 
 ## 结论
 
@@ -15,7 +15,7 @@ Anthropic Messages 已作为独立协议接入。协议差异必须由 provider-
 
 | 协议族 | 典型接口 | 当前状态 | 设计边界 |
 |---|---|---|---|
-| OpenAI Chat Completions 兼容 | `/v1/chat/completions` | 已有 adapter、fake/localhost 测试、bounded Markdown runner | 统一 `messages`、非流式/基础 SSE；不同厂商的扩展字段不能静默假设兼容 |
+| OpenAI Chat Completions 兼容 | `/v1/chat/completions` | 已有 adapter、fake/localhost 测试、bounded Markdown runner；单一第三方纯观察及只读工具 live 闭环通过 | usage 扩展仅在 wire 边界忽略，内部统计契约严格；基础 SSE 仅离线解析验收，HTTP token streaming 未验收 |
 | OpenAI Responses | `/responses`（也可显式配置 `/v1` 或完整地址） | 已实现受限、同步、非流式 adapter；离线注入与 localhost 测试覆盖 | 独立 input/output/status 解析、`store:false`、固定 `reasoning.effort`；原生工具调用、SSE、续接未实现，不自动降级成 Chat |
 | Anthropic Messages | `/v1/messages` | 已有独立 adapter、fake/injected 覆盖 | 独立 system、消息块、认证 header、响应解析和错误分类 |
 | Google Gemini 原生 | `generateContent` / `streamGenerateContent` | 未实现 | 独立 `contents/parts`、工具调用、缓存和安全设置；不能仅依赖 OpenAI 兼容层 |

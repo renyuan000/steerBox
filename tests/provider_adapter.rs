@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use steerbox::provider_adapter::{
     OpenAiCompatibleAdapter, ProviderErrorClass, ProviderMessage, ProviderRequest,
-    ProviderStreamEvent, ProviderTransport, TransportError, TransportResponse,
+    ProviderStreamEvent, ProviderTransport, ProviderUsage, TransportError, TransportResponse,
 };
 
 type RecordedCall = (String, Option<String>, String, Duration, bool);
@@ -95,6 +95,101 @@ fn complete_sends_openai_compatible_json_without_auth_body() {
     assert!(!calls[0].2.contains("api_key"));
     assert_eq!(calls[0].3, Duration::from_millis(12_000));
     assert!(!calls[0].4);
+}
+
+#[test]
+fn completion_accepts_upstream_usage_extensions_without_retaining_them() {
+    let body = serde_json::json!({
+        "id": "chatcmpl-usage", "model": "fixture-model",
+        "choices": [{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 305, "completion_tokens": 93, "total_tokens": 398,
+            "completion_tokens_details": {"reasoning_tokens": 80},
+            "prompt_tokens_details": {"cached_tokens": 0},
+            "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tokens": 305,
+            "future_extension": {"untrusted": "must not persist"}
+        }
+    });
+    let adapter = OpenAiCompatibleAdapter::new(
+        "provider-a",
+        "https://example.test/v1",
+        FakeTransport::complete(&body.to_string()),
+    );
+    let response = adapter
+        .complete(usage_test_request())
+        .expect("extended usage accepted");
+    assert_eq!(response.text, "done");
+    assert_eq!(
+        serde_json::to_value(response.usage.expect("usage")).unwrap(),
+        serde_json::json!({
+            "prompt_tokens": 305, "completion_tokens": 93, "total_tokens": 398
+        })
+    );
+}
+
+#[test]
+fn stream_accepts_usage_extensions_on_completion_chunk() {
+    let transport = FakeTransport::stream(
+        "data: {\"id\":\"chatcmpl-usage\",\"model\":\"fixture-model\",\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2,\"total_tokens\":6,\"completion_tokens_details\":{\"reasoning_tokens\":1}}}\n\ndata: [DONE]\n",
+    );
+    let adapter = OpenAiCompatibleAdapter::new("provider-a", "https://example.test/v1", transport);
+    let mut request = usage_test_request();
+    request.stream = true;
+    let events = adapter.stream(request).expect("stream usage accepted");
+    assert_eq!(
+        events,
+        vec![
+            ProviderStreamEvent::delta("chatcmpl-usage", "fixture-model", "done"),
+            ProviderStreamEvent::completed("chatcmpl-usage", "fixture-model", "stop"),
+        ]
+    );
+}
+
+#[test]
+fn upstream_usage_still_rejects_malformed_known_counts() {
+    for field in ["prompt_tokens", "completion_tokens", "total_tokens"] {
+        for invalid in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("4"),
+            serde_json::json!({}),
+        ] {
+            let mut body = serde_json::json!({
+                "id": "chatcmpl-usage", "model": "fixture-model",
+                "choices": [{"message": {"content": "done"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6, "completion_tokens_details": {}}
+            });
+            body["usage"][field] = invalid;
+            let adapter = OpenAiCompatibleAdapter::new(
+                "provider-a",
+                "https://example.test/v1",
+                FakeTransport::complete(&body.to_string()),
+            );
+            assert_eq!(
+                adapter.complete(usage_test_request()).unwrap_err().class(),
+                ProviderErrorClass::ResponseParse
+            );
+        }
+    }
+}
+
+#[test]
+fn normalized_usage_contract_still_rejects_unknown_fields() {
+    assert!(serde_json::from_value::<ProviderUsage>(serde_json::json!({
+        "prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6,
+        "completion_tokens_details": {"reasoning_tokens": 1}
+    }))
+    .is_err());
+}
+
+fn usage_test_request() -> ProviderRequest {
+    ProviderRequest {
+        model: "fixture-model".into(),
+        messages: vec![ProviderMessage::user("hello")],
+        auth_ref: None,
+        timeout_ms: 30_000,
+        stream: false,
+    }
 }
 
 #[test]

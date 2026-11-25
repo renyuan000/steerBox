@@ -2,6 +2,13 @@
 
 ## 定位与证据边界
 
+2026-11-25：第三方 Chat Completions 的单次真实模型调用与受限只读工具闭环均已
+通过；修复了 `usage.completion_tokens_details` 导致的 wire 解析误拒绝，内部审计
+契约未放宽。只读闭环包含两次模型调用、`git_status`、Markdown 链接验证及完成终态，
+无文件修改、无失败模型记录。详见 `LIVE_CHAT_READONLY_VALIDATION_2026_11_25.md`。
+这是包1/2/3/4的限定 live 增量，不代表所有 provider、写入/Bash、后台控制、完整恢复
+或 Phase 1 完成；下方旧“未 live”说明保留为各历史切片的验收范围。
+
 2026-11-23 私有恢复输入 RI1（基线 `c25aea4`）：新增显式宿主库入口，保存并重载
 Goal/Loop/TaskRun、完整 Attempt 父链、累计预算/token 账本、无进展 tracker 与策略版本。
 七源有界 typed JSONL/同字节 hash、事件身份/步号/投影比对；私有独占文件完成文件及
