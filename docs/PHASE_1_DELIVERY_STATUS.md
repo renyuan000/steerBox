@@ -2,6 +2,12 @@
 
 ## 定位与证据边界
 
+2026-11-25 多后端接入一致性修复：公开 Anthropic 工厂按显式 Messages 协议接入，
+不再误拒绝自定义中转 provider 名称；配置加载和工厂拒绝重复模型 ID，避免静默选错后端。
+混合 Chat/Responses/Messages 离线测试已通过，覆盖地址、模型、认证引用、wire 与审计身份；
+不代表并行多模型调度、跨后端 fallback、Responses/Messages live 或 Phase 1 完成。
+规则、公开错误项变更与剩余接入门禁见 `PROVIDER_PROTOCOL_MATRIX.md`。
+
 2026-11-25：第三方 Chat Completions 的单次真实模型调用与受限只读工具闭环均已
 通过；修复了 `usage.completion_tokens_details` 导致的 wire 解析误拒绝，内部审计
 契约未放宽。只读闭环包含两次模型调用、`git_status`、Markdown 链接验证及完成终态，

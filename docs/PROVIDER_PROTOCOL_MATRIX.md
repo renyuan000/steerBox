@@ -17,7 +17,7 @@ Anthropic Messages 已作为独立协议接入。协议差异必须由 provider-
 |---|---|---|---|
 | OpenAI Chat Completions 兼容 | `/v1/chat/completions` | 已有 adapter、fake/localhost 测试、bounded Markdown runner；单一第三方纯观察及只读工具 live 闭环通过 | usage 扩展仅在 wire 边界忽略，内部统计契约严格；基础 SSE 仅离线解析验收，HTTP token streaming 未验收 |
 | OpenAI Responses | `/responses`（也可显式配置 `/v1` 或完整地址） | 已实现受限、同步、非流式 adapter；离线注入与 localhost 测试覆盖 | 独立 input/output/status 解析、`store:false`、固定 `reasoning.effort`；原生工具调用、SSE、续接未实现，不自动降级成 Chat |
-| Anthropic Messages | `/v1/messages` | 已有独立 adapter、fake/injected 覆盖 | 独立 system、消息块、认证 header、响应解析和错误分类 |
+| Anthropic Messages | `/v1/messages` | 已有独立 adapter、fake/injected 覆盖；显式协议允许自定义中转 provider 名称 | 独立 system、消息块、认证 header、响应解析和错误分类；live 尚未验收 |
 | Google Gemini 原生 | `generateContent` / `streamGenerateContent` | 未实现 | 独立 `contents/parts`、工具调用、缓存和安全设置；不能仅依赖 OpenAI 兼容层 |
 | Google Gemini OpenAI 兼容入口 | OpenAI 风格 endpoint | 未单独验收 | 可复用 OpenAI-compatible adapter，但必须做 endpoint/provider capability 声明和 fixture 验证 |
 | AWS Bedrock Converse / InvokeModel | AWS provider APIs | 未实现 | 独立 SigV4/credential boundary、模型族 request schema 和响应映射；不能把云凭据放入 auth_ref 之外 |
@@ -25,6 +25,42 @@ Anthropic Messages 已作为独立协议接入。协议差异必须由 provider-
 | 本地服务 | Ollama、vLLM、SGLang、llama.cpp 等 | 仅可作为 OpenAI-compatible 目标推断 | 必须以实际 endpoint fixture 验证，不因“兼容”字样假定 tool、stream 或 JSON schema 完全一致 |
 | 实时/语音协议 | OpenAI Realtime、厂商 WebSocket/RTC | 未实现 | 独立 session、双向流、取消和音频安全边界，留到 Phase 2+ |
 | Agent-to-Agent / tool protocol | MCP、A2A 等 | 非模型推理协议 | 作为能力/任务边界接入，不替代 provider adapter、PolicyGate 或审计链 |
+
+## 多后端配置规则与本轮接入审核
+
+- 一个 `model_profiles` 可以同时配置 Chat、Responses、Messages；`provider` 是后端标识，
+  `endpoint_protocol` 决定 wire 编解码及认证方式。显式 Messages 不再要求后端必须叫
+  `anthropic`；工厂和 runner 均保留用户配置的后端标识。不按域名判断是否第三方中转。
+- 省略协议字段时，现有 JSON 默认规则仍为：`provider=anthropic` 使用 Messages，
+  其它名称使用 Chat。自定义中转必须显式选择 Responses/Messages，不能只改 provider 名称。
+- `endpoint_mode=base_url`（默认）在配置地址后追加协议路径：`/chat/completions`、
+  `/responses` 或 `/messages`；`full_url` 原样使用完整地址。不会自动补 `/v1`、探测协议
+  或试错降级；常规第三方 base URL 无需额外设置 `full_url`。
+- 当前运行入口按 `model_id` 选择 profile，因此该 ID 在一个配置内必须唯一。
+  JSON 加载与三个公开适配器工厂现在都会拒绝重复 ID，包括直接修改公开结构后的重复项；
+  在解析凭据或发送请求前返回 `ConfigError::DuplicateModelProfile`，不再静默取第一个后端。
+  当前 `model_id` 同时作为上游模型名；同名模型跨中转的独立 profile ID/wire name 配置尚未接通，
+  不可通过给上游模型随意改名来绕过此限制。
+- 删除不再适用的公开错误项 `UnsupportedAnthropicProvider`；调用方应处理实际的
+  `UnsupportedEndpointProtocol`。协议不匹配、能力不足、非法 effect/auth/endpoint 仍拒绝。
+- 混合协议回归按与配置不同的顺序选取三个模型，分别核对实际请求地址、wire 结构、
+  模型名、认证引用、调用数、usage 与审计后端身份，并检查认证引用/endpoint 不进入模型审计。
+  见 `tests/multi_backend_binding.rs`、`tests/config_anthropic_binding.rs` 和
+  `tests/config_provider_binding.rs`。本轮仅离线验证，没有新增真实服务调用。
+
+尚未完成的相关能力：Responses/Anthropic live 验收、HTTP token streaming、统一原生工具
+调用、通用 resolved-provider fallback、跨后端自动切换及并行多 LLM 调度。自动相邻档位升档
+当前仅有 Chat 的显式宿主库入口，不代表其它协议已具备相同能力。CLI 内置凭据解析仍仅有
+显式 opt-in 的环境变量方式；真实 Chat 测试的文件读取辅助程序不是已交付的文件凭据功能。
+Chat/Responses 使用 Bearer，Messages 使用 `x-api-key`；自定义认证头/云签名不在本轮支持范围。
+真实调用证据见 `LIVE_CHAT_READONLY_VALIDATION_2026_11_25.md`，不将混合配置测试当成并行调度验收。
+
+本轮验证（2026-11-25）：全量离线测试 95 个 harness（含空 doctest）/1351 项通过，
+0 失败/跳过；严格 all-targets Clippy、实际 lib/bin 构建、fmt/diff 检查通过。
+构建显式使用项目外 `--target-dir /temp/codex/steerbox-validation/foreground-upgrade-20261102/master-target`；
+全量测试、Clippy 和构建日志在 `/temp/codex/steerbox-validation/multi-backend-20261125/`。
+两类缺陷均实际先失败再修复通过；审核为主代理源码/diff 自审，不是独立模型审核。
+本轮回滚依据为精确 Git diff/提交，不另复制受版本控制的源文件。
 
 ## steerBox 的统一抽象
 
@@ -48,9 +84,9 @@ Anthropic Messages 已作为独立协议接入。协议差异必须由 provider-
 
 ### Phase 1
 
-- 保持并完成 `openai-compatible-chat` 的真实 credential/live provider 验收前置条件。
+- 保持已通过的单一第三方 Chat 纯观察/只读工具 live 验收；真实写入及其它后端单独验收。
 - 保持 Anthropic Messages 独立 adapter；当前 fake/injected bounded Markdown 覆盖不等于 live 验收。
-- 为 endpoint protocol 增加显式 capability，禁止用 provider 名称或 URL 猜协议。
+- 保持显式 endpoint protocol 分派；进一步补足逐能力声明和验证，不在运行时用 provider 名称或 URL 猜协议。
 - 增补受限 `openai-responses`：无原生工具、非流式、无续接，复用已有 decision/action、只读与 Markdown controller 门禁；固定 effect 可用，自动 effect upgrade 仍仅限 Chat。
 - 暂不实现 Gemini 原生、Bedrock、Realtime 或跨协议 fallback。Responses live 验收单独记录，不以离线通过代替。
 

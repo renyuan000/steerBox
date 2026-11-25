@@ -65,6 +65,42 @@ fn profile_lookup_rejects_unknown_model_without_constructing_a_transport() {
 }
 
 #[test]
+fn duplicate_model_ids_are_rejected_when_loading_config() {
+    for provider in ["fixture-provider", "another-relay"] {
+        let mut encoded = serde_json::to_value(config()).unwrap();
+        let mut duplicate = encoded["model_profiles"][0].clone();
+        duplicate["provider"] = provider.into();
+        duplicate["endpoint"] = "https://other.example.test/v1".into();
+        duplicate["auth_ref"] = "env:OTHER_FIXTURE_KEY".into();
+        encoded["model_profiles"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        assert!(
+            matches!(RuntimeConfig::from_json_str(&encoded.to_string()),
+                Err(ConfigError::DuplicateModelProfile { model_id }) if model_id == "logical-model"),
+            "model selection by ID must not silently pick the first backend"
+        );
+    }
+}
+
+#[test]
+fn http_factory_rejects_mutated_duplicate_model_before_resolving_credentials() {
+    let mut config = config();
+    let mut duplicate = config.model_profiles[0].clone();
+    duplicate.endpoint = "https://other.example.test/v1".into();
+    config.model_profiles.push(duplicate);
+    let resolver = NeverCalledResolver::default();
+    let refs = Arc::clone(&resolver.refs);
+    assert!(
+        matches!(config.build_http_provider_adapter("logical-model", resolver),
+            Err(ConfigError::DuplicateModelProfile { model_id }) if model_id == "logical-model"),
+        "a directly mutated config must not bypass duplicate detection"
+    );
+    assert!(refs.lock().unwrap().is_empty());
+}
+
+#[test]
 fn profile_config_contains_only_opaque_auth_reference_not_credential_material() {
     let encoded = serde_json::to_string(&config()).expect("config serializes");
     assert!(encoded.contains("env:FIXTURE_PROVIDER_KEY"));

@@ -83,14 +83,66 @@ fn unknown_model_fails_closed_without_constructing_a_transport_call() {
 }
 
 #[test]
-fn non_anthropic_provider_fails_closed() {
+fn default_chat_protocol_fails_closed_for_messages_factory() {
     let result = config("openai", &["text"])
         .build_anthropic_adapter("claude-fixture", CountingTransport::default());
 
     assert!(matches!(
         result,
-        Err(ConfigError::UnsupportedAnthropicProvider { .. })
+        Err(ConfigError::UnsupportedEndpointProtocol { .. })
     ));
+}
+
+#[test]
+fn explicit_messages_protocol_accepts_relay_provider_identity() {
+    let mut config = config("relay-anthropic", &["text"]);
+    config.model_profiles[0].endpoint_protocol = "anthropic-messages".into();
+    let transport = CountingTransport::default();
+    let sends = Arc::clone(&transport.sends);
+    let adapter = config
+        .build_anthropic_adapter("claude-fixture", transport)
+        .expect("explicit Messages protocol must not require an official provider name");
+    assert_eq!(adapter.provider_id(), "relay-anthropic");
+    assert_eq!(adapter.base_url(), "https://fixture.example.test/v1");
+    assert_eq!(adapter.auth_ref(), Some("env:ANTHROPIC_API_KEY"));
+    assert_eq!(sends.load(Ordering::SeqCst), 0);
+    let adapter = config
+        .build_http_anthropic_adapter("claude-fixture", FixtureResolver)
+        .expect("HTTP factory must accept the same relay profile without resolving credentials");
+    assert_eq!(adapter.provider_id(), "relay-anthropic");
+}
+
+#[test]
+fn explicit_other_protocol_is_rejected_even_for_official_provider_name() {
+    let mut config = config("anthropic", &["text"]);
+    config.model_profiles[0].endpoint_protocol = "openai-responses".into();
+    let transport = CountingTransport::default();
+    let sends = Arc::clone(&transport.sends);
+    assert!(matches!(
+        config.build_anthropic_adapter("claude-fixture", transport),
+        Err(ConfigError::UnsupportedEndpointProtocol { .. })
+    ));
+    assert_eq!(sends.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn anthropic_factories_reject_mutated_duplicate_model_without_sending() {
+    let mut config = config("anthropic", &["text"]);
+    let mut duplicate = config.model_profiles[0].clone();
+    duplicate.provider = "another-relay".into();
+    duplicate.endpoint = "https://other.example.test/v1".into();
+    config.model_profiles.push(duplicate);
+    let transport = CountingTransport::default();
+    let sends = Arc::clone(&transport.sends);
+    assert!(
+        matches!(config.build_anthropic_adapter("claude-fixture", transport),
+        Err(ConfigError::DuplicateModelProfile { model_id }) if model_id == "claude-fixture")
+    );
+    assert_eq!(sends.load(Ordering::SeqCst), 0);
+    assert!(
+        matches!(config.build_http_anthropic_adapter("claude-fixture", FixtureResolver),
+        Err(ConfigError::DuplicateModelProfile { model_id }) if model_id == "claude-fixture")
+    );
 }
 
 #[test]

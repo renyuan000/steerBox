@@ -22,12 +22,14 @@ Its core question is not simply whether an agent can do work, but how to combine
 ### Current Phase 1 Runtime Slice
 
 The new `loop provider-readonly` command connects the bounded multi-step runner
-to OpenAI-compatible or Anthropic HTTP transports with explicit workspace and
+to Chat, Responses or Anthropic Messages HTTP transports with explicit workspace and
 Markdown-path authorization. It validates all audit/state destinations before
 opening stores, shares task-local budgets, and prints the actual stop reason.
 See [CLI usage and boundaries](./docs/BOUNDED_READONLY_PROVIDER_CLI.md).
-Live-provider acceptance, generic editing/Bash and background recovery remain
-unfinished; this is a constrained read-only entry, not a complete coding agent.
+A single third-party Chat provider has passed live observation and read-only tool-loop
+validation; other providers, live writes, generic editing/Bash and background recovery
+remain unverified or unfinished. This is not a complete coding agent. See the
+[protocol matrix](./docs/PROVIDER_PROTOCOL_MATRIX.md) for multi-backend configuration and limits.
 
 `loop preflight-markdown` checks the existing bounded Markdown runner's model binding,
 authorized files and runtime destinations offline. Runtime must already exist and
@@ -35,7 +37,7 @@ must not overlap the workspace; this command does not resolve credentials, read
 runtime history, call providers or edit files. See the [preflight contract](./docs/BOUNDED_MARKDOWN_PREFLIGHT_CLI.md).
 It is not a Markdown execution command or live-provider acceptance.
 
-The repository currently contains a verified Rust domain and local runtime slice, including EventLog/StateStore, trace/checkpoint metadata, a read-only board fixture, and an approved Markdown edit-and-verify development slice. A verification failure is persisted and returns a non-zero exit code. The bounded `loop provider` CLI rejects credential resolution by default; explicitly passing `--credential-source env` enables profile `auth_ref` values in `env:NAME` form. Live-provider acceptance remains pending; this is not yet an end-to-end model-connected coding agent. The reproducible commands are:
+The repository currently contains a verified Rust domain and local runtime slice, including EventLog/StateStore, trace/checkpoint metadata, a read-only board fixture, and an approved Markdown edit-and-verify development slice. A verification failure is persisted and returns a non-zero exit code. The bounded `loop provider` CLI rejects credential resolution by default; explicitly passing `--credential-source env` enables profile `auth_ref` values in `env:NAME` form. Limited Chat live validation has passed; end-to-end autonomous coding acceptance remains pending. The reproducible commands are:
 
 ```bash
 cargo test

@@ -14,7 +14,7 @@ use crate::provider_model_adapter::{
 };
 use crate::resolved_prompt::ResolvedPromptPack;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -47,10 +47,10 @@ pub enum ConfigError {
     SensitiveEndpoint,
     #[error("model profile not found: {model_id}")]
     ModelProfileNotFound { model_id: String },
+    #[error("duplicate model profile ID: {model_id}")]
+    DuplicateModelProfile { model_id: String },
     #[error("HTTP provider transport could not be constructed")]
     HttpTransportBuild,
-    #[error("Anthropic adapter requires provider `anthropic`, got `{provider}`")]
-    UnsupportedAnthropicProvider { provider: String },
     #[error("Anthropic adapter requires capability `{capability}`")]
     UnsupportedAnthropicCapability { capability: String },
     #[error("unsupported model profile endpoint_protocol: {protocol}")]
@@ -502,6 +502,7 @@ impl RuntimeConfig {
         model_id: &str,
         resolver: R,
     ) -> Result<ProviderModelAdapter<HttpProviderTransport<R>>, ConfigError> {
+        self.validate()?;
         let profile = self
             .model_profiles
             .iter()
@@ -528,6 +529,7 @@ impl RuntimeConfig {
         model_id: &str,
         transport: T,
     ) -> Result<AnthropicAdapter<T>, ConfigError> {
+        self.validate()?;
         let profile = self
             .model_profiles
             .iter()
@@ -536,11 +538,6 @@ impl RuntimeConfig {
                 model_id: model_id.to_owned(),
             })?;
         profile.validate_effect()?;
-        if profile.provider != "anthropic" {
-            return Err(ConfigError::UnsupportedAnthropicProvider {
-                provider: profile.provider.clone(),
-            });
-        }
         if profile.endpoint_protocol != ANTHROPIC_MESSAGES_PROTOCOL {
             return Err(ConfigError::UnsupportedEndpointProtocol {
                 protocol: profile.endpoint_protocol.clone(),
@@ -571,6 +568,7 @@ impl RuntimeConfig {
         model_id: &str,
         resolver: R,
     ) -> Result<AnthropicAdapter<HttpAnthropicTransport<R>>, ConfigError> {
+        self.validate()?;
         let profile = self
             .model_profiles
             .iter()
@@ -611,7 +609,13 @@ impl RuntimeConfig {
         if !is_valid_data_root(&self.data_root, &self.project_ref) {
             return Err(ConfigError::InvalidDataRoot);
         }
+        let mut model_ids = BTreeSet::new();
         for profile in &self.model_profiles {
+            if !model_ids.insert(&profile.model_id) {
+                return Err(ConfigError::DuplicateModelProfile {
+                    model_id: profile.model_id.clone(),
+                });
+            }
             if !matches!(
                 profile.endpoint_protocol.as_str(),
                 OPENAI_COMPATIBLE_CHAT_PROTOCOL
