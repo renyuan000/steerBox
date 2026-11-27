@@ -355,7 +355,21 @@ fn malformed_and_empty_success_bodies_are_response_parse_errors_without_body_ech
             .complete(adapter_request())
             .expect_err("invalid completion body");
         server.join().expect("server join");
-        assert_eq!(error, ProviderAdapterError::ResponseParse);
+        assert_eq!(
+            error,
+            if body.is_empty() {
+                ProviderAdapterError::GenerationRejected(
+                    steerbox::provider_adapter::GenerationRejectionEvidence {
+                        reason:
+                            steerbox::model_adapter::DecisionOutputRejection::TerminationUnconfirmed,
+                        input_tokens: None,
+                        output_tokens: None,
+                    },
+                )
+            } else {
+                ProviderAdapterError::ResponseParse
+            }
+        );
         assert!(!error.to_string().contains("sensitive"));
     }
 }

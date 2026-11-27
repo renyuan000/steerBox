@@ -28,10 +28,18 @@ Anthropic Messages 已作为独立协议接入。协议差异必须由 provider-
 
 ## 多后端配置规则与本轮接入审核
 
+2026-11-27 完整性/恢复增量：三种 resolved 协议在 decision 解析前检查收尾；明确拒绝、
+工具/过滤/未知状态不可恢复，明确 EOF 与输出上限可作为固定缺口；通用解析错误不重试。
+公开 adapter 增加 `GenerationRejected` 安全错误变体，class 保持 response_parse；resolved
+层转换成固定 decision 拒绝原因并保留已知 usage 与宿主输入 hash，不携带拒绝正文。
+`prepare_recovering` 显式纯观察宿主入口最多两次调用、共享预算，无工具重放；既有入口
+不新增隐式重试。合同与验收边界见 `PROVIDER_RESPONSE_RECOVERY.md`，并非协议能力全覆盖。
+
 2026-11-27 中断防护增量：基础 Chat SSE 已缓冲解析要求一致身份、有效正文、finish 与
 DONE 双终止确认；缺终止帧、reasoning-only 或终止后继续输出均拒绝，兼容合法 usage 尾块。
 Chat/Responses 与 Messages 的 HTTP 响应体超时现在保留 `Timeout` 分类，心跳不延长
-已有总期限。生产 HTTP 仍是有界非流式；未交付语义进展 watchdog、自动重试或断流续接。
+已有总期限。本段中断防护切片不包含语义进展 watchdog、自动重试或断流续接；
+后续显式纯观察恢复见上段，生产 HTTP 仍是有界非流式。
 缺陷证据、Unicode 回归范围及后续门禁见 `PROVIDER_INTERRUPTION_GUARDS.md`。
 
 - 一个 `model_profiles` 可以同时配置 Chat、Responses、Messages；`provider` 是后端标识，

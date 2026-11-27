@@ -267,7 +267,14 @@ fn truncated_success_body_is_audited_as_failure_under_unicode_directory_without_
     assert!(calls.read_all().unwrap().is_empty());
     let failures = calls.read_failures().unwrap();
     assert_eq!(failures.len(), 1);
-    assert_eq!(failures[0].failure_class, "response_parse");
+    assert_eq!(failures[0].failure_class, "response_unmappable");
+    assert!(failures[0]
+        .input_context_hash
+        .as_deref()
+        .unwrap()
+        .starts_with("sha256:"));
+    assert_eq!(failures[0].input_tokens, None);
+    assert_eq!(failures[0].output_tokens, None);
     let events = EventLog::open(events_path).unwrap().read_all().unwrap();
     assert!(!events
         .iter()

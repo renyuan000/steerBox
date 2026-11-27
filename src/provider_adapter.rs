@@ -247,6 +247,16 @@ pub enum ProviderAdapterError {
     ResponseParse,
     #[error("provider stream ended without confirmed completion")]
     IncompleteStream,
+    #[error("provider generation rejected: {0:?}")]
+    GenerationRejected(GenerationRejectionEvidence),
+}
+
+/// Safe metadata only: never includes provider prose or tool arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenerationRejectionEvidence {
+    pub reason: crate::model_adapter::DecisionOutputRejection,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
 }
 
 impl ProviderAdapterError {
@@ -259,7 +269,9 @@ impl ProviderAdapterError {
             Self::Timeout => ProviderErrorClass::Timeout,
             Self::Transport => ProviderErrorClass::Transport,
             Self::Upstream => ProviderErrorClass::Upstream,
-            Self::ResponseParse | Self::IncompleteStream => ProviderErrorClass::ResponseParse,
+            Self::ResponseParse | Self::IncompleteStream | Self::GenerationRejected(_) => {
+                ProviderErrorClass::ResponseParse
+            }
         }
     }
 }
@@ -606,6 +618,9 @@ struct WireChoice {
 #[derive(Debug, Deserialize)]
 struct WireMessage {
     content: Option<String>,
+    refusal: Option<serde_json::Value>,
+    tool_calls: Option<serde_json::Value>,
+    function_call: Option<serde_json::Value>,
 }
 
 fn validate_request(request: &ProviderRequest) -> Result<(), ProviderAdapterError> {
@@ -657,12 +672,68 @@ fn validate_auth_ref(auth_ref: &str) -> Result<(), ProviderAdapterError> {
 }
 
 fn parse_completion_response(body: &str) -> Result<ProviderResponse, ProviderAdapterError> {
-    let response = serde_json::from_str::<WireCompletionResponse>(body)
-        .map_err(|_| ProviderAdapterError::ResponseParse)?;
+    let response = serde_json::from_str::<WireCompletionResponse>(body).map_err(|error| {
+        if error.is_eof() {
+            ProviderAdapterError::GenerationRejected(GenerationRejectionEvidence {
+                reason: crate::model_adapter::DecisionOutputRejection::TerminationUnconfirmed,
+                input_tokens: None,
+                output_tokens: None,
+            })
+        } else {
+            ProviderAdapterError::ResponseParse
+        }
+    })?;
     let choice = response
         .choices
         .first()
         .ok_or(ProviderAdapterError::ResponseParse)?;
+    if choice.message.as_ref().is_some_and(|message| {
+        message.refusal.is_some()
+            || message
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| !calls.as_array().is_some_and(Vec::is_empty))
+            || message.function_call.is_some()
+    }) || choice
+        .finish_reason
+        .as_deref()
+        .is_some_and(|reason| !matches!(reason, "stop" | "length" | ""))
+    {
+        return Err(ProviderAdapterError::GenerationRejected(
+            GenerationRejectionEvidence {
+                reason: crate::model_adapter::DecisionOutputRejection::UnsafeTermination,
+                input_tokens: response
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.prompt_tokens),
+                output_tokens: response
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.completion_tokens),
+            },
+        ));
+    }
+    if choice.finish_reason.as_deref() == Some("length")
+        && choice
+            .message
+            .as_ref()
+            .and_then(|message| message.content.as_deref())
+            .is_none_or(|text| text.trim().is_empty())
+    {
+        return Err(ProviderAdapterError::GenerationRejected(
+            GenerationRejectionEvidence {
+                reason: crate::model_adapter::DecisionOutputRejection::OutputTruncated,
+                input_tokens: response
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.prompt_tokens),
+                output_tokens: response
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.completion_tokens),
+            },
+        ));
+    }
     let text = choice
         .message
         .as_ref()
@@ -723,6 +794,13 @@ fn parse_stream_response(body: &str) -> Result<Vec<ProviderStreamEvent>, Provide
             .choices
             .first()
             .ok_or(ProviderAdapterError::ResponseParse)?;
+        if choice
+            .delta
+            .as_ref()
+            .is_some_and(|message| message.refusal.is_some())
+        {
+            return Err(ProviderAdapterError::Permission);
+        }
         if let Some(text) = choice
             .delta
             .as_ref()

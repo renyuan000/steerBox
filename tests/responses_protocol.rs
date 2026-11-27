@@ -2,9 +2,10 @@ use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::time::Duration;
 use steerbox::endpoint_mode::EndpointMode;
+use steerbox::model_adapter::DecisionOutputRejection;
 use steerbox::provider_adapter::{
-    ModelEffectPolicy, OpenAiCompatibleAdapter, OpenAiWireProtocol, ProviderAdapterError,
-    ProviderMessage, ProviderRequest, ReasoningEffort,
+    GenerationRejectionEvidence, ModelEffectPolicy, OpenAiCompatibleAdapter, OpenAiWireProtocol,
+    ProviderAdapterError, ProviderMessage, ProviderRequest, ReasoningEffort,
 };
 use steerbox::provider_adapter::{ProviderTransport, TransportError, TransportResponse};
 use steerbox::provider_runner::{ForegroundProviderRun, ProviderRunRequest};
@@ -261,62 +262,218 @@ fn reasoning_effort_is_nested_and_usage_is_mapped_without_reasoning_content() {
 }
 
 #[test]
+fn responses_wire_rejections_preserve_known_usage_without_private_content() {
+    for (status, details, output, reason) in [
+        (
+            "completed",
+            Value::Null,
+            json!([{"type":"message","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"private-wire-fixture"}]}]),
+            "UnsafeTermination",
+        ),
+        (
+            "completed",
+            Value::Null,
+            json!([{"type":"function_call","arguments":"private-wire-fixture"}]),
+            "UnsafeTermination",
+        ),
+        (
+            "private-wire-fixture",
+            Value::Null,
+            json!([]),
+            "UnsafeTermination",
+        ),
+        (
+            "incomplete",
+            json!({"reason":"content_filter"}),
+            json!([]),
+            "UnsafeTermination",
+        ),
+        (
+            "incomplete",
+            json!({"reason":"max_output_tokens"}),
+            json!([]),
+            "OutputTruncated",
+        ),
+    ] {
+        let mut body = response_body();
+        body["status"] = json!(status);
+        body["incomplete_details"] = details;
+        body["output"] = output;
+        let fixture = ReplyFixture::new(body);
+        let error = responses_adapter(&fixture).complete(request()).unwrap_err();
+        let debug = format!("{error:?}");
+        assert!(debug.contains("GenerationRejected"), "{debug}");
+        assert!(debug.contains(reason), "{debug}");
+        assert!(debug.contains("input_tokens: Some(11)"), "{debug}");
+        assert!(debug.contains("output_tokens: Some(7)"), "{debug}");
+        assert!(!debug.contains("private-wire-fixture"));
+        assert!(!error.to_string().contains("private-wire-fixture"));
+        assert_eq!(fixture.calls.borrow().len(), 1);
+    }
+}
+
+#[test]
+fn responses_wire_eof_has_no_invented_usage_and_truncation_cannot_mask_tools() {
+    let fixture = ReplyFixture {
+        reply: TransportResponse::body(200, "{\"object\":"),
+        calls: RefCell::new(Vec::new()),
+    };
+    assert_eq!(
+        responses_adapter(&fixture).complete(request()).unwrap_err(),
+        ProviderAdapterError::GenerationRejected(GenerationRejectionEvidence {
+            reason: DecisionOutputRejection::TerminationUnconfirmed,
+            input_tokens: None,
+            output_tokens: None,
+        })
+    );
+    let mut body = response_body();
+    body["status"] = json!("incomplete");
+    body["incomplete_details"] = json!({"reason":"max_output_tokens"});
+    body["output"] = json!([{"type":"function_call","arguments":"private-wire-fixture"}]);
+    body["usage"] = Value::Null;
+    let fixture = ReplyFixture::new(body);
+    let error = responses_adapter(&fixture).complete(request()).unwrap_err();
+    assert_eq!(
+        error,
+        ProviderAdapterError::GenerationRejected(GenerationRejectionEvidence {
+            reason: DecisionOutputRejection::UnsafeTermination,
+            input_tokens: None,
+            output_tokens: None,
+        })
+    );
+    assert!(!format!("{error:?}").contains("private-wire-fixture"));
+}
+
+#[test]
+fn responses_duplicate_block_type_cannot_override_refusal() {
+    assert_duplicate_response_fields_rejected(
+        "completed",
+        "null",
+        r#"[{"type":"message","role":"assistant","status":"completed","content":[{"type":"refusal","type":"output_text","text":"{\"decision\":\"complete_loop\",\"summary\":\"private-duplicate-fixture\"}"}]}]"#,
+    );
+}
+
+#[test]
+fn responses_duplicate_item_type_cannot_override_tool_call() {
+    assert_duplicate_response_fields_rejected(
+        "completed",
+        "null",
+        r#"[{"type":"function_call","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"decision\":\"complete_loop\",\"summary\":\"private-duplicate-fixture\"}"}]}]"#,
+    );
+}
+
+#[test]
+fn responses_duplicate_incomplete_reason_cannot_override_filter() {
+    assert_duplicate_response_fields_rejected(
+        "incomplete",
+        r#"{"reason":"content_filter","reason":"max_output_tokens"}"#,
+        "[]",
+    );
+}
+
+fn assert_duplicate_response_fields_rejected(status: &str, details: &str, output: &str) {
+    let body = format!(
+        r#"{{"object":"response","id":"fixture","model":"fixture","status":"{status}","incomplete_details":{details},"output":{output},"usage":{{"input_tokens":11,"output_tokens":7,"total_tokens":18}}}}"#
+    );
+    let fixture = ReplyFixture {
+        reply: TransportResponse::body(200, body),
+        calls: RefCell::new(Vec::new()),
+    };
+    let error = responses_adapter(&fixture).complete(request()).unwrap_err();
+    assert_eq!(error, ProviderAdapterError::ResponseParse);
+    assert!(!format!("{error:?}").contains("private-duplicate-fixture"));
+    assert!(!error.to_string().contains("private-duplicate-fixture"));
+    assert_eq!(fixture.calls.borrow().len(), 1);
+}
+
+#[test]
 fn responses_reject_partial_refusal_tools_unknown_and_ambiguous_outputs() {
     let mut invalid = Vec::new();
     for status in ["incomplete", "failed", "queued", "in_progress", "cancelled"] {
         let mut body = response_body();
         body["status"] = json!(status);
-        invalid.push(body);
+        invalid.push((body, Some(DecisionOutputRejection::UnsafeTermination)));
     }
-    for (field, value) in [
-        ("object", json!("chat.completion")),
-        ("id", json!("")),
-        ("model", json!("")),
-        ("error", json!({"message":"sensitive-fixture"})),
-        ("incomplete_details", json!({"reason":"max_output_tokens"})),
+    for (field, value, reason) in [
+        ("object", json!("chat.completion"), None),
+        ("id", json!(""), None),
+        ("model", json!(""), None),
+        (
+            "error",
+            json!({"message":"sensitive-fixture"}),
+            Some(DecisionOutputRejection::UnsafeTermination),
+        ),
+        (
+            "incomplete_details",
+            json!({"reason":"max_output_tokens"}),
+            Some(DecisionOutputRejection::UnsafeTermination),
+        ),
     ] {
         let mut body = response_body();
         body[field] = value;
-        invalid.push(body);
+        invalid.push((body, reason));
     }
-    for item in [
-        json!({"type":"function_call","name":"dangerous-fixture"}),
-        json!({"type":"future-item"}),
-        json!({"type":"reasoning"}),
+    for (item, reason) in [
+        (
+            json!({"type":"function_call","name":"dangerous-fixture"}),
+            Some(DecisionOutputRejection::UnsafeTermination),
+        ),
+        (
+            json!({"type":"future-item"}),
+            Some(DecisionOutputRejection::UnsafeTermination),
+        ),
+        (json!({"type":"reasoning"}), None),
     ] {
         let mut body = response_body();
         body["output"] = json!([item]);
-        invalid.push(body);
+        invalid.push((body, reason));
     }
-    for content in [
-        json!([]),
-        json!([{"type":"refusal","refusal":"fixture"}]),
-        json!([{"type":"output_text","text":"  "}]),
-        json!([{"type":"output_text","text":17}]),
-        json!([{"type":"image","data":"fixture"}]),
+    for (content, reason) in [
+        (json!([]), None),
+        (
+            json!([{"type":"refusal","refusal":"fixture"}]),
+            Some(DecisionOutputRejection::UnsafeTermination),
+        ),
+        (json!([{"type":"output_text","text":"  "}]), None),
+        (json!([{"type":"output_text","text":17}]), None),
+        (
+            json!([{"type":"image","data":"fixture"}]),
+            Some(DecisionOutputRejection::UnsafeTermination),
+        ),
     ] {
         let mut body = response_body();
         body["output"][0]["content"] = content;
-        invalid.push(body);
+        invalid.push((body, reason));
     }
     let mut duplicate = response_body();
     duplicate["output"] = json!([
         duplicate["output"][0].clone(),
         duplicate["output"][0].clone()
     ]);
-    invalid.push(duplicate);
+    invalid.push((duplicate, Some(DecisionOutputRejection::UnsafeTermination)));
     let mut unfinished_message = response_body();
     unfinished_message["output"][0]["status"] = json!("in_progress");
-    invalid.push(unfinished_message);
+    invalid.push((
+        unfinished_message,
+        Some(DecisionOutputRejection::UnsafeTermination),
+    ));
     for value in [json!(-1), json!("11"), json!(1.5), Value::Null] {
         let mut body = response_body();
         body["usage"]["input_tokens"] = value;
-        invalid.push(body);
+        invalid.push((body, None));
     }
-    for body in invalid {
+    for (body, reason) in invalid {
         let fixture = ReplyFixture::new(body);
         let error = responses_adapter(&fixture).complete(request()).unwrap_err();
-        assert_eq!(error, ProviderAdapterError::ResponseParse);
+        let expected = match reason {
+            Some(reason) => ProviderAdapterError::GenerationRejected(GenerationRejectionEvidence {
+                reason,
+                input_tokens: Some(11),
+                output_tokens: Some(7),
+            }),
+            None => ProviderAdapterError::ResponseParse,
+        };
+        assert_eq!(error, expected);
         assert!(!error.to_string().contains("sensitive-fixture"));
     }
 }

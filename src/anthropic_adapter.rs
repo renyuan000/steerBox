@@ -4,8 +4,8 @@ use crate::model_adapter::{
 };
 use crate::model_contracts::ModelActionEnvelope;
 use crate::provider_adapter::{
-    ProviderMessage, ProviderRequest, ProviderResponse, ProviderUsage, TransportResponse,
-    MAX_TIMEOUT_MS,
+    GenerationRejectionEvidence, ProviderMessage, ProviderRequest, ProviderResponse, ProviderUsage,
+    TransportResponse, MAX_TIMEOUT_MS,
 };
 use crate::provider_model_adapter::{
     ResolvedCallFailure, ResolvedModelAdapter, ResolvedModelResponseWithAction,
@@ -84,6 +84,8 @@ pub enum AnthropicAdapterError {
     Upstream,
     #[error("provider response could not be parsed")]
     ResponseParse,
+    #[error("provider generation rejected: {0:?}")]
+    GenerationRejected(GenerationRejectionEvidence),
     #[error("provider streaming response is unsupported")]
     StreamingUnsupported,
 }
@@ -100,7 +102,7 @@ impl AnthropicAdapterError {
             Self::Timeout => crate::provider_adapter::ProviderErrorClass::Timeout,
             Self::Transport => crate::provider_adapter::ProviderErrorClass::Transport,
             Self::Upstream => crate::provider_adapter::ProviderErrorClass::Upstream,
-            Self::ResponseParse | Self::StreamingUnsupported => {
+            Self::ResponseParse | Self::StreamingUnsupported | Self::GenerationRejected(_) => {
                 crate::provider_adapter::ProviderErrorClass::ResponseParse
             }
         }
@@ -201,10 +203,33 @@ impl<T: AnthropicTransport> AnthropicAdapter<T> {
             return Err(AnthropicAdapterError::StreamingUnsupported);
         }
         let parsed = parse_response(&response.body)?;
-        if parsed.content.len() != 1
-            || parsed.content[0].kind != "text"
-            || parsed.content[0].text.trim().is_empty()
+        let rejection = |reason| {
+            AnthropicAdapterError::GenerationRejected(GenerationRejectionEvidence {
+                reason,
+                input_tokens: parsed.usage.as_ref().and_then(|usage| usage.input_tokens),
+                output_tokens: parsed.usage.as_ref().and_then(|usage| usage.output_tokens),
+            })
+        };
+        if parsed.content.iter().any(|block| block.kind != "text")
+            || !matches!(
+                parsed.stop_reason.as_deref(),
+                None | Some("" | "end_turn" | "stop_sequence" | "max_tokens")
+            )
         {
+            return Err(rejection(DecisionOutputRejection::UnsafeTermination));
+        }
+        let text = parsed
+            .content
+            .first()
+            .and_then(|block| block.text.as_deref());
+        if parsed.content.len() != 1 || text.is_none_or(|text| text.trim().is_empty()) {
+            return Err(match parsed.stop_reason.as_deref() {
+                Some("max_tokens") => rejection(DecisionOutputRejection::OutputTruncated),
+                None | Some("") => rejection(DecisionOutputRejection::TerminationUnconfirmed),
+                _ => AnthropicAdapterError::ResponseParse,
+            });
+        }
+        if !parsed.content[0].other.is_empty() {
             return Err(AnthropicAdapterError::ResponseParse);
         }
         let usage = parsed.usage.map(|usage| ProviderUsage {
@@ -218,7 +243,7 @@ impl<T: AnthropicTransport> AnthropicAdapter<T> {
         Ok(ProviderResponse {
             request_id: parsed.id,
             model: parsed.model,
-            text: parsed.content[0].text.clone(),
+            text: text.unwrap().to_owned(),
             finish_reason: parsed.stop_reason,
             usage,
         })
@@ -359,11 +384,21 @@ impl<T: AnthropicTransport> ResolvedModelAdapter for AnthropicAdapter<T> {
                 class: error.class(),
             })
         })?;
-        let provider_response = self.complete(provider_request).map_err(|error| {
-            ResolvedCallFailure::new(ModelAdapterError::Provider {
-                class: error.class(),
-            })
-        })?;
+        let provider_response = self
+            .complete(provider_request)
+            .map_err(|error| match error {
+                AnthropicAdapterError::GenerationRejected(evidence) => {
+                    ResolvedCallFailure::after_wire_rejection(&input_context_hash, evidence)
+                }
+                error => ResolvedCallFailure::new(ModelAdapterError::Provider {
+                    class: error.class(),
+                }),
+            })?;
+        crate::provider_recovery::validate_generation(&provider_response, true).map_err(
+            |cause| {
+                ResolvedCallFailure::after_response(cause, &input_context_hash, &provider_response)
+            },
+        )?;
         let response = parse_decision_with_action(&provider_response.text).map_err(|cause| {
             ResolvedCallFailure::after_response(cause, &input_context_hash, &provider_response)
         })?;
@@ -478,11 +513,12 @@ struct AnthropicResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct AnthropicResponseBlock {
     #[serde(rename = "type")]
     kind: String,
-    text: String,
+    text: Option<String>,
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -509,8 +545,17 @@ struct DecisionEnvelopeWithAction {
 }
 
 fn parse_response(body: &str) -> Result<AnthropicResponse, AnthropicAdapterError> {
-    let response = serde_json::from_str::<AnthropicResponse>(body)
-        .map_err(|_| AnthropicAdapterError::ResponseParse)?;
+    let response = serde_json::from_str::<AnthropicResponse>(body).map_err(|error| {
+        if error.is_eof() {
+            AnthropicAdapterError::GenerationRejected(GenerationRejectionEvidence {
+                reason: DecisionOutputRejection::TerminationUnconfirmed,
+                input_tokens: None,
+                output_tokens: None,
+            })
+        } else {
+            AnthropicAdapterError::ResponseParse
+        }
+    })?;
     if response.kind != "message" || response.role != "assistant" {
         return Err(AnthropicAdapterError::ResponseParse);
     }

@@ -1454,6 +1454,61 @@ impl ReadOnlyLoopController {
             .map(|outcome| outcome.decision)
     }
 
+    /// Only the bounded observation runner may create one retry. No action runtime
+    /// is supplied, so a returned tool proposal cannot be executed or replayed.
+    pub(crate) fn run_resolved_observation_retry<A: ResolvedModelAdapter + ?Sized>(
+        &mut self,
+        adapter: &A,
+        request: ModelRequest,
+        pack: &ResolvedPromptPack,
+        route: &RouteDecision,
+        step_id: String,
+        gap: crate::provider_recovery::RecoveryGap,
+    ) -> Result<ModelDecision, LoopControllerError> {
+        self.prepare_step_action()?;
+        if self.task_run.budget.model_calls_used != 1
+            || self.task_run.budget.tool_calls_used != 0
+            || self.task_run.attempts.len() != 1
+        {
+            return Err(ModelAdapterError::ResolvedBindingMismatch {
+                field: "observation_recovery_boundary",
+            }
+            .into());
+        }
+        let parent = self
+            .task_run
+            .current_attempt_id
+            .clone()
+            .ok_or_else(|| AttemptLineageError::AttemptNotFound("current_attempt_id".into()))?;
+        let evidence = self
+            .task_run
+            .attempt(&parent)
+            .map(|attempt| attempt.evidence_refs.clone())
+            .unwrap_or_default();
+        self.task_run.finish_attempt(
+            &parent,
+            AttemptStatus::Failed,
+            "provider_recovery",
+            Vec::new(),
+            evidence,
+        )?;
+        let child = self.task_run.start_attempt(
+            format!("{}:attempt:recovery:1", self.loop_run.loop_run_id),
+            AttemptReason::Retry,
+            Some(parent.clone()),
+        )?;
+        self.budget = self.task_run.budget.clone();
+        self.bind_attempt_route(&child.attempt_id, route)?;
+        self.append_model_event(
+            "model_recovery_planned",
+            &format!("{step_id}:recovery"),
+            json!({"gap":gap.code(),"parent_attempt_id":parent,"attempt_no":child.attempt_no,
+                "route_decision_id":route.route_decision_id}),
+        )?;
+        self.run_resolved_model_step_internal(adapter, request, pack, route, step_id, None, false)
+            .map(|outcome| outcome.decision)
+    }
+
     /// Opt-in, pure-model effect upgrade; the existing fallback path is unchanged.
     pub fn run_resolved_upgrade_model_step<E, F>(
         &mut self,

@@ -498,10 +498,17 @@ fn resolved_bridge_does_not_invent_missing_usage_or_finish_reason() {
     );
     let result = adapter(transport)
         .complete_resolved(request_for(&pack), &pack)
-        .expect("resolved decision");
-    assert_eq!(result.response.decision, ModelDecision::ContinueObservation);
-    assert!(result.provider_response.usage.is_none());
-    assert!(result.provider_response.finish_reason.is_none());
+        .expect_err("unconfirmed generation cannot become a decision");
+    assert_eq!(
+        result.cause(),
+        &ModelAdapterError::DecisionOutputRejected {
+            reason: DecisionOutputRejection::TerminationUnconfirmed,
+        }
+    );
+    let evidence = result.evidence().expect("request evidence retained");
+    assert_eq!(evidence.input_tokens(), None);
+    assert_eq!(evidence.output_tokens(), None);
+    assert_eq!(evidence.finish_reason(), None);
 }
 
 #[test]
@@ -618,7 +625,12 @@ fn resolved_parse_failures_preserve_only_known_safe_evidence_for_both_protocols(
             assert_eq!(
                 failure.cause(),
                 &ModelAdapterError::DecisionOutputRejected {
-                    reason: DecisionOutputRejection::JsonSyntaxInvalid,
+                    reason: match finish {
+                        None => DecisionOutputRejection::TerminationUnconfirmed,
+                        Some(value) if value == known_finish =>
+                            DecisionOutputRejection::OutputTruncated,
+                        _ => DecisionOutputRejection::UnsafeTermination,
+                    },
                 }
             );
             let evidence = failure.evidence().expect("safe evidence retained");

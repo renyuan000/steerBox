@@ -2,13 +2,22 @@
 
 ## 定位与证据边界
 
+2026-11-27 结果完整性与有界观察恢复：resolved Chat/Responses/Messages 入口区分
+生成截断、未确认收尾、拒绝/工具/过滤信号；失败仅保留安全 usage/hash，不用合法 decision
+JSON 覆盖不完整协议状态。新增显式 `ForegroundProviderRun::prepare_recovering` 宿主库入口，
+最多两次纯观察调用，复用同一 TaskRun/预算/token 账本并记录 child Retry；不提供工具或
+副作用重放。普通单次入口不隐式重试，CLI 未接入该恢复选项。合同、验收结果和剩余边界
+见 `PROVIDER_RESPONSE_RECOVERY.md`。最终全量 97 个 harness/1,384 项通过，0 失败/忽略；
+严格 all-targets Clippy、实际 lib/bin 构建、fmt/diff 与独立规格/质量审核通过。
+不代表生产流式、后台续跑、跨后端恢复或 Phase 1 完成；本轮未进行真实模型验收或性能基准。
+
 2026-11-27 Provider 中断防护：基础 Chat SSE 已缓冲解析不再接受缺终止标志、
 reasoning-only 或终止后继续输出为成功；允许合法 usage 尾块。共享 Chat/Responses
 及独立 Messages HTTP transport 的响应体超时修复为 `Timeout`，localhost 心跳回归
 证明字节到达不延长总期限；Unicode 审计目录的无效正文记录失败而非完成。
 相关 54 项定向及全量 96 个 harness/1358 项通过，0 失败/跳过；严格 Clippy、实际
 lib/bin 构建、fmt/diff 检查通过。证据和未来流式门禁见 `PROVIDER_INTERRUPTION_GUARDS.md`。
-生产 HTTP 仍非流式，无新增自动重试/跨后端恢复；不据此确认用户 OpenCode 事故根因，
+本段中断防护切片的生产 HTTP 仍非流式，不含自动重试/跨后端恢复；不据此确认用户 OpenCode 事故根因，
 不表示 Phase 1 或 live mutation 验收完成。
 
 2026-11-25 多后端接入一致性修复：公开 Anthropic 工厂按显式 Messages 协议接入，

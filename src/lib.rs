@@ -23,6 +23,7 @@ pub mod policy_gate;
 pub mod prompt_registry;
 pub mod provider_adapter;
 pub mod provider_model_adapter;
+pub mod provider_recovery;
 pub mod provider_runner;
 pub mod recovery_input;
 pub mod recovery_inspector;

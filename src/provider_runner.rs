@@ -48,11 +48,13 @@ const MARKDOWN_PROMPT: &str = "bounded-markdown-edit";
 
 mod markdown_paths;
 mod readonly;
+mod recovery;
 pub use markdown_paths::MarkdownRuntimePathCheck;
 pub use readonly::{
     BoundedReadOnlyProviderRun, BoundedReadOnlyProviderRunOutcome, BoundedReadOnlyRunConfig,
     ReadOnlyRuntimePathCheck,
 };
+pub use recovery::ForegroundRecoveryProviderRun;
 
 #[derive(Debug, Error)]
 pub enum ProviderRunError {
@@ -64,6 +66,8 @@ pub enum ProviderRunError {
     UnsupportedProtocol,
     #[error("foreground provider request or profile is invalid")]
     InvalidRequest,
+    #[error("provider recovery total deadline exhausted")]
+    RecoveryDeadlineExceeded,
     #[error("provider transport could not be constructed")]
     TransportBuild,
     #[error("provider run identity already exists in caller-supplied history")]

@@ -90,6 +90,12 @@ pub enum DecisionOutputRejection {
     ActionRejected,
     #[error("summary redaction rejected")]
     SummaryRedactionRejected,
+    #[error("provider generation reached its output limit")]
+    OutputTruncated,
+    #[error("provider generation termination is unconfirmed")]
+    TerminationUnconfirmed,
+    #[error("provider termination cannot authorize a decision")]
+    UnsafeTermination,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

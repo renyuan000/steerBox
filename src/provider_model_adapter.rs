@@ -102,6 +102,23 @@ pub struct ResolvedCallFailure {
 }
 
 impl ResolvedCallFailure {
+    pub(crate) fn after_wire_rejection(
+        input_context_hash: &str,
+        evidence: crate::provider_adapter::GenerationRejectionEvidence,
+    ) -> Self {
+        Self {
+            cause: ModelAdapterError::DecisionOutputRejected {
+                reason: evidence.reason,
+            },
+            evidence: Some(ResolvedCallEvidence {
+                input_context_hash: input_context_hash.to_owned(),
+                input_tokens: evidence.input_tokens,
+                output_tokens: evidence.output_tokens,
+                finish_reason: None,
+            }),
+        }
+    }
+
     pub fn new(cause: ModelAdapterError) -> Self {
         Self {
             cause,
@@ -320,11 +337,19 @@ impl<T: ProviderTransport> ProviderModelAdapter<T> {
         let provider_response = self
             .provider
             .complete_prepared(&prepared)
-            .map_err(|error| {
-                ResolvedCallFailure::new(ModelAdapterError::Provider {
+            .map_err(|error| match error {
+                crate::provider_adapter::ProviderAdapterError::GenerationRejected(evidence) => {
+                    ResolvedCallFailure::after_wire_rejection(&input_context_hash, evidence)
+                }
+                error => ResolvedCallFailure::new(ModelAdapterError::Provider {
                     class: error.class(),
-                })
+                }),
             })?;
+        crate::provider_recovery::validate_generation(&provider_response, false).map_err(
+            |cause| {
+                ResolvedCallFailure::after_response(cause, &input_context_hash, &provider_response)
+            },
+        )?;
         let response = parse_decision_with_action(&provider_response.text).map_err(|cause| {
             ResolvedCallFailure::after_response(cause, &input_context_hash, &provider_response)
         })?;

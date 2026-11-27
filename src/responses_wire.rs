@@ -1,9 +1,11 @@
 //! Bounded, stateless Responses wire format. Never decode it as Chat choices.
+use crate::model_adapter::DecisionOutputRejection;
 use crate::provider_adapter::{
-    ProviderAdapterError, ProviderMessage, ProviderResponse, ProviderUsage, ReasoningEffort,
+    GenerationRejectionEvidence, ProviderAdapterError, ProviderMessage, ProviderResponse,
+    ProviderUsage, ReasoningEffort,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 pub(crate) fn encode(
     messages: &[ProviderMessage],
@@ -45,10 +47,31 @@ struct Response {
     id: String,
     model: String,
     status: String,
-    error: Option<Value>,
-    incomplete_details: Option<Value>,
-    output: Vec<Value>,
+    error: Option<serde::de::IgnoredAny>,
+    incomplete_details: Option<IncompleteDetails>,
+    output: Vec<OutputItem>,
     usage: Option<Usage>,
+}
+
+#[derive(Deserialize)]
+struct IncompleteDetails {
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OutputItem {
+    #[serde(rename = "type")]
+    kind: String,
+    role: Option<String>,
+    status: Option<String>,
+    content: Option<Vec<OutputBlock>>,
+}
+
+#[derive(Deserialize)]
+struct OutputBlock {
+    #[serde(rename = "type")]
+    kind: String,
+    text: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -59,50 +82,87 @@ struct Usage {
 }
 
 pub(crate) fn parse(body: &str) -> Result<ProviderResponse, ProviderAdapterError> {
-    let response: Response =
-        serde_json::from_str(body).map_err(|_| ProviderAdapterError::ResponseParse)?;
+    let response: Response = serde_json::from_str(body).map_err(|error| {
+        if error.is_eof() {
+            ProviderAdapterError::GenerationRejected(GenerationRejectionEvidence {
+                reason: DecisionOutputRejection::TerminationUnconfirmed,
+                input_tokens: None,
+                output_tokens: None,
+            })
+        } else {
+            ProviderAdapterError::ResponseParse
+        }
+    })?;
     if response.object != "response"
         || response.id.trim().is_empty()
         || response.model.trim().is_empty()
-        || response.status != "completed"
-        || response.error.is_some()
-        || response.incomplete_details.is_some()
     {
         return Err(ProviderAdapterError::ResponseParse);
     }
+    let rejection = |reason| {
+        ProviderAdapterError::GenerationRejected(GenerationRejectionEvidence {
+            reason,
+            input_tokens: response.usage.as_ref().map(|usage| usage.input_tokens),
+            output_tokens: response.usage.as_ref().map(|usage| usage.output_tokens),
+        })
+    };
+    if response.error.is_some() {
+        return Err(rejection(DecisionOutputRejection::UnsafeTermination));
+    }
+    let truncated = match response.status.as_str() {
+        "completed" if response.incomplete_details.is_none() => false,
+        "incomplete"
+            if response
+                .incomplete_details
+                .as_ref()
+                .and_then(|details| details.reason.as_deref())
+                == Some("max_output_tokens") =>
+        {
+            true
+        }
+        _ => return Err(rejection(DecisionOutputRejection::UnsafeTermination)),
+    };
     let mut text = None;
-    for item in response.output {
-        match item.get("type").and_then(Value::as_str) {
+    for item in &response.output {
+        match item.kind.as_str() {
             // Do not persist or expose reasoning content to the action parser.
-            Some("reasoning") => continue,
-            Some("message")
+            "reasoning" => continue,
+            "message"
                 if text.is_none()
-                    && item.get("role").and_then(Value::as_str) == Some("assistant")
-                    && item.get("status").and_then(Value::as_str) == Some("completed") =>
+                    && item.role.as_deref() == Some("assistant")
+                    && (item.status.as_deref() == Some("completed")
+                        || (truncated
+                            && matches!(
+                                item.status.as_deref(),
+                                Some("incomplete" | "in_progress")
+                            ))) =>
             {
                 let blocks = item
-                    .get("content")
-                    .and_then(Value::as_array)
+                    .content
+                    .as_ref()
                     .ok_or(ProviderAdapterError::ResponseParse)?;
                 let mut message = String::new();
                 for block in blocks {
-                    if block.get("type").and_then(Value::as_str) != Some("output_text") {
-                        return Err(ProviderAdapterError::ResponseParse);
+                    if block.kind != "output_text" {
+                        return Err(rejection(DecisionOutputRejection::UnsafeTermination));
                     }
                     message.push_str(
                         block
-                            .get("text")
-                            .and_then(Value::as_str)
+                            .text
+                            .as_deref()
                             .ok_or(ProviderAdapterError::ResponseParse)?,
                     );
                 }
-                if message.trim().is_empty() {
+                if message.trim().is_empty() && !truncated {
                     return Err(ProviderAdapterError::ResponseParse);
                 }
                 text = Some(message);
             }
-            _ => return Err(ProviderAdapterError::ResponseParse),
+            _ => return Err(rejection(DecisionOutputRejection::UnsafeTermination)),
         }
+    }
+    if truncated {
+        return Err(rejection(DecisionOutputRejection::OutputTruncated));
     }
     Ok(ProviderResponse {
         request_id: response.id,

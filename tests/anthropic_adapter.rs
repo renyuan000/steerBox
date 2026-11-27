@@ -76,6 +76,77 @@ fn response_body(text: &str) -> String {
 }
 
 #[test]
+fn messages_wire_rejections_preserve_known_usage_without_private_content() {
+    for (reason, content, expected) in [
+        (
+            "tool_use",
+            serde_json::json!([{"type":"tool_use","id":"private-wire-fixture","name":"private-wire-fixture","input":{"secret":"private-wire-fixture"}}]),
+            "UnsafeTermination",
+        ),
+        ("refusal", serde_json::json!([]), "UnsafeTermination"),
+        ("pause_turn", serde_json::json!([]), "UnsafeTermination"),
+        (
+            "private-wire-fixture",
+            serde_json::json!([]),
+            "UnsafeTermination",
+        ),
+        (
+            "end_turn",
+            serde_json::json!([{"type":"tool_use","id":"private-wire-fixture","name":"private-wire-fixture","input":{}}]),
+            "UnsafeTermination",
+        ),
+        ("max_tokens", serde_json::json!([]), "OutputTruncated"),
+    ] {
+        let mut body: Value = serde_json::from_str(&response_body("fixture")).unwrap();
+        body["stop_reason"] = serde_json::json!(reason);
+        body["content"] = content;
+        let adapter = AnthropicAdapter::new(
+            "anthropic",
+            "https://fixture.example.test",
+            FakeTransport::response(&body.to_string()),
+            None,
+        );
+        let error = adapter.complete(request()).unwrap_err();
+        let debug = format!("{error:?}");
+        assert!(debug.contains("GenerationRejected"), "{debug}");
+        assert!(debug.contains(expected), "{debug}");
+        assert!(debug.contains("input_tokens: Some(3)"), "{debug}");
+        assert!(debug.contains("output_tokens: Some(2)"), "{debug}");
+        assert!(!debug.contains("private-wire-fixture"));
+        assert!(!error.to_string().contains("private-wire-fixture"));
+    }
+}
+
+#[test]
+fn messages_wire_eof_is_unconfirmed_but_duplicate_block_type_is_not_recoverable() {
+    use steerbox::provider_adapter::GenerationRejectionEvidence;
+    let adapter = AnthropicAdapter::new(
+        "anthropic",
+        "https://fixture.example.test",
+        FakeTransport::response("{\"id\":"),
+        None,
+    );
+    assert_eq!(
+        adapter.complete(request()).unwrap_err(),
+        AnthropicAdapterError::GenerationRejected(GenerationRejectionEvidence {
+            reason: DecisionOutputRejection::TerminationUnconfirmed,
+            input_tokens: None,
+            output_tokens: None,
+        })
+    );
+    let duplicate = r#"{"id":"fixture","type":"message","role":"assistant","model":"fixture","content":[{"type":"tool_use","type":"text","text":"private-wire-fixture"}],"stop_reason":"end_turn"}"#;
+    let adapter = AnthropicAdapter::new(
+        "anthropic",
+        "https://fixture.example.test",
+        FakeTransport::response(duplicate),
+        None,
+    );
+    let error = adapter.complete(request()).unwrap_err();
+    assert_eq!(error, AnthropicAdapterError::ResponseParse);
+    assert!(!format!("{error:?}").contains("private-wire-fixture"));
+}
+
+#[test]
 fn full_url_from_config_is_preserved_without_anthropic_suffix() {
     use steerbox::runtime_config::RuntimeConfig;
     let endpoint = "https://fixture.example.test/custom-message-entry/";
