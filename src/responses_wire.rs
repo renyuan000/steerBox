@@ -85,7 +85,7 @@ pub(crate) fn parse(body: &str) -> Result<ProviderResponse, ProviderAdapterError
     let response: Response = serde_json::from_str(body).map_err(|error| {
         if error.is_eof() {
             ProviderAdapterError::GenerationRejected(GenerationRejectionEvidence {
-                reason: DecisionOutputRejection::TerminationUnconfirmed,
+                reason: crate::provider_recovery::wire_eof_reason(body),
                 input_tokens: None,
                 output_tokens: None,
             })

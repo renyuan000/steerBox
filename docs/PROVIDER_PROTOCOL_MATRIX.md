@@ -28,6 +28,13 @@ Anthropic Messages 已作为独立协议接入。协议差异必须由 provider-
 
 ## 多后端配置规则与本轮接入审核
 
+2026-11-27 恢复复审修复：三协议 EOF 与 HTTP 成功 body 读取中断时保留已收到的
+拒绝/工具/过滤证据，不能因后续截断而触发修复请求；transport 新增 `UnsafeResponse`。
+非 2xx 不读取错误正文，保留 status；晚到的明确错误不被 deadline 覆盖。
+`ResponseTooLarge/InvalidResponse/Redirect/Other` 现在映射不可恢复的 `ResponseParse`，
+只有 `Network` 保留 `Transport` class；相应 routed fallback 行为也随之收紧。
+没有新增 wire 协议、生产流式或 live 验收；支持范围仍以上表和真实调用证据为准。
+
 2026-11-27 完整性/恢复增量：三种 resolved 协议在 decision 解析前检查收尾；明确拒绝、
 工具/过滤/未知状态不可恢复，明确 EOF 与输出上限可作为固定缺口；通用解析错误不重试。
 公开 adapter 增加 `GenerationRejected` 安全错误变体，class 保持 response_parse；resolved

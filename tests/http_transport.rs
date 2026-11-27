@@ -414,3 +414,59 @@ fn disconnected_provider_is_not_retried() {
     assert_eq!(error, TransportError::Network);
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn error_status_survives_a_truncated_or_oversized_error_body() {
+    for (status, limit) in [400, 401, 403, 429, 500, 503]
+        .into_iter()
+        .flat_map(|status| [1, 2048].map(|limit| (status, limit)))
+    {
+        let (listener, endpoint) = listener();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_request(&mut stream);
+            write!(stream, "HTTP/1.1 {status} Error\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nprivate-error").unwrap();
+        });
+        let transport = HttpProviderTransport::new(FixtureResolver::rejecting())
+            .unwrap()
+            .allow_loopback_http_for_tests()
+            .with_max_response_bytes(limit);
+        let response = transport.send(&endpoint, None, "{}", Duration::from_secs(2), false);
+        server.join().unwrap();
+        let response = response.expect("known HTTP status outranks error-body failures");
+        assert_eq!(response.status_code, status);
+        assert!(
+            response.body.is_empty(),
+            "error bodies are not model context"
+        );
+    }
+}
+
+#[test]
+fn interrupted_success_body_preserves_received_refusal() {
+    let (listener, endpoint) = listener();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let _ = read_request(&mut stream);
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n{\"choices\":[{\"message\":{\"refusal\":\"private-refusal\"}}],\"usage\":").unwrap();
+    });
+    let adapter = OpenAiCompatibleAdapter::new(
+        "relay",
+        endpoint,
+        HttpProviderTransport::new(FixtureResolver::rejecting())
+            .unwrap()
+            .allow_loopback_http_for_tests(),
+    );
+    let result = adapter.complete(ProviderRequest {
+        model: "fixture".into(),
+        messages: vec![ProviderMessage::user("test")],
+        auth_ref: None,
+        timeout_ms: 2000,
+        stream: false,
+    });
+    server.join().unwrap();
+    assert!(
+        matches!(result, Err(ProviderAdapterError::GenerationRejected(ref evidence)) if evidence.reason == steerbox::model_adapter::DecisionOutputRejection::UnsafeTermination)
+    );
+    assert!(!format!("{result:?}").contains("private-refusal"));
+}

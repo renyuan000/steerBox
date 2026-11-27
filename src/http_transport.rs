@@ -163,6 +163,9 @@ impl<R: CredentialResolver> HttpProviderTransport<R> {
         let mut bytes = Vec::with_capacity(self.max_response_bytes.min(64 * 1024));
         let mut limited = response.take(self.max_response_bytes as u64 + 1);
         limited.read_to_end(&mut bytes).map_err(|error| {
+            if interrupted_body_has_stop_signal(&bytes) {
+                return TransportError::UnsafeResponse;
+            }
             if is_body_timeout(&error) {
                 TransportError::Timeout
             } else {
@@ -219,6 +222,11 @@ impl<R: CredentialResolver> ProviderTransport for HttpProviderTransport<R> {
         let status_code = response.status().as_u16();
         if (300..400).contains(&status_code) {
             return Err(TransportError::Redirect);
+        }
+        // A broken error page must not overwrite known authentication, policy,
+        // rate-limit or upstream status with a retryable body-read failure.
+        if !(200..300).contains(&status_code) {
+            return Ok(TransportResponse::body(status_code, String::new()));
         }
         let body = self.read_bounded_body(response)?;
         Ok(TransportResponse::body(status_code, body))
@@ -295,6 +303,9 @@ impl<R: CredentialResolver> HttpAnthropicTransport<R> {
         let mut bytes = Vec::with_capacity(self.max_response_bytes.min(64 * 1024));
         let mut limited = response.take(self.max_response_bytes as u64 + 1);
         limited.read_to_end(&mut bytes).map_err(|error| {
+            if interrupted_body_has_stop_signal(&bytes) {
+                return AnthropicTransportError::UnsafeResponse;
+            }
             if is_body_timeout(&error) {
                 AnthropicTransportError::Timeout
             } else {
@@ -359,9 +370,24 @@ impl<R: CredentialResolver> AnthropicTransport for HttpAnthropicTransport<R> {
         if (300..400).contains(&status_code) {
             return Err(AnthropicTransportError::Redirect);
         }
+        if !(200..300).contains(&status_code) {
+            return Ok(TransportResponse::body(status_code, String::new()));
+        }
         let body = self.read_bounded_body(response)?;
         Ok(TransportResponse::body(status_code, body))
     }
+}
+
+// Only inspect an interrupted body; never return the bytes in a transport error.
+// A split UTF-8 tail must not erase an earlier, fully received stop signal.
+fn interrupted_body_has_stop_signal(bytes: &[u8]) -> bool {
+    let prefix = match std::str::from_utf8(bytes) {
+        Ok(body) => body,
+        Err(error) => std::str::from_utf8(&bytes[..error.valid_up_to()])
+            .expect("valid_up_to defines a valid UTF-8 prefix"),
+    };
+    crate::provider_recovery::wire_eof_reason(prefix)
+        == crate::model_adapter::DecisionOutputRejection::UnsafeTermination
 }
 
 // reqwest's blocking Read wraps body errors as io::ErrorKind::Other. Preserve
@@ -376,4 +402,20 @@ fn is_body_timeout(error: &std::io::Error) -> bool {
 
 fn is_loopback_host(host: Option<&str>) -> bool {
     matches!(host, Some("localhost" | "127.0.0.1" | "[::1]" | "::1"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interrupted_body_has_stop_signal;
+
+    #[test]
+    fn split_utf8_tail_preserves_earlier_stop_evidence_but_not_prose() {
+        let mut refused = br#"{"choices":[{"message":{"refusal":"no","content":""#.to_vec();
+        refused.extend_from_slice(&[0xe4, 0xb8]);
+        assert!(interrupted_body_has_stop_signal(&refused));
+        let mut prose = br#"{"choices":[{"message":{"content":"refusal content_filter "#.to_vec();
+        prose.extend_from_slice(&[0xe4, 0xb8]);
+        assert!(!interrupted_body_has_stop_signal(&prose));
+        assert!(!interrupted_body_has_stop_signal(&[0xff]));
+    }
 }

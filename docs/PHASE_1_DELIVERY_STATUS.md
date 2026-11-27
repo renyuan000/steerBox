@@ -2,6 +2,29 @@
 
 ## 定位与证据边界
 
+2026-11-27 恢复边界复审修复：EOF/HTTP body 读取失败不再覆盖此前收到的拒绝、
+工具或过滤信号；非 2xx 的状态优先于错误正文读取，晚到明确错误优先于 deadline。
+超限/非法响应/重定向/未知传输失败不再取得恢复或 routed fallback 权限。
+合同与回归证据见 `PROVIDER_RESPONSE_RECOVERY.md`；本轮没有新增 live 模型调用。
+本轮全量 97 个 harness / 1,394 项通过、0 失败/忽略；严格 all-targets Clippy、实际
+lib/bin build、fmt/diff 通过，独立只读质量复审无剩余阻断。
+
+### 当前主线队列（本轮核对，不等同于已完成）
+
+1. 接入验收：Chat 已有单一第三方纯观察/只读工具 live 证据；Responses、Messages
+   尚缺真实服务验收。三种协议配置支持不等于所有后端/中转已验收，原生 Gemini/Bedrock 未实现。
+2. 恢复落地：显式纯观察恢复仍是宿主库入口，CLI 尚未接入；生产 token streaming、
+   语义进展 watchdog 与跨后端安全切换/并行调度未完成。
+3. 开发闭环：受限 Markdown 写入已有离线执行 CLI；仍缺 live mutation 验收、通用文件/Bash
+   与真实多步开发任务 E2E，不能将只读成功称作完整编码 Agent。
+4. 用户与后台控制：补齐真实 stdin/运行中干预、常驻 worker 与 status/cancel 集成；
+   既有 inbox/safe-boundary 测试不等于完整 OS 用户接口。
+5. 崩溃恢复：已有日志/私有恢复输入等基础；跨 store 对账、controller 跨进程 resume、
+   fencing 与副作用安全恢复仍未交付。
+6. 记忆闭环：scoped retrieval 与候选审计已有；promotion、WorkingMemory/Wiki 完整生命周期待补。
+
+详细协议范围见 `PROVIDER_PROTOCOL_MATRIX.md`。上述阻塞仍在时，不宣称完整 Phase 1 完成。
+
 2026-11-27 结果完整性与有界观察恢复：resolved Chat/Responses/Messages 入口区分
 生成截断、未确认收尾、拒绝/工具/过滤信号；失败仅保留安全 usage/hash，不用合法 decision
 JSON 覆盖不完整协议状态。新增显式 `ForegroundProviderRun::prepare_recovering` 宿主库入口，

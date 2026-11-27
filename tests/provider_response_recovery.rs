@@ -28,6 +28,21 @@ impl steerbox::anthropic_adapter::AnthropicTransport for Sequence {
                 TransportError::Timeout => {
                     steerbox::anthropic_adapter::AnthropicTransportError::Timeout
                 }
+                TransportError::ResponseTooLarge => {
+                    steerbox::anthropic_adapter::AnthropicTransportError::ResponseTooLarge
+                }
+                TransportError::InvalidResponse => {
+                    steerbox::anthropic_adapter::AnthropicTransportError::InvalidResponse
+                }
+                TransportError::Redirect => {
+                    steerbox::anthropic_adapter::AnthropicTransportError::Redirect
+                }
+                TransportError::Other => {
+                    steerbox::anthropic_adapter::AnthropicTransportError::Other
+                }
+                TransportError::UnsafeResponse => {
+                    steerbox::anthropic_adapter::AnthropicTransportError::UnsafeResponse
+                }
                 _ => steerbox::anthropic_adapter::AnthropicTransportError::Network,
             }
         })
@@ -289,6 +304,68 @@ fn permission_refusal_and_unknown_termination_never_retry() {
             .run_with_transport(transport.clone(),EventLog::open(dir.path().join("events.jsonl")).unwrap(),ModelCallStore::open(dir.path().join("calls.jsonl")).unwrap(),StreamReporter::new(Vec::new())).unwrap_err();
         assert_eq!(transport.requests.borrow().len(),1);
         assert!(!error.to_string().contains("private-"));
+    }
+}
+
+#[test]
+fn definitive_transport_failures_never_authorize_a_second_request() {
+    for protocol in [
+        "openai-compatible-chat",
+        "openai-responses",
+        "anthropic-messages",
+    ] {
+        for failure in [
+            TransportError::ResponseTooLarge,
+            TransportError::InvalidResponse,
+            TransportError::Redirect,
+            TransportError::Other,
+            TransportError::UnsafeResponse,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut cfg = config();
+            cfg.model_profiles[0].endpoint_protocol = protocol.into();
+            let transport = sequence(vec![
+                Err(failure.clone()),
+                Ok(TransportResponse::body(200, complete_wire(protocol, false))),
+            ]);
+            let calls = ModelCallStore::open(dir.path().join("calls.jsonl")).unwrap();
+            let events_path = dir.path().join("events.jsonl");
+            let prepared =
+                ForegroundProviderRun::prepare_recovering(&cfg, request(), 30_000).unwrap();
+            let events = EventLog::open(&events_path).unwrap();
+            let result = if protocol == "anthropic-messages" {
+                prepared.run_anthropic_with_transport(
+                    transport.clone(),
+                    events,
+                    calls.clone(),
+                    StreamReporter::new(Vec::new()),
+                )
+            } else {
+                prepared.run_with_transport(
+                    transport.clone(),
+                    events,
+                    calls.clone(),
+                    StreamReporter::new(Vec::new()),
+                )
+            };
+            assert_eq!(
+                transport.requests.borrow().len(),
+                1,
+                "{protocol}: {failure:?}"
+            );
+            assert!(result.is_err());
+            assert!(calls.read_all().unwrap().is_empty());
+            assert_eq!(calls.read_failures().unwrap().len(), 1);
+            assert!(!EventLog::open(events_path)
+                .unwrap()
+                .read_all()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(
+                    event.event_type.as_str(),
+                    "model_recovery_planned" | "loop_completed"
+                )));
+        }
     }
 }
 
@@ -665,6 +742,82 @@ fn complete_wire(protocol: &str, truncated: bool) -> String {
                 "content":[{"type":"output_text","text":decision}]}],
             "usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}).to_string(),
         _ => chat(Some(if truncated { "length" } else { "stop" }), &decision),
+    }
+}
+
+#[test]
+fn explicit_stop_signals_before_wire_eof_never_authorize_recovery() {
+    let fixtures = [
+        (
+            "openai-compatible-chat",
+            r#"{"id":"r","model":"fixture-model","choices":[{"message":{"refusal":"private-refusal","content":null},"finish_reason":"stop"}],"usage":"#,
+        ),
+        (
+            "openai-compatible-chat",
+            r#"{"id":"r","model":"fixture-model","choices":[{"message":{"content":"filtered"},"finish_reason":"content_filter"}],"usage":"#,
+        ),
+        (
+            "openai-compatible-chat",
+            r#"{"id":"r","model":"fixture-model","choices":[{"message":{"tool_calls":[{"id":"private-tool"}]},"finish_reason":"tool_calls"}],"usage":"#,
+        ),
+        (
+            "openai-responses",
+            r#"{"object":"response","id":"r","model":"fixture-model","status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[],"usage":"#,
+        ),
+        (
+            "openai-responses",
+            r#"{"object":"response","id":"r","model":"fixture-model","status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"private-refusal"}]}],"usage":"#,
+        ),
+        (
+            "anthropic-messages",
+            r#"{"id":"r","type":"message","role":"assistant","model":"fixture-model","stop_reason":"refusal","content":[],"usage":"#,
+        ),
+        (
+            "anthropic-messages",
+            r#"{"id":"r","type":"message","role":"assistant","model":"fixture-model","content":[{"type":"tool_use","id":"private-tool"}],"usage":"#,
+        ),
+    ];
+    for (protocol, wire) in fixtures {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        cfg.model_profiles[0].endpoint_protocol = protocol.into();
+        let transport = sequence(vec![
+            Ok(TransportResponse::body(200, wire)),
+            Ok(TransportResponse::body(200, complete_wire(protocol, false))),
+        ]);
+        let calls = ModelCallStore::open(dir.path().join("calls.jsonl")).unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let prepared = ForegroundProviderRun::prepare_recovering(&cfg, request(), 30_000).unwrap();
+        let result = if protocol == "anthropic-messages" {
+            prepared.run_anthropic_with_transport(
+                transport.clone(),
+                EventLog::open(&events_path).unwrap(),
+                calls.clone(),
+                StreamReporter::new(Vec::new()),
+            )
+        } else {
+            prepared.run_with_transport(
+                transport.clone(),
+                EventLog::open(&events_path).unwrap(),
+                calls.clone(),
+                StreamReporter::new(Vec::new()),
+            )
+        };
+        assert_eq!(
+            transport.requests.borrow().len(),
+            1,
+            "stop signal outranks EOF: {protocol}"
+        );
+        assert!(result.is_err());
+        assert!(calls.read_all().unwrap().is_empty());
+        assert_eq!(calls.read_failures().unwrap().len(), 1);
+        let events = EventLog::open(events_path).unwrap().read_all().unwrap();
+        assert!(!events.iter().any(|event| matches!(
+            event.event_type.as_str(),
+            "loop_completed" | "model_recovery_planned"
+        )));
+        assert!(!format!("{result:?} {events:?}").contains("private-refusal"));
+        assert!(!format!("{result:?} {events:?}").contains("private-tool"));
     }
 }
 

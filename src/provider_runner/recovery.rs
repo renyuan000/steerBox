@@ -265,6 +265,13 @@ impl<T: ProviderTransport> ProviderTransport for DeadlineTransport<T> {
         let result = self
             .inner
             .send(endpoint, auth_ref, body, timeout.min(remaining), streaming);
+        // Preserve definitive safety/HTTP errors even if the transport returns
+        // late. The host deadline must reject late success, not erase evidence.
+        if matches!(&result, Err(error) if !matches!(error, TransportError::Timeout | TransportError::Network))
+            || matches!(&result, Ok(response) if !(200..300).contains(&response.status_code))
+        {
+            return result;
+        }
         if Instant::now() >= self.deadline {
             return Err(TransportError::Timeout);
         }
@@ -288,6 +295,11 @@ impl<T: AnthropicTransport> AnthropicTransport for DeadlineTransport<T> {
         let result = self
             .inner
             .send(endpoint, headers, body, timeout.min(remaining), streaming);
+        if matches!(&result, Err(error) if !matches!(error, AnthropicTransportError::Timeout | AnthropicTransportError::Network))
+            || matches!(&result, Ok(response) if !(200..300).contains(&response.status_code))
+        {
+            return result;
+        }
         if Instant::now() >= self.deadline {
             return Err(AnthropicTransportError::Timeout);
         }
@@ -397,6 +409,86 @@ mod tests {
             };
             assert!(!send(&probe, messages));
             assert_eq!(inner.timeouts.borrow().len(), 1);
+        }
+    }
+
+    struct LateEvidence {
+        status: Option<u16>,
+    }
+
+    impl ProviderTransport for LateEvidence {
+        fn send(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+            timeout: Duration,
+            _: bool,
+        ) -> Result<TransportResponse, TransportError> {
+            std::thread::sleep(timeout + Duration::from_millis(5));
+            match self.status {
+                Some(status) => Ok(TransportResponse::body(status, "")),
+                None => Err(TransportError::UnsafeResponse),
+            }
+        }
+    }
+
+    impl AnthropicTransport for LateEvidence {
+        fn send(
+            &self,
+            endpoint: &str,
+            _: &AnthropicHeaders,
+            body: &str,
+            timeout: Duration,
+            streaming: bool,
+        ) -> Result<TransportResponse, AnthropicTransportError> {
+            ProviderTransport::send(self, endpoint, None, body, timeout, streaming)
+                .map_err(|_| AnthropicTransportError::UnsafeResponse)
+        }
+    }
+
+    #[test]
+    fn late_definitive_evidence_is_not_replaced_with_retryable_timeout() {
+        for status in [None, Some(401), Some(403), Some(429), Some(503)] {
+            let probe = DeadlineTransport {
+                inner: Rc::new(LateEvidence { status }),
+                deadline: Instant::now() + Duration::from_millis(100),
+            };
+            let result = ProviderTransport::send(
+                &probe,
+                "https://example.test",
+                None,
+                "{}",
+                Duration::from_secs(30),
+                false,
+            );
+            match status {
+                Some(status) => assert_eq!(result.unwrap().status_code, status),
+                None => assert!(matches!(result, Err(TransportError::UnsafeResponse))),
+            }
+            let probe = DeadlineTransport {
+                inner: Rc::new(LateEvidence { status }),
+                deadline: Instant::now() + Duration::from_millis(100),
+            };
+            let headers = AnthropicHeaders {
+                api_key_ref: None,
+                anthropic_version: "2023-06-01".into(),
+            };
+            let result = AnthropicTransport::send(
+                &probe,
+                "https://example.test",
+                &headers,
+                "{}",
+                Duration::from_secs(30),
+                false,
+            );
+            match status {
+                Some(status) => assert_eq!(result.unwrap().status_code, status),
+                None => assert!(matches!(
+                    result,
+                    Err(AnthropicTransportError::UnsafeResponse)
+                )),
+            }
         }
     }
 }

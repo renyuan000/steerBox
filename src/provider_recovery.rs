@@ -2,6 +2,9 @@
 use crate::model_adapter::{DecisionOutputRejection, ModelAdapterError};
 use crate::provider_adapter::{ProviderErrorClass, ProviderResponse};
 
+mod wire_eof;
+pub(crate) use wire_eof::wire_eof_reason;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryGap {
     TransientProvider,

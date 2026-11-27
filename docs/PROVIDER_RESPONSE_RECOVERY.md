@@ -17,7 +17,7 @@
 - 明确拒绝/过滤、认证/权限、非法请求、绑定错误、动作越界、审计/进度失败及预算异常不重试。
 - 仅 timeout/network/upstream 暂态失败可重发纯推理请求；JSON syntax 缺口和输出截断
   可用固定、无正文的提示要求重新生成完整无动作 decision。不是拼接残缺 JSON 或伪造缺失字段。
-- wire JSON 的明确 EOF 记为 termination_unconfirmed；通用 ResponseParse 不在恢复白名单，
+- wire JSON 的明确 EOF 仅在已收到部分中没有结构化停止信号时记为 termination_unconfirmed；通用 ResponseParse 不在恢复白名单，
   避免把未知协议、工具块或拒绝误当成连接中断。明确拒绝/工具/过滤信号优先于输出截断；
   已解码响应的已知 usage 和宿主输入 hash 保留，未完整解码的用量保持未知。
 - decision 的 EnvelopeInvalid/EmptySummary 可能先于动作错误返回，故都不自动修复；
@@ -31,6 +31,31 @@
   暂态错误仅做一次短退避，不忙轮询。已发请求可能计费，重发不是免费或 exactly-once 保证。
 - 新请求只携带原始授权上下文与固定缺口码，不重发失败正文、reasoning、credential 或 endpoint。
   同一原始观察最多派生一份修复说明，避免逐轮累积上下文。
+
+## 2026-11-27 复审修复：保留已收到的停止证据
+
+- 正常 typed wire 解码不增加第二次解析；仅 EOF 或 HTTP 200 body 读取失败时，
+  对已收到部分进行有界结构探测。探针不构造响应树、不搜索模型正文、不补造缺失字段；
+  拒绝、过滤、工具和未知终止信号跨重复字段单调保留，后续 EOF 不可将它们降级为可恢复缺口。
+- HTTP body 读取失败时，先保留已收到的停止证据，再分类 timeout/network；UTF-8 分裂尾部
+  不清除此前完整信号。新增 transport `UnsafeResponse` 映射 `UnsafeTermination`，不重试。
+- 非 2xx（redirect 仍直接拒绝）保留 HTTP status，不读取错误正文；截断或超大错误页
+  不能把 401/403 改写成 network。超过共享 deadline 仍拒收成功结果，但不覆盖明确错误或非 2xx。
+- 只有 `Network` 映射可恢复的 `Transport` class；`ResponseTooLarge`、`InvalidResponse`、
+  `Redirect`、`Other` 改为不可恢复的 `ResponseParse`。这也收紧基于这些 class 的 routed fallback，
+  不再把未知失败当成换后端的授权。认证/权限/429 等状态继续按既有独立分类处理。
+
+新增真实 RED/GREEN 覆盖拒绝后 EOF、错误页中断、成功 body 中断和明确传输失败；
+后者旧实现的 `ResponseTooLarge` 实际发送两次，修复后三协议五类错误均仅发送一次，
+只有一条失败记录，且没有 recovery/completed 事件。另补超期证据与分裂 UTF-8 单元测试。
+本轮仍只做离线/localhost 验证，不构成真实 provider 或生产吞吐验收。
+
+复审验收基线 `49528a1`：全量 97 个 harness / 1,394 项通过，0 失败、0 忽略；
+恢复集成套件 19 项、deadline 单元测试 3 项。严格 all-targets Clippy、实际 lib/bin build、
+fmt/diff 均通过。独立只读质量复审发现并复核关闭上述错误白名单问题，主代理核对 diff
+并执行全部测试。复现命令沿用下方外置 `RECOVERY_TARGET`；最终新日志位于同一验证目录：
+`full-test-stop-evidence-final.log`、`clippy-stop-evidence.log`、`build-stop-evidence.log`。
+未新增依赖；未读取真实凭据，未调用真实模型；源码可按本轮 Git diff 精确回滚，无须另复制备份。
 
 本片不靠全文语义扫描猜测自然语言拒绝，结构化协议信号与 schema 是可验证边界；
 缺少这些信号的自然语言正文仍可能落入一次 schema 修复。修复不扩大权限、不提供工具，

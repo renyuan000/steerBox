@@ -47,6 +47,7 @@ pub enum AnthropicTransportError {
     InvalidEndpoint,
     ResponseTooLarge,
     InvalidResponse,
+    UnsafeResponse,
     Redirect,
     UnsupportedStreaming,
     Other,
@@ -548,7 +549,7 @@ fn parse_response(body: &str) -> Result<AnthropicResponse, AnthropicAdapterError
     let response = serde_json::from_str::<AnthropicResponse>(body).map_err(|error| {
         if error.is_eof() {
             AnthropicAdapterError::GenerationRejected(GenerationRejectionEvidence {
-                reason: DecisionOutputRejection::TerminationUnconfirmed,
+                reason: crate::provider_recovery::wire_eof_reason(body),
                 input_tokens: None,
                 output_tokens: None,
             })
@@ -656,17 +657,24 @@ fn validate_auth_ref(auth_ref: Option<&str>) -> Result<(), AnthropicAdapterError
 
 fn map_transport_error(error: AnthropicTransportError) -> AnthropicAdapterError {
     match error {
+        AnthropicTransportError::UnsafeResponse => {
+            AnthropicAdapterError::GenerationRejected(GenerationRejectionEvidence {
+                reason: DecisionOutputRejection::UnsafeTermination,
+                input_tokens: None,
+                output_tokens: None,
+            })
+        }
         AnthropicTransportError::Timeout => AnthropicAdapterError::Timeout,
         AnthropicTransportError::Credential => AnthropicAdapterError::Authentication,
         AnthropicTransportError::InvalidEndpoint
         | AnthropicTransportError::UnsupportedStreaming => AnthropicAdapterError::InvalidRequest {
             reason: "transport endpoint or mode is invalid",
         },
-        AnthropicTransportError::Network
-        | AnthropicTransportError::ResponseTooLarge
+        AnthropicTransportError::Network => AnthropicAdapterError::Transport,
+        AnthropicTransportError::ResponseTooLarge
         | AnthropicTransportError::InvalidResponse
         | AnthropicTransportError::Redirect
-        | AnthropicTransportError::Other => AnthropicAdapterError::Transport,
+        | AnthropicTransportError::Other => AnthropicAdapterError::ResponseParse,
     }
 }
 

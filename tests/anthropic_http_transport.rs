@@ -15,6 +15,66 @@ struct FixtureResolver {
     refs: Arc<Mutex<Vec<String>>>,
 }
 
+#[test]
+fn messages_error_status_survives_a_truncated_or_oversized_error_body() {
+    for (status, limit) in [400, 401, 403, 429, 500, 503]
+        .into_iter()
+        .flat_map(|status| [1, 2048].map(|limit| (status, limit)))
+    {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_request(&mut stream);
+            write!(stream, "HTTP/1.1 {status} Error\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nprivate-error").unwrap();
+        });
+        let transport = HttpAnthropicTransport::new(FixtureResolver {
+            refs: Arc::new(Mutex::new(Vec::new())),
+        })
+        .unwrap()
+        .allow_loopback_http_for_tests()
+        .with_max_response_bytes(limit);
+        let headers = steerbox::anthropic_adapter::AnthropicHeaders {
+            api_key_ref: Some("env:SYNTHETIC".into()),
+            anthropic_version: "2023-06-01".into(),
+        };
+        let response = transport.send(&endpoint, &headers, "{}", Duration::from_secs(2), false);
+        server.join().unwrap();
+        let response = response.expect("known HTTP status outranks error-body failures");
+        assert_eq!(response.status_code, status);
+        assert!(response.body.is_empty());
+    }
+}
+
+#[test]
+fn messages_interrupted_success_body_preserves_received_tool_signal() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let _ = read_request(&mut stream);
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n{\"content\":[{\"type\":\"tool_use\",\"id\":\"private-tool\"}],\"usage\":").unwrap();
+    });
+    let transport = HttpAnthropicTransport::new(FixtureResolver {
+        refs: Arc::new(Mutex::new(Vec::new())),
+    })
+    .unwrap()
+    .allow_loopback_http_for_tests();
+    let adapter = AnthropicAdapter::new("relay", endpoint, transport, Some("env:SYNTHETIC".into()));
+    let result = adapter.complete(ProviderRequest {
+        model: "fixture".into(),
+        messages: vec![ProviderMessage::user("test")],
+        auth_ref: None,
+        timeout_ms: 2000,
+        stream: false,
+    });
+    server.join().unwrap();
+    assert!(
+        matches!(result, Err(steerbox::anthropic_adapter::AnthropicAdapterError::GenerationRejected(ref evidence)) if evidence.reason == steerbox::model_adapter::DecisionOutputRejection::UnsafeTermination)
+    );
+    assert!(!format!("{result:?}").contains("private-tool"));
+}
+
 impl CredentialResolver for FixtureResolver {
     fn resolve(&self, auth_ref: &str) -> Result<ResolvedCredential, CredentialError> {
         self.refs

@@ -196,6 +196,7 @@ pub enum TransportError {
     ResponseTooLarge,
     InvalidEndpoint,
     InvalidResponse,
+    UnsafeResponse,
     Redirect,
     UnsupportedStreaming,
     Other,
@@ -551,10 +552,17 @@ impl<T: ProviderTransport> OpenAiCompatibleAdapter<T> {
                     }
                 }
                 TransportError::Network => ProviderAdapterError::Transport,
+                TransportError::UnsafeResponse => {
+                    ProviderAdapterError::GenerationRejected(GenerationRejectionEvidence {
+                        reason: crate::model_adapter::DecisionOutputRejection::UnsafeTermination,
+                        input_tokens: None,
+                        output_tokens: None,
+                    })
+                }
                 TransportError::ResponseTooLarge
                 | TransportError::InvalidResponse
                 | TransportError::Redirect
-                | TransportError::Other => ProviderAdapterError::Transport,
+                | TransportError::Other => ProviderAdapterError::ResponseParse,
             })?;
         if !(200..300).contains(&response.status_code) {
             return Err(match response.status_code {
@@ -675,7 +683,7 @@ fn parse_completion_response(body: &str) -> Result<ProviderResponse, ProviderAda
     let response = serde_json::from_str::<WireCompletionResponse>(body).map_err(|error| {
         if error.is_eof() {
             ProviderAdapterError::GenerationRejected(GenerationRejectionEvidence {
-                reason: crate::model_adapter::DecisionOutputRejection::TerminationUnconfirmed,
+                reason: crate::provider_recovery::wire_eof_reason(body),
                 input_tokens: None,
                 output_tokens: None,
             })
