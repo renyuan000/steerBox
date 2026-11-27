@@ -162,9 +162,13 @@ impl<R: CredentialResolver> HttpProviderTransport<R> {
         }
         let mut bytes = Vec::with_capacity(self.max_response_bytes.min(64 * 1024));
         let mut limited = response.take(self.max_response_bytes as u64 + 1);
-        limited
-            .read_to_end(&mut bytes)
-            .map_err(|_| TransportError::Network)?;
+        limited.read_to_end(&mut bytes).map_err(|error| {
+            if is_body_timeout(&error) {
+                TransportError::Timeout
+            } else {
+                TransportError::Network
+            }
+        })?;
         if bytes.len() > self.max_response_bytes {
             return Err(TransportError::ResponseTooLarge);
         }
@@ -290,9 +294,13 @@ impl<R: CredentialResolver> HttpAnthropicTransport<R> {
         }
         let mut bytes = Vec::with_capacity(self.max_response_bytes.min(64 * 1024));
         let mut limited = response.take(self.max_response_bytes as u64 + 1);
-        limited
-            .read_to_end(&mut bytes)
-            .map_err(|_| AnthropicTransportError::Network)?;
+        limited.read_to_end(&mut bytes).map_err(|error| {
+            if is_body_timeout(&error) {
+                AnthropicTransportError::Timeout
+            } else {
+                AnthropicTransportError::Network
+            }
+        })?;
         if bytes.len() > self.max_response_bytes {
             return Err(AnthropicTransportError::ResponseTooLarge);
         }
@@ -354,6 +362,16 @@ impl<R: CredentialResolver> AnthropicTransport for HttpAnthropicTransport<R> {
         let body = self.read_bounded_body(response)?;
         Ok(TransportResponse::body(status_code, body))
     }
+}
+
+// reqwest's blocking Read wraps body errors as io::ErrorKind::Other. Preserve
+// its timeout classification without exposing the inner error/URL to callers.
+fn is_body_timeout(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::TimedOut
+        || error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<reqwest::Error>())
+            .is_some_and(reqwest::Error::is_timeout)
 }
 
 fn is_loopback_host(host: Option<&str>) -> bool {

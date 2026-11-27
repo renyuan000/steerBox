@@ -1,6 +1,6 @@
 # Provider Protocol Matrix
 
-状态：设计基线及受限实现更新（2026-11-25；Chat 已有单一第三方的限定 live 验收，不代表其它协议或 Phase 1 全部完成）
+状态：设计基线及受限实现更新（2026-11-27；Chat 已有单一第三方的限定 live 验收，不代表其它协议或 Phase 1 全部完成）
 
 ## 结论
 
@@ -27,6 +27,12 @@ Anthropic Messages 已作为独立协议接入。协议差异必须由 provider-
 | Agent-to-Agent / tool protocol | MCP、A2A 等 | 非模型推理协议 | 作为能力/任务边界接入，不替代 provider adapter、PolicyGate 或审计链 |
 
 ## 多后端配置规则与本轮接入审核
+
+2026-11-27 中断防护增量：基础 Chat SSE 已缓冲解析要求一致身份、有效正文、finish 与
+DONE 双终止确认；缺终止帧、reasoning-only 或终止后继续输出均拒绝，兼容合法 usage 尾块。
+Chat/Responses 与 Messages 的 HTTP 响应体超时现在保留 `Timeout` 分类，心跳不延长
+已有总期限。生产 HTTP 仍是有界非流式；未交付语义进展 watchdog、自动重试或断流续接。
+缺陷证据、Unicode 回归范围及后续门禁见 `PROVIDER_INTERRUPTION_GUARDS.md`。
 
 - 一个 `model_profiles` 可以同时配置 Chat、Responses、Messages；`provider` 是后端标识，
   `endpoint_protocol` 决定 wire 编解码及认证方式。显式 Messages 不再要求后端必须叫

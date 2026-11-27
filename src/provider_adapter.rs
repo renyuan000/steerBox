@@ -245,6 +245,8 @@ pub enum ProviderAdapterError {
     Upstream,
     #[error("provider response could not be parsed")]
     ResponseParse,
+    #[error("provider stream ended without confirmed completion")]
+    IncompleteStream,
 }
 
 impl ProviderAdapterError {
@@ -257,7 +259,7 @@ impl ProviderAdapterError {
             Self::Timeout => ProviderErrorClass::Timeout,
             Self::Transport => ProviderErrorClass::Transport,
             Self::Upstream => ProviderErrorClass::Upstream,
-            Self::ResponseParse => ProviderErrorClass::ResponseParse,
+            Self::ResponseParse | Self::IncompleteStream => ProviderErrorClass::ResponseParse,
         }
     }
 }
@@ -677,20 +679,46 @@ fn parse_completion_response(body: &str) -> Result<ProviderResponse, ProviderAda
 
 fn parse_stream_response(body: &str) -> Result<Vec<ProviderStreamEvent>, ProviderAdapterError> {
     let mut events = Vec::new();
+    let mut identity: Option<(String, String)> = None;
+    let mut finished = false;
+    let mut done = false;
+    let mut has_text = false;
     for line in body.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with(':') {
             continue;
+        }
+        if done {
+            return Err(ProviderAdapterError::ResponseParse);
         }
         let data = line
             .strip_prefix("data:")
             .map(str::trim)
             .ok_or(ProviderAdapterError::ResponseParse)?;
         if data == "[DONE]" {
-            break;
+            done = true;
+            continue;
         }
         let chunk = serde_json::from_str::<WireCompletionResponse>(data)
             .map_err(|_| ProviderAdapterError::ResponseParse)?;
+        if chunk.id.trim().is_empty() || chunk.model.trim().is_empty() {
+            return Err(ProviderAdapterError::ResponseParse);
+        }
+        match &identity {
+            Some((id, model)) if id != &chunk.id || model != &chunk.model => {
+                return Err(ProviderAdapterError::ResponseParse);
+            }
+            None => identity = Some((chunk.id.clone(), chunk.model.clone())),
+            _ => {}
+        }
+        // OpenAI may send a usage-only tail after the terminal choice. It is
+        // metadata, not new model output or evidence of turn completion.
+        if chunk.choices.is_empty() && chunk.usage.is_some() && finished {
+            continue;
+        }
+        if finished || chunk.choices.len() != 1 {
+            return Err(ProviderAdapterError::ResponseParse);
+        }
         let choice = chunk
             .choices
             .first()
@@ -701,10 +729,15 @@ fn parse_stream_response(body: &str) -> Result<Vec<ProviderStreamEvent>, Provide
             .and_then(|message| message.content.as_deref())
         {
             if !text.is_empty() {
+                has_text |= !text.trim().is_empty();
                 events.push(ProviderStreamEvent::delta(&chunk.id, &chunk.model, text));
             }
         }
         if let Some(reason) = choice.finish_reason.as_deref() {
+            if reason.trim().is_empty() {
+                return Err(ProviderAdapterError::ResponseParse);
+            }
+            finished = true;
             events.push(ProviderStreamEvent::completed(
                 &chunk.id,
                 &chunk.model,
@@ -712,7 +745,12 @@ fn parse_stream_response(body: &str) -> Result<Vec<ProviderStreamEvent>, Provide
             ));
         }
     }
-    if events.is_empty() {
+    // Return no partial events when EOF arrives before both terminal markers.
+    // The caller must not execute a decision derived from an unconfirmed turn.
+    if !done || !finished {
+        return Err(ProviderAdapterError::IncompleteStream);
+    }
+    if !has_text {
         return Err(ProviderAdapterError::ResponseParse);
     }
     Ok(events)

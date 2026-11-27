@@ -2,6 +2,15 @@
 
 ## 定位与证据边界
 
+2026-11-27 Provider 中断防护：基础 Chat SSE 已缓冲解析不再接受缺终止标志、
+reasoning-only 或终止后继续输出为成功；允许合法 usage 尾块。共享 Chat/Responses
+及独立 Messages HTTP transport 的响应体超时修复为 `Timeout`，localhost 心跳回归
+证明字节到达不延长总期限；Unicode 审计目录的无效正文记录失败而非完成。
+相关 54 项定向及全量 96 个 harness/1358 项通过，0 失败/跳过；严格 Clippy、实际
+lib/bin 构建、fmt/diff 检查通过。证据和未来流式门禁见 `PROVIDER_INTERRUPTION_GUARDS.md`。
+生产 HTTP 仍非流式，无新增自动重试/跨后端恢复；不据此确认用户 OpenCode 事故根因，
+不表示 Phase 1 或 live mutation 验收完成。
+
 2026-11-25 多后端接入一致性修复：公开 Anthropic 工厂按显式 Messages 协议接入，
 不再误拒绝自定义中转 provider 名称；配置加载和工厂拒绝重复模型 ID，避免静默选错后端。
 混合 Chat/Responses/Messages 离线测试已通过，覆盖地址、模型、认证引用、wire 与审计身份；
